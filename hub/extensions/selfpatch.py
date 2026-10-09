@@ -167,6 +167,14 @@ def known_secrets(hub: "Hub") -> list[str]:
     return [v for v in values if isinstance(v, str) and len(v) >= 8]
 
 
+def mask_known(text: str, secrets: list[str]) -> str:
+    """Only exact known secret values: a reviewer must see the code as it is (a generic "token=..." mask could hide
+    what a line does). Changes containing a known secret are refused anyway."""
+    for value in sorted(secrets, key=len, reverse=True):
+        text = text.replace(value, "***")
+    return text
+
+
 def check_path(hub: "Hub", root: Path, raw: str) -> PurePosixPath:
     """A path inside the repository that a self-patch may write."""
     text = raw.replace("\\", "/").strip()
@@ -272,7 +280,8 @@ async def predict_mode(hub: "Hub") -> tuple[str, str]:
     auth = await config(hub).gh(["gh", "auth", "status"], root, 60, None)
     if auth.exit_code != 0:
         return "merge", "the GitHub CLI (gh) is not installed or not signed in"
-    return "pull_request", f"pull request on {redact(origin.output.strip(), known_secrets(hub))}"
+    url = re.sub(r"//[^/@\s]+@", "//", origin.output.strip())  # never show credentials embedded in the remote URL
+    return "pull_request", f"pull request on {redact(url, known_secrets(hub))}"
 
 
 # --------------------------------------------------------------------------------------
@@ -308,7 +317,7 @@ async def propose(hub: "Hub", *, title: str, rationale: str, changes: list[FileC
                          f"Atrium self-patch: {patch.title}\n\n{patch.rationale}"])
         patch.commit = (await _git(hub, ["-C", str(worktree), "rev-parse", "HEAD"])).output.strip()
         diff = await _git(hub, ["-C", str(worktree), "diff", "--no-color", patch.base_commit, patch.commit], timeout=60)
-        patch.diff = redact(diff.output, known_secrets(hub))[:MAX_DIFF]
+        patch.diff = mask_known(diff.output, known_secrets(hub))[:MAX_DIFF]
     except Exception:
         await cleanup(hub, patch)
         raise

@@ -51,6 +51,8 @@ class ExtensionRecord(BaseModel):
             raise KeyError(version)
         digest = hashlib.sha256(json.dumps(doc, sort_keys=True, default=str).encode()).hexdigest()
         if digest not in _parsed:
+            if len(_parsed) > 512:
+                _parsed.clear()
             _parsed[digest] = ExtensionPack.model_validate(doc)
         return _parsed[digest]
 
@@ -390,6 +392,28 @@ def remove(hub: "Hub", ext_id: str, actor: str, purge: bool = False) -> int:
     hub.activity(actor, "info", f"Removed the extension {rec.id}" + (f" and {removed} record(s)" if removed else ""),
                  extension_id=rec.id)
     return removed
+
+
+def forget_tool(hub: "Hub", tool_id: str, actor: str) -> None:
+    """A tool left the hub: pending proposals made for it are withdrawn, and the records it reported turn stale (they
+    stay, but no longer count as current - nobody reports them any more)."""
+    from . import records as ext_records
+
+    keys: set[str] = set()
+    for rec in records(hub):
+        for version in rec.versions:
+            keys |= {i.get("key") for i in version.get("items") or [] if i.get("kind") == "domain"}
+        if rec.source_tool == tool_id and rec.status == "proposed":
+            if rec.approval_id:
+                hub.approvals.withdraw(rec.approval_id, "Superseded: the tool was removed from the hub.", actor)
+            rec.status, rec.approval_id = "disabled", None
+            rec.log(actor, "withdrawn: the tool was removed")
+            save(hub, rec, actor)
+    for key in sorted(k for k in keys if k):
+        for record in ext_records.all_records(hub, key):
+            if record.source == tool_id and not record.stale:
+                record.stale = True
+                ext_records.save(hub, record)
 
 
 async def changed(hub: "Hub", sender: str) -> None:

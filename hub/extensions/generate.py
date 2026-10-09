@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from ..connectors import base as connector_sdk
 from ..connectors import generic_rest

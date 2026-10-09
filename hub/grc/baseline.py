@@ -71,7 +71,9 @@ CONTROLS: list[Control] = [
             "Every tool's integration contract (hub manifest) is explicit and versioned.",
             "tools_manifest", {"ISO27001": "A.8.9", "SOC2": "CC7.1"}, None),
     Control("HB-CM-2", "Change management", "Changes to tools are reviewed",
-            "Patches to tools are proposed on branches or adapters and applied only after review.",
+            "Patches to tools are proposed on branches or adapters and applied only after review; changes to Atrium "
+            "itself - generated extension packs and self-patches of its code - are reviewed too, and its code only "
+            "after its tests passed.",
             "patch_review", {"ISO27001": "A.8.32", "SOC2": "CC8.1", "NIS2": "21(2)(e)"}, None),
     Control("HB-OP-1", "Operations", "Health monitoring for every tool",
             "Each integrated tool exposes a health check the hub monitors.",

@@ -68,6 +68,7 @@ URL_PATH = re.compile(r"^/[A-Za-z0-9._~%:@+,;=/<>-]{0,299}$")
 SSO_FILE = re.compile(r"^sso/[A-Za-z0-9][A-Za-z0-9._-]{0,79}$")
 HEADER = re.compile(r"^[A-Za-z0-9-]{1,64}$")
 CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+CREDENTIAL = re.compile(r"(?i)(password|passwd|secret|token|api[_-]?key|authorization|cookie|session|credential)")
 RESERVED_FIELDS = {"id", "external_id", "hub_id"}
 FieldType = Literal["text", "number", "date", "severity", "link", "enum"]
 SEVERITIES = ("critical", "high", "medium", "low", "info")
@@ -217,6 +218,12 @@ class ConnectorItem(Strict):
         from ..connectors.base import ConnectorError
         from ..connectors.generic_rest import validate_mapping
 
+        for domain, spec in v.items():  # a pack is shareable data: credentials belong in the connection's secrets
+            params = ((spec or {}).get("list") or {}).get("params") if isinstance(spec, dict) else None
+            for name in (params or {}) if isinstance(params, dict) else ():
+                if CREDENTIAL.search(str(name)):
+                    raise ValueError(f"{domain}.list.params.{name}: a pack carries no credentials - the API token "
+                                     "goes into the tool's connection")
         try:
             return validate_mapping(json.loads(json.dumps(v)))
         except ConnectorError as exc:

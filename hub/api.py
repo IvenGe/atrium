@@ -352,6 +352,7 @@ def build_router(hub: Hub) -> APIRouter:
         identity.forget_tool(hub, tool_id)
         flows.forget_tool(hub, tool_id, p.actor)
         people_app.forget_tool(hub, tool_id)
+        ext_registry.forget_tool(hub, tool_id, p.actor)
         await teams.forget_tool(hub, tool_id, p.actor)
         if tool.source_type == "github" and tool.path:
             await asyncio.to_thread(importer.remove_tree, hub.settings.workspace / "tools" / tool_id)
@@ -1379,7 +1380,7 @@ def build_router(hub: Hub) -> APIRouter:
     # -- extension domains: records ------------------------------------------------------
 
     def domain_or_404(key: str):
-        found = ext_registry.active_domains(hub).get(key)
+        found = ext_registry.active_domains(hub).get(key.removeprefix("x:"))
         if found is None:
             raise not_found("Extension domain")
         return found
