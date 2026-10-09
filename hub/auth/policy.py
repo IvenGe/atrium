@@ -27,8 +27,9 @@ SELF_SERVICE = {
 }
 ADMIN_TREES = ("/api/users", "/api/tokens")
 # Single routes that need admin: settings (SLA, guardrails), agent definitions (create, configure, remove), the AI
-# model providers (they may hold API keys), the identity providers (credentials for sign-in) and tool connections
-# (they hold the tools' API credentials).
+# model providers (they may hold API keys), the identity providers (credentials for sign-in), tool connections
+# (they hold the tools' API credentials), the Sign-in & SSO settings and disabling a person's Atrium account.
+# Everything else in the People app follows the default: viewers read, operators change people and links.
 ADMIN_ROUTES = (
     ("PATCH", re.compile(r"/api/settings")),
     ("PATCH", re.compile(r"/api/settings/guardrails")),
@@ -44,6 +45,13 @@ ADMIN_ROUTES = (
     ("POST", re.compile(r"/api/identity-providers/[^/]+/atrium")),
     ("PUT", re.compile(r"/api/tools/[^/]+/connection")),
     ("DELETE", re.compile(r"/api/tools/[^/]+/connection")),
+    # Sign-in & SSO settings (the client secret of Atrium's own sign-in)
+    ("GET", re.compile(r"/api/auth/sso")),
+    ("PUT", re.compile(r"/api/auth/sso")),
+    ("DELETE", re.compile(r"/api/auth/sso")),
+    ("POST", re.compile(r"/api/auth/sso/test")),
+    # People: disabling someone's Atrium account is account administration
+    ("POST", re.compile(r"/api/people/[^/]+/actions/disable_atrium_account")),
 )
 # Reads that act on a tool with its stored credentials, so they need operator.
 OPERATOR_READS = (

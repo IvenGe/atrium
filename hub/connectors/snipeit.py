@@ -167,7 +167,7 @@ class SnipeItConnector(Connector):
         ConnectorField(name="asset_tags", label="Asset tags of new hardware", kind="select", default="hub", choices=[
             {"value": "hub", "label": "The hub asset id"},
             {"value": "auto", "label": "Snipe-IT's auto-increment (turn it on in Snipe-IT's settings)"}]),
-        ConnectorField(name="read_accounts", label="Read user accounts (People app)", kind="bool", default=False,
+        ConnectorField(name="read_accounts", label="Read user accounts (People app)", kind="bool",
                        help="Read Snipe-IT's users as accounts, so leavers who can still sign in are found. The "
                             "token's account must be allowed to view users."),
     ]

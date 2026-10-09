@@ -126,6 +126,14 @@ def test_password_policy(password, message):
     ("GET", "/api/llm/providers", "viewer"), ("POST", "/api/llm/providers", "admin"),
     ("PATCH", "/api/llm/providers/ollama", "admin"), ("DELETE", "/api/llm/providers/ollama", "admin"),
     ("POST", "/api/llm/providers/ollama/test", "admin"), ("POST", "/api/llm/providers/ollama", "operator"),
+    ("GET", "/api/auth/sso", "admin"), ("PUT", "/api/auth/sso", "admin"), ("DELETE", "/api/auth/sso", "admin"),
+    ("POST", "/api/auth/sso/test", "admin"), ("GET", "/api/auth/sso/test", "viewer"),
+    ("GET", "/api/people", "viewer"), ("GET", "/api/people/p_1", "viewer"), ("GET", "/api/people/leavers", "viewer"),
+    ("POST", "/api/people", "operator"), ("PATCH", "/api/people/p_1", "operator"), ("DELETE", "/api/people/p_1", "operator"),
+    ("POST", "/api/people/p_1/actions/unassign_assets", "operator"),
+    ("POST", "/api/people/p_1/actions/disable_atrium_account", "admin"),
+    ("POST", "/api/people/p_1/actions/disable_atrium_account/", "admin"),
+    ("GET", "/api/accounts", "viewer"), ("PATCH", "/api/accounts/okta|00u1", "operator"),
 ])
 def test_required_role(method, path, role):
     assert required_role(method, path) == role
@@ -164,6 +172,13 @@ def contract_role(method: str, path: str) -> str | None:
                           ("PATCH", "/api/llm/providers/{provider_id}"), ("DELETE", "/api/llm/providers/{provider_id}"),
                           ("POST", "/api/llm/providers/{provider_id}/test")}:
         return "admin"
+    # Atrium's own sign-in settings (they hold its client secret) - reading them too
+    if (method, path) in {("GET", "/api/auth/sso"), ("PUT", "/api/auth/sso"), ("DELETE", "/api/auth/sso"),
+                          ("POST", "/api/auth/sso/test")}:
+        return "admin"
+    # People: operators change people and links; disabling someone's Atrium account is account administration
+    if (method, path) == ("POST", "/api/people/{person_id}/actions/{action}"):
+        return "operator"  # per action: see test_required_role
     return "viewer" if method in ("GET", "HEAD") else "operator"
 
 

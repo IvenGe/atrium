@@ -135,7 +135,10 @@ class AuthService:
         self.hub = hub
         self.settings = hub.settings
         self.store = hub.store
-        self.oidc = OidcClient(hub.settings)
+        from . import sso_settings
+
+        self.oidc_transport: Any = None  # tests route the identity provider's HTTP through a mock
+        self.oidc = OidcClient(sso_settings.effective(hub)[0])
         self.setup_token: str | None = None
         self.throttle = Throttle()
 

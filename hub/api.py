@@ -261,6 +261,8 @@ def build_router(hub: Hub) -> APIRouter:
             "vulnerabilities_open": sum(1 for v in vulns if v.status in OPEN_STATES),
             "vulnerabilities_overdue": sum(1 for v in vulns if v.overdue),
             "flows_enabled": sum(1 for f in flows.all_flows(hub) if f.status == "enabled"),
+            "people": len(people_app.all_people(hub)),
+            "leavers": len(people_app.leavers(hub)),
             "llm": hub.llm.status(),
             "autonomy": hub.prefs["autonomy"],
         }
