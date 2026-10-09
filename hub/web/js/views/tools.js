@@ -1,5 +1,6 @@
 import { del, get, post } from "../api.js";
 import { mountConnection } from "../connection.js";
+import { openExtend } from "../extensions.js";
 import { loadIdentity, openProviderPicker, runRegistration, statusBadge } from "../sso.js";
 import { strategyCards, wireStrategies } from "../strategies.js";
 import {
@@ -191,6 +192,7 @@ async function renderDetail(el, ctx, id, initialTab) {
           <button class="btn" data-act="health" data-min-role="operator" ${!m?.health?.url ? "disabled" : ""}>${icon("activity")}Check health</button>
           <button class="btn" data-act="analyze" data-min-role="operator" ${busy ? "disabled" : ""}>${icon("refresh")}Re-analyse</button>
           <button class="btn" data-act="patch" data-min-role="operator" ${!tool.report ? "disabled" : ""}>${icon("wrench")}Propose patches</button>
+          <button class="btn" data-act="extend" data-min-role="admin" ${!m ? "disabled" : ""} title="Close what Atrium itself lacks for ${tool.name} with an extension pack">${icon("puzzle")}Extend Atrium</button>
           ${ssoRow?.applied?.can_register ? html`<button class="btn" data-act="sso-register" data-min-role="operator"
             title="Register ${tool.name} as a client at its identity provider">${icon("shield")}Run provider registration</button>` : ""}
           <span class="spacer"></span>
@@ -242,6 +244,7 @@ async function renderDetail(el, ctx, id, initialTab) {
       const r = await post(`/tools/${id}/patches`).catch((e) => toast(e.message, "bad"));
       if (r) toast(r.patches.length ? `${r.patches.length} patch(es) proposed - see Approvals` : "No new patches needed", "ok");
     },
+    extend: () => openExtend({ id, name: toolName }, { claude: ctx.state.overview?.llm?.available !== false }),
     async "sso-connect"(d) {
       const r = await post(`/tools/${id}/sso`, { provider: d.provider }).catch((e) => toast(e.message, "bad"));
       if (r) toast(r.patches.length ? "Single sign-on patch proposed - see Approvals" : r.pending ? "A patch is already waiting for approval" : "Nothing to do", "ok");

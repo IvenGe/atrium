@@ -8,13 +8,26 @@ const LEVELS = [
   ["autonomous", "Autonomous", "Agents act without asking, except for blocked commands. The GRC Supervisor flags this as a failing control."],
 ];
 const SLA = ["critical", "high", "medium", "low"];
-const GUARD_GROUPS = { teams: "Agent teams", agents: "Agent actions", commands: "Commands", scans: "Vulnerability scans" };
+const GUARD_GROUPS = {
+  teams: "Agent teams", agents: "Agent actions", commands: "Commands", scans: "Vulnerability scans",
+  extensions: "Extensions", self_patching: "Self-patching (changes to Atrium's own code)",
+};
 const SERVERS = "Ollama: http://localhost:11434/v1 - LM Studio: http://localhost:1234/v1 - vLLM: http://<host>:8000/v1 - llama.cpp server: http://<host>:8080/v1";
+// Switches that allow a capability are on by default, but off is their protective side (safe_value in hub/guardrails.py):
+// switching them back on is logged as relaxing. The catalog does not carry that yet, so it is named here (or read from `safe`).
+const SAFE_OFF = new Set(["allow_extensions", "allow_self_patching"]);
+const safeSide = (g) => g.safe ?? (SAFE_OFF.has(g.key) ? false : g.default);
 
-/** Whether setting guardrail `g` to `value` loosens it: a switch leaving its protective default, or a higher limit. */
+/** Whether setting guardrail `g` to `value` loosens it: a switch leaving its protective side, or a higher limit. */
 function relaxes(g, value) {
-  return g.kind === "bool" ? value !== g.default && g.value === g.default : Number(value) > Number(g.value);
+  return g.kind === "bool" ? g.value === safeSide(g) && value !== safeSide(g) : Number(value) > Number(g.value);
 }
+
+/** What switching a guardrail off disrupts right away (asked before it happens, although it is the safe side). */
+const DISRUPTS = {
+  allow_extensions: "Every enabled pack becomes inactive at once: its apps leave the sidebar, its data flows stop running, and its SSO recipes, compliance rules and team templates no longer apply. Packs and records are kept, and switching it back on restores them. Connector mappings already merged into tools' connections stay until a pack is disabled.",
+  allow_self_patching: "The Patch Agent no longer proposes changes to Atrium's own code. Self-patches already waiting in Approvals stay there.",
+};
 
 function guardrailsView(catalog, admin) {
   const byKey = Object.fromEntries(catalog.map((g) => [g.key, g]));
@@ -74,7 +87,7 @@ function providersView(pv) {
 /** Asks before a guardrail is relaxed, showing what that risks; resolves true to go ahead. */
 function confirmRelax(g, value) {
   return new Promise((resolve) => {
-    const verb = g.kind === "bool" ? (g.default ? "Switch off" : "Switch on") : "Raise";
+    const verb = g.kind === "bool" ? (value ? "Switch on" : "Switch off") : "Raise";
     const m = modal({
       title: g.kind === "bool" ? `${verb}: ${g.title}?` : `Raise ${g.title.toLowerCase()} to ${value}?`,
       submit: verb,
@@ -168,6 +181,7 @@ export async function render(el, ctx) {
     const g = s.guardrail_catalog.find((x) => x.key === key);
     if (!g || value === g.value) return;
     if (relaxes(g, value) && !(await confirmRelax(g, value))) return drawGuards();
+    if (value === false && DISRUPTS[key] && !(await confirmDialog(`Switch off: ${g.title}?`, DISRUPTS[key], "Switch off"))) return drawGuards();
     try {
       s = await patch("/settings/guardrails", { [key]: value });
       const now = s.guardrail_catalog.find((x) => x.key === key);

@@ -1,6 +1,7 @@
 // Data flows between tools and the hub's apps: the flow table, its actions (enable, schedule, run, repair, remove)
 // and the detail view. Used by the Integration hub and by a tool's Connection tab.
 import { del, patch, post } from "./api.js";
+import { xDomains, xHref } from "./extensions.js";
 import {
   actions, badge, can, confirmDialog, dateTime, field, html, icon, modal, options, timeAgo, timeIn, toast,
 } from "./ui.js";
@@ -13,6 +14,15 @@ export const DOMAINS = {
   people: { label: "People", icon: "contact", app: "Hub People", href: "#/people" },
   accounts: { label: "Accounts", icon: "key", app: "Hub People (accounts)", href: "#/people/accounts" },
 };
+
+/** A data domain ("assets", or "x:alerts" of an extension pack) as {label, icon, app, href}. */
+export function domainInfo(domain) {
+  if (DOMAINS[domain]) return DOMAINS[domain];
+  const key = String(domain || "").startsWith("x:") ? domain.slice(2) : null;
+  const d = key ? xDomains.find((x) => x.key === key) : null;
+  if (d) return { label: d.title, icon: d.icon, app: `Hub ${d.title}`, href: xHref(d.key) };
+  return { label: key ? `${key} (extension)` : domain, icon: key ? "puzzle" : "flow", app: "Hub" };
+}
 const ASSET_TYPES = ["server", "workstation", "network", "software", "saas", "cloud", "data", "other"];
 const SEVERITIES = ["critical", "high", "medium", "low", "info"];
 const SCHEDULES = [[0, "Only when run by hand"], [15, "Every 15 minutes"], [30, "Every 30 minutes"], [60, "Every hour"],
@@ -41,7 +51,7 @@ export function countsText(counts) {
 
 /** A flow end ("hub" or "tool:<id>") as a name. */
 export function endName(end, domain, names = {}) {
-  if (end === "hub") return DOMAINS[domain]?.app || "Hub";
+  if (end === "hub") return domainInfo(domain).app;
   const id = String(end || "").replace(/^tool:/, "");
   return names[id] || id;
 }
@@ -84,7 +94,7 @@ function repairControl(f) {
 }
 
 function flowRow(f, showTool, names) {
-  const d = DOMAINS[f.domain] || { label: f.domain, icon: "flow" };
+  const d = domainInfo(f.domain);
   const runnable = f.status !== "proposed" || f.job;
   return html`<tr class="${failing(f) && f.status === "enabled" ? "flow-failing" : ""}">
     <td style="min-width:240px"><div class="row" style="gap:8px;flex-wrap:nowrap;align-items:flex-start">${icon(f.direction === "scan" ? "radar" : d.icon)}
@@ -122,7 +132,7 @@ function optionsForm(f) {
   }
   if (f.direction === "pull") {
     parts.push(html`<label class="check" style="margin-bottom:12px"><input type="checkbox" name="retire_missing" ${o.retire_missing === false ? "" : "checked"}>
-      ${RETIRE_LABEL[f.domain] || "Retire records that disappear from the tool"}</label>`);
+      ${RETIRE_LABEL[f.domain] || (f.domain.startsWith("x:") ? "Mark records stale that the tool no longer reports" : "Retire records that disappear from the tool")}</label>`);
   }
   if (f.domain === "vulnerabilities" && f.direction === "push") {
     parts.push(field("Lowest severity to send", html`<select name="min_severity">${options(SEVERITIES, o.min_severity || "low")}</select>`));
@@ -171,6 +181,7 @@ function editFlow(f, done) {
 function showFlow(f, names) {
   const r = f.last_result;
   const job = f.job;
+  const info = domainInfo(f.domain);
   modal({
     title: f.title,
     wide: true,
@@ -178,11 +189,11 @@ function showFlow(f, names) {
     cancel: "Close",
     body: html`${f.reason ? html`<p class="muted" style="margin-bottom:12px">${f.reason}</p>` : ""}
       <dl class="kv" style="margin-bottom:14px">
-        <dt>Data</dt><dd>${DOMAINS[f.domain]?.label || f.domain}</dd>
+        <dt>Data</dt><dd>${info.href ? html`<a href="${info.href}">${info.label}</a>` : info.label}</dd>
         <dt>From</dt><dd>${endName(f.source, f.domain, names)}</dd><dt>To</dt><dd>${endName(f.target, f.domain, names)}</dd>
         <dt>Status</dt><dd>${badge(f.status)}${f.approval_id ? html` <a href="#/approvals">waiting for approval</a>` : ""}</dd>
         <dt>Schedule</dt><dd>${scheduleLabel(f.schedule_minutes)}${f.next_run ? html` <span class="faint">(next ${dateTime(f.next_run)})</span>` : ""}</dd>
-        <dt>How</dt><dd>${f.strategy === "generated" ? "Generated REST connector" : "Built-in connector"}, run by <code>${f.owner}</code></dd>
+        <dt>How</dt><dd>${f.strategy === "generated" ? "Generated REST connector" : f.domain.startsWith("x:") ? "Generic REST mapping from an extension pack" : "Built-in connector"}, run by <code>${f.owner}</code></dd>
         ${Object.keys(f.options || {}).length ? html`<dt>Options</dt><dd class="mono" style="font-size:12px">${JSON.stringify(f.options)}</dd>` : ""}
         <dt>Created</dt><dd>${dateTime(f.created_at)} by ${f.created_by}</dd>
       </dl>

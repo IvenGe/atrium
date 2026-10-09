@@ -2,7 +2,7 @@
 // never shown, only whether they are set), connection test with its checks, choices loaded from the tool,
 // capabilities, a connector generated with Claude, and this tool's data flows.
 import { del, get, post, put } from "./api.js";
-import { DOMAINS, flowsTable, planFlows, wireFlows } from "./flows.js";
+import { domainInfo, flowsTable, planFlows, wireFlows } from "./flows.js";
 import { actions, badge, can, confirmDialog, dateTime, field, html, icon, options, setHTML, timeAgo, toast } from "./ui.js";
 
 const BUILTIN_SCORE = 50; // as in integration/strategies.py: a detected built-in connector this sure needs no generated one
@@ -18,7 +18,7 @@ function capabilityList(domains, actionsList = [], systemOfRecord = []) {
   const entries = Object.entries(domains || {}).filter(([, ops]) => ops?.length);
   if (!entries.length && !actionsList.length) return html`<p class="faint">None.</p>`;
   return html`<div class="cap-list">${entries.map(([domain, ops]) => html`<div class="cap">
-      ${icon(DOMAINS[domain]?.icon || "flow")}<span>${DOMAINS[domain]?.label || domain}</span>
+      ${icon(domainInfo(domain).icon)}<span>${domainInfo(domain).label}</span>
       <span class="row" style="gap:4px;margin-left:auto">${ops.map((op) => badge(op, op === "write" ? "accent" : "info"))}
         ${systemOfRecord.includes(domain) ? badge("system of record", "ok") : ""}</span></div>`)}
     ${actionsList.filter((a) => a !== "scan_status").map((a) => html`<div class="cap">${icon(a === "scan" ? "radar" : "play")}<span>Action: ${a}</span></div>`)}</div>`;
