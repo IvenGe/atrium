@@ -171,6 +171,12 @@ def outside_guardrails(hub: "Hub", defn: AgentDef) -> str | None:
         check_depth(hub, defn.depth)
     except ValueError as exc:
         return str(exc)
+    if guardrails.value(hub, "limit_team_size"):
+        limit = int(guardrails.value(hub, "max_team_size"))
+        team = sorted(members(hub, defn.team), key=lambda d: (d.created_at, d.id))
+        if any(d.id == defn.id for d in team[limit:]):  # the oldest members keep acting
+            return (f"the {team_name(hub, defn.team)} team has {len(team)} agents, more than the maximum team size of "
+                    f"{limit} (guardrail max_team_size) - remove agents or raise the limit")
     return None
 
 
@@ -625,14 +631,20 @@ def provider_ok(hub: "Hub", provider: str) -> bool:
 
 
 def propose_members(hub: "Hub", *, requested_by: str, parent: str, members: list[dict[str, Any]], designer: str,
-                    rationale: str = "", tool_id: str | None = None, category: str | None = None) -> dict[str, Any]:
+                    rationale: str = "", tool_id: str | None = None, category: str | None = None,
+                    on_behalf_of: str | None = None) -> dict[str, Any]:
     """Check proposed members of `parent`'s team against the guardrails, then create them (autonomous mode, or the
     team_requires_approval guardrail off) or queue one approval of kind "agent_team". Raises ValueError when the
-    guardrails forbid the whole proposal (nesting, depth)."""
+    guardrails forbid the whole proposal (nesting, depth). `on_behalf_of`: the team agent that asked a lead for the
+    proposal - while limit_to_parent_permissions is on, the members get no permission that agent lacks either."""
     team = team_of(hub, parent)
     depth = depth_for(hub, parent)
     check_depth(hub, depth)
-    parent_perms = permissions_of(hub, parent) if guardrails.value(hub, "limit_to_parent_permissions") else None
+    parent_perms = None
+    if guardrails.value(hub, "limit_to_parent_permissions"):
+        parent_perms = permissions_of(hub, parent)
+        if on_behalf_of and get_def(hub, on_behalf_of) is not None:
+            parent_perms &= permissions_of(hub, on_behalf_of)
     prepared: list[dict[str, Any]] = []
     skipped: list[dict[str, str]] = []
     for raw in members:
@@ -654,7 +666,7 @@ def propose_members(hub: "Hub", *, requested_by: str, parent: str, members: list
                             else f"Nothing to propose for the {name} team.")
         return result
     payload = {"team": team, "tool_id": tool_id, "parent": parent, "depth": depth, "members": prepared,
-               "designer": designer, "category": category, "rationale": rationale}
+               "designer": designer, "category": category, "rationale": rationale, "on_behalf_of": on_behalf_of}
     names = ", ".join(m["title"] for m in prepared)
     if hub.prefs["autonomy"] == "autonomous" or not guardrails.value(hub, "team_requires_approval"):
         created, failed = create_members(hub, payload, requested_by)

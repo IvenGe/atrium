@@ -70,26 +70,36 @@ def check_tools_sso(s: Snapshot) -> Result:
     return status, detail, [f"{t.name}: {t.manifest.auth.sso}" for t in analysed if t.manifest and t.manifest.auth.sso in SSO_MODES]
 
 
+def _guardrail_findings(s: Snapshot, control: str) -> tuple[list[str], list[str], list[str]]:
+    """(titles of relaxed guardrails that fail `control`, findings of those that make it partial, evidence)."""
+    g = guardrails.merged(s.guardrails)
+    mapped = [x for x in guardrails.REGISTRY.values() if x.control == control]
+    keys = [x.key for x in mapped] + [x.requires for x in mapped if x.requires]
+    relaxed = guardrails.weakened(g, control)
+    # a switch that lets more happen (off by default) names its bound, e.g. nested teams "up to maximum team depth 2"
+    loose = [(r.finding or r.title) + (f" (up to {guardrails.REGISTRY[r.requires].title.lower()} {g[r.requires]})"
+                                       if r.requires and r.default is False else "")
+             for r in relaxed if r.weakens == "partial"]
+    return [r.title for r in relaxed if r.weakens == "fail"], loose, [f"{k}={g[k]}" for k in keys]
+
+
 def check_agent_approvals(s: Snapshot) -> Result:
     if s.autonomy == "autonomous":
         return "fail", "Agents run in autonomous mode - state-changing actions are not reviewed.", []
-    return "pass", f"Autonomy is '{s.autonomy}': state-changing agent actions wait in the approval queue.", [f"autonomy={s.autonomy}"]
-
-
-AGENT_GUARDRAILS_REQUIRED = ("block_catastrophic_commands", "team_actions_need_approval", "limit_to_parent_permissions")
+    off, loose, evidence = _guardrail_findings(s, "HB-AC-2")
+    evidence = [f"autonomy={s.autonomy}", *evidence]
+    if off:
+        return "fail", "Switched off: " + "; ".join(off) + ".", evidence
+    if loose:
+        return "partial", (f"Autonomy is '{s.autonomy}', but " + " and ".join(loose) + " (guardrails relaxed)."), evidence
+    return "pass", f"Autonomy is '{s.autonomy}': state-changing agent actions wait in the approval queue.", evidence
 
 
 def check_agent_guardrails(s: Snapshot) -> Result:
     g = guardrails.merged(s.guardrails)
-    evidence = [f"{key}={g[key]}" for key in guardrails.REGISTRY if key in g]
-    off = [guardrails.REGISTRY[key].title for key in AGENT_GUARDRAILS_REQUIRED if not g[key]]
+    off, loose, evidence = _guardrail_findings(s, "HB-AC-6")
     if off:
         return "fail", "Switched off: " + "; ".join(off) + ".", evidence
-    loose = []
-    if not g["limit_team_size"]:
-        loose.append("agent teams have no size limit")
-    if g["allow_nested_teams"]:
-        loose.append(f"team agents may build nested teams (up to depth {g['max_team_depth']})")
     if loose:
         return "partial", "Core guardrails are on, but " + " and ".join(loose) + ".", evidence
     return "pass", (f"Catastrophic commands are blocked, team agents' actions follow the approval policy and never exceed "

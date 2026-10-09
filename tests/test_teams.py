@@ -159,6 +159,17 @@ def test_team_size_and_depth_limits(client):
     set_guardrails(client, limit_team_size=False)
     assert client.post("/api/agents", json={"name": "Three", "team": "snipe-it"}).status_code == 201
 
+    # a tighter limit later stops the newest members from acting (and from running on a schedule) - they stay
+    hub = client.app.state.hub
+    set_guardrails(client, limit_team_size=True)
+    newest = agent(client, "agent:snipe-it-three")
+    assert "max_team_size" in newest["outside_guardrails"] and agent(client, first["id"])["outside_guardrails"] is None
+    client.patch(f"/api/agents/{newest['id']}", json={"schedule_minutes": 5, "task": "Summarize the state."})
+    assert client.portal.call(hub.tick_agents, time.time() + 600) == []
+    assert client.post(f"/api/agents/{newest['id']}/chat", json={"text": "status"}).status_code == 400
+    set_guardrails(client, limit_team_size=False)
+    assert client.portal.call(hub.tick_agents, time.time() + 600) == [newest["id"]]
+
     # nested teams are off by default; when on, the depth is bounded
     nested = client.post("/api/agents", json={"name": "Sub", "team": "snipe-it", "parent": first["id"]})
     assert nested.status_code == 400 and "allow_nested_teams" in nested.json()["detail"]
@@ -247,6 +258,31 @@ def test_agent_guardrails_control():
     assert control.title == "AI agent guardrails are enforced"
     assert control.refs == {"ISO27001": "A.8.2 / A.8.32", "SOC2": "CC6.1 / CC8.1", "NIS2": "21(2)(i)"}
     assert control.risk == ("AI agents operate without guardrails", 3, 5)
+
+
+def test_relaxed_approval_guardrails_make_the_approval_control_partial_and_new_keys_map_to_controls():
+    def states(**values):
+        snapshot = Snapshot(tools=[], hosts=[], assets=[], risks=[], policies=[], patches=[], autonomy="assisted",
+                            audit_entries=1, guardrails={**guardrails.defaults(), **values})
+        return {s.id: s for s in evaluate_controls(snapshot, {})}
+
+    assert states()["HB-AC-2"].status == "pass"
+    for key in ("scans_need_approval", "team_requires_approval"):
+        state = states(**{key: False})["HB-AC-2"]
+        assert state.status == "partial" and "without approval" in state.detail, key
+    assert "up to maximum team depth 3" in states(allow_nested_teams=True, max_team_depth=3)["HB-AC-6"].detail
+    assert {g["key"]: g["control"] for g in guardrails.catalog({})}["block_catastrophic_commands"] == "HB-AC-6"
+
+    # a guardrail a later feature registers is reflected in its control without changing the checks
+    later = guardrails.register(guardrails.Guardrail(
+        "extensions_need_review", "Extensions need review", "test", True, "test", control="HB-AC-6", weakens="fail"))
+    try:
+        assert states()["HB-AC-6"].status == "pass"
+        state = states(extensions_need_review=False)["HB-AC-6"]
+        assert state.status == "fail" and "Extensions need review" in state.detail
+        assert guardrails.validate({"extensions_need_review": False}) == {"extensions_need_review": False}
+    finally:
+        guardrails.REGISTRY.pop(later.key)
 
 
 def test_blocked_commands_become_changes_when_the_guardrail_is_off():
@@ -515,6 +551,28 @@ def test_team_proposals_follow_the_guardrails(client, wait_for):
     assert agent(client, "agent:openvas-vuln-triage")["effective_permissions"] == ["read", "flows", "grc_write"]
     assert client.post("/api/tools/openvas/team", json={"designer": "claude"}).status_code == 400  # needs Claude
     assert client.post("/api/tools/nope/team").status_code == 404
+
+
+def test_a_team_agent_cannot_get_a_stronger_team_through_its_lead(client):
+    hub = client.app.state.hub
+    add_tool(client, "wazuh", "Wazuh")
+    asker = client.post("/api/agents", json={"name": "Asker", "team": "hub", "permissions": ["read", "agents"]}).json()
+    ctx = hub.agents.get(asker["id"]).context()
+    result = client.portal.call(toolkit.execute, ctx, "propose_team", {"tool_id": "wazuh"})
+    approval = next(a for a in pending(client, "agent_team") if a["id"] == result["approval_id"])
+    assert approval["requested_by"] == "tool:wazuh" and approval["payload"]["on_behalf_of"] == asker["id"]
+    members = {m["title"]: m for m in approval["payload"]["members"]}
+    assert members["Health watcher"]["permissions"] == ["read"] and members["Health watcher"]["clamped"] == ["commands"]
+    assert all(set(m["permissions"]) <= {"read", "agents"} for m in members.values())
+    assert "Requested by Asker" in approval["detail"]
+
+    # with the guardrail off, the lead's templates apply as they are
+    client.post(f"/api/approvals/{approval['id']}", json={"approve": False})
+    set_guardrails(client, limit_to_parent_permissions=False)
+    add_tool(client, "grafana", "Grafana", provides=["monitoring.dashboards"])
+    again = client.portal.call(toolkit.execute, ctx, "propose_team", {"tool_id": "grafana"})
+    watcher = next(m for m in again["members"] if m["title"] == "Health watcher")
+    assert watcher["permissions"] == ["read", "commands"] and watcher["clamped"] == []
 
 
 def test_claude_designs_a_team_when_available(client):

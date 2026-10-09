@@ -1,9 +1,10 @@
 """Guardrails: safety switches for the hub's AI agents that administrators can relax (Settings > Agent guardrails).
 
 Each guardrail is registered once - its default, its type, and what relaxing it risks (the UI shows that text before
-a person switches a protection off). Later features add their own with `register`. Values live in the "guardrails"
-preference; every change is logged with the actor (relaxations as warnings) and the GRC Supervisor re-evaluates
-control HB-AC-6.
+a person switches a protection off). Later features add their own with `register`, naming the compliance control that
+relaxing it weakens (`control`, `weakens`, `finding`; see `weakened`). Values live in the "guardrails" preference;
+every change is logged with the actor (relaxations as warnings) and the GRC Supervisor re-evaluates the controls
+(HB-AC-6 for the agent guardrails, HB-AC-2 for the approval switches).
 """
 
 from __future__ import annotations
@@ -59,11 +60,13 @@ for _g in (
               "A team member's permissions are limited to those of the agent that created it (for a team a person "
               "creates: the lead of the team).", True,
               "Team agents could hold permissions their parent does not have - running commands, applying patches or "
-              "writing compliance data - so an agent could create a more powerful agent than itself.", group="teams"),
+              "writing compliance data - so an agent could create a more powerful agent than itself.", group="teams",
+              control="HB-AC-6", weakens="fail"),
     Guardrail("allow_nested_teams", "Team agents may build their own teams",
               "Lets team agents with the 'agents' permission create sub-team members, up to the maximum depth.", False,
               "Agents created by agents act further and further away from a person's decision, and the number of "
-              "agents (and of scheduled model calls) can multiply.", group="teams", requires="max_team_depth"),
+              "agents (and of scheduled model calls) can multiply.", group="teams", requires="max_team_depth",
+              control="HB-AC-6", finding="team agents may build nested teams"),
     Guardrail("max_team_depth", "Maximum team depth",
               "How many levels of agents may sit below a core agent. 1 = only the members of a lead's team.", 1,
               "Deeper nesting means agents created by agents created by agents; each level is further from a person.",
@@ -71,7 +74,8 @@ for _g in (
     Guardrail("limit_team_size", "Limit the size of agent teams",
               "Caps the number of team agents per team (a tool, the hub or a built-in app).", True,
               "A team could grow without bound: every member may run on a schedule and call a model, so costs, noise "
-              "and the number of agents acting on a tool grow with it.", group="teams", requires="max_team_size"),
+              "and the number of agents acting on a tool grow with it.", group="teams", requires="max_team_size",
+              control="HB-AC-6", finding="agent teams have no size limit"),
     Guardrail("max_team_size", "Maximum team size", "Team agents per team, leads not counted.", 5,
               "Larger teams mean more scheduled runs, more model calls and more agents acting on the tool.",
               group="teams", minimum=1, maximum=50),
@@ -80,21 +84,23 @@ for _g in (
               "(manual and assisted modes).", True,
               "Team agents' state-changing commands and code patches would run without waiting in the approval queue, "
               "whatever the autonomy level. A model's misunderstanding could change or break a tool before anyone "
-              "sees it."),
+              "sees it.", control="HB-AC-6", weakens="fail"),
     Guardrail("block_catastrophic_commands", "Block catastrophic commands",
               "Commands that wipe disks, delete the whole filesystem, shut machines down or pipe downloads into a "
               "shell are refused for everyone.", True,
               "Those commands would no longer be refused: they become ordinary state-changing commands, which people "
-              "run directly and agents run after approval - or without it in autonomous mode.", group="commands"),
+              "run directly and agents run after approval - or without it in autonomous mode.", group="commands",
+              control="HB-AC-6", weakens="fail"),
     Guardrail("scans_need_approval", "Scheduled and agent-started scans need approval",
               "Vulnerability scans that a schedule or an agent starts wait for approval (unless the hub is autonomous).",
               True, "Scans would start without a person deciding. Active scans can load or disturb the scanned systems.",
-              group="scans"),
+              group="scans", control="HB-AC-2", finding="scans that schedules or agents start run without approval"),
     Guardrail("team_requires_approval", "New agent teams need approval",
               "Agent teams that tool supervisors (or team agents) propose wait in the approval queue (unless the hub "
               "is autonomous).", True,
               "Agents would create new agents - with their roles, schedules and permissions - without a person "
-              "reviewing them.", group="teams"),
+              "reviewing them.", group="teams", control="HB-AC-2",
+              finding="agent teams are created without approval"),
 ):
     register(_g)
 
@@ -112,13 +118,20 @@ def value(hub: "Hub", key: str) -> Any:
     return hub.prefs["guardrails"].get(key, REGISTRY[key].default)
 
 
+def weakened(current: dict[str, Any] | None, control: str) -> list[Guardrail]:
+    """The guardrails mapped to `control` that are relaxed from their protective default in `current`. Compliance
+    checks use this, so a guardrail a later feature registers with a `control` is reflected without editing them."""
+    values = merged(current)
+    return [g for g in REGISTRY.values() if g.control == control and g.relaxes(g.default, values[g.key])]
+
+
 def catalog(current: dict[str, Any]) -> list[dict[str, Any]]:
     """What the settings screen shows: every guardrail with its value, default, bounds and the risk of relaxing it."""
     out = []
     for key, g in REGISTRY.items():
         now = current.get(key, g.default)
         out.append({"key": key, "kind": g.kind, "title": g.title, "description": g.description, "group": g.group,
-                    "default": g.default, "value": now, "risk": g.risk, "requires": g.requires,
+                    "default": g.default, "value": now, "risk": g.risk, "requires": g.requires, "control": g.control,
                     "min": g.minimum if g.kind == "int" else None, "max": g.maximum if g.kind == "int" else None,
                     "relaxed": g.relaxes(g.default, now) if now != g.default else False})
     return out

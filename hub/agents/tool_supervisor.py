@@ -150,8 +150,12 @@ class ToolSupervisor(BaseAgent):
             roles = ", ".join(m["title"].lower() for m in members)
             rationale = (f"{tool.name} looks like a {teams.CATEGORIES[category].lower()} tool, so its team gets: {roles}."
                          if category else f"No specialised template fits {tool.name}; every tool gets a maintainer.")
+        asker = teams.get_def(self.hub, msg.sender)  # a team agent asked: the members get no more than it has
+        if asker is not None:
+            rationale += f" Requested by {asker.name}."
         result = teams.propose_members(self.hub, requested_by=self.id, parent=self.id, members=members, designer=used,
-                                       rationale=rationale, tool_id=tool.id, category=category)
+                                       rationale=rationale, tool_id=tool.id, category=category,
+                                       on_behalf_of=asker.id if asker else None)
         if result["proposed"]:
             self.log("info", result["detail"], tool_id=tool.id)
         return result
