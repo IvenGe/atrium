@@ -227,7 +227,9 @@ def _apply_connectors(hub: "Hub", rec: ExtensionRecord, pack: ExtensionPack, act
 
 def _unapply_connectors(hub: "Hub", rec: ExtensionRecord, actor: str) -> None:
     """Undo the pack's connector mappings: restore what each domain was mapped to before, drop its flows, and remove
-    a connection the pack created when nothing (no other mapping, no credentials) is left in it."""
+    a connection the pack created when nothing (no other mapping, no credentials) is left in it. A connection with
+    credentials stays without the pack's domains. What could not be undone stays in `applied`."""
+    leftover: dict[str, Any] = {}
     for tool_id, info in (rec.applied or {}).items():
         conn = connections.get(hub, tool_id)
         if conn is None or conn.kind != "generic_rest":
@@ -248,11 +250,15 @@ def _unapply_connectors(hub: "Hub", rec: ExtensionRecord, actor: str) -> None:
             try:
                 connections.update_config(hub, tool_id, {"mapping": mapping}, f"{actor} (extension {rec.id})",
                                           kind="generic_rest")
-            except ValueError:
-                pass
+            except ValueError as exc:
+                leftover[tool_id] = info
+                hub.activity(actor, "warn", f"Could not take the mapping of the extension {rec.id} out of the "
+                                            f"connection of {tool_id}: {exc}", extension_id=rec.id)
         elif info.get("created") and not conn.secrets:
             connections.delete(hub, tool_id)
-    rec.applied = {}
+        else:  # nothing else is mapped, but the connection holds credentials an administrator entered: it stays
+            connections.drop_mapping(hub, tool_id, f"{actor} (extension {rec.id})")
+    rec.applied = leftover
 
 
 def _activate(hub: "Hub", rec: ExtensionRecord, pack: ExtensionPack, actor: str) -> None:
@@ -368,6 +374,12 @@ def rollback(hub: "Hub", ext_id: str, actor: str, version: str | None = None) ->
     return rec
 
 
+def _domain_keys(rec: ExtensionRecord) -> set[str]:
+    """The domain keys of a pack's current version, read from the stored document (no validation, no guardrail)."""
+    doc = next((v for v in rec.versions if v.get("version") == rec.version), {})
+    return {str(i["key"]) for i in doc.get("items") or [] if i.get("kind") == "domain" and i.get("key")}
+
+
 def remove(hub: "Hub", ext_id: str, actor: str, purge: bool = False) -> int:
     """Remove a pack and all its versions; with `purge`, also the records of the domains it defined. Returns the
     number of records removed."""
@@ -382,7 +394,9 @@ def remove(hub: "Hub", ext_id: str, actor: str, purge: bool = False) -> int:
         hub.approvals.withdraw(rec.approval_id, "Superseded: the extension was removed.", actor)
     removed = 0
     if purge:
-        in_use = set(active_domains(hub, exclude=rec.id))
+        # every other enabled pack keeps its records - also while the allow_extensions guardrail hides them
+        in_use = {k for other in records(hub) if other.status == "enabled" and other.id != rec.id
+                  for k in _domain_keys(other)}
         for version in {v.get("version") for v in rec.versions}:
             for item in rec.pack(version).domains:
                 if item.key not in in_use:

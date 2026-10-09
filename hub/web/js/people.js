@@ -18,10 +18,10 @@ export function personChip(p, { link = true } = {}) {
   return link ? html`<a class="person-chip" href="#/people/${p.id}" title="${p.email || ""}">${inner}</a>` : html`<span class="person-chip">${inner}</span>`;
 }
 
-/** Everyone, for pickers (sorted by name). Viewers may read people; a failure gives an empty list. */
+/** Everyone, for pickers (sorted by name; id, name, email, title, status, initials). Viewers may read people; a failure gives an empty list. */
 export async function loadPeople() {
   try {
-    return (await get("/people")).people;
+    return (await get("/people?brief=1")).people;
   } catch {
     return [];
   }

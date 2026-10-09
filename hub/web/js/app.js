@@ -212,7 +212,7 @@ async function openPalette() {
   if (!signedIn) return;
   closePopovers();
   const [agentList, assetList, peopleList] = await Promise.all([get("/agents").catch(() => []), get("/assets").catch(() => []),
-    get("/people").then((r) => r.people).catch(() => [])]);
+    get("/people?brief=1").then((r) => r.people).catch(() => [])]);
   const operatorActions = can("operator") ? [
     { label: "Import a tool", kind: "Action", icon: "plus", run: () => tools.openImport() },
     { label: "Add a person", kind: "Action", icon: "contact", run: () => people.openAddPerson() },

@@ -234,7 +234,10 @@ async function renderDetail(el, ctx, id, initialTab) {
       const r = await post(`/tools/${id}/start`).catch((e) => toast(e.message, "bad"));
       if (r) toast(r.status === "pending_approval" ? "Waiting for approval" : r.status === "denied" ? r.reason : "Started", r.status === "denied" ? "bad" : "ok");
     },
-    async stop() { await post(`/tools/${id}/stop`).catch((e) => toast(e.message, "bad")); },
+    async stop() {
+      const r = await post(`/tools/${id}/stop`).catch((e) => toast(e.message, "bad"));
+      if (r?.status === "pending_approval") toast("Waiting for approval", "ok");
+    },
     async health() {
       const r = await post(`/tools/${id}/health`).catch((e) => toast(e.message, "bad"));
       if (r) toast(`${r.ok ? "Healthy" : "Unhealthy"}: ${r.detail}`, r.ok ? "ok" : "bad");

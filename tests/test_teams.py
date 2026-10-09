@@ -319,6 +319,68 @@ def test_operator_applies_the_command_guardrails(client):
     assert ask(client, "supervisor", "operator", "run", {"command": COMMAND})["status"] == "pending_approval"
 
 
+def test_a_queued_command_the_guardrail_blocks_again_never_runs(client, monkeypatch, wait_for):
+    hub = client.app.state.hub
+    ran = []
+
+    async def fake_execute(request):
+        ran.append(request["command"])
+        return {"exit_code": 0, "output": "", "duration": 0.0}
+
+    monkeypatch.setattr(hub.agents.get("operator"), "execute", fake_execute)  # nothing below may run for real
+    set_guardrails(client, block_catastrophic_commands=False)
+    queued = ask(client, "agent:helper", "operator", "run", {"command": "mkfs.ext4 /dev/sdz9"})
+    assert queued["status"] == "pending_approval"
+    set_guardrails(client, block_catastrophic_commands=True)
+    assert client.post(f"/api/approvals/{queued['approval_id']}", json={"approve": True}).status_code == 200
+    decided = wait_for(lambda: (a := next(x for x in client.get("/api/approvals").json()
+                                          if x["id"] == queued["approval_id"]))["status"] != "approved" and a)
+    assert decided["status"] == "failed" and "block_catastrophic_commands" in decided["result"]["error"]
+    assert ran == [] and any(e["text"].startswith("Refused approved command from agent:helper") for e in activity(client))
+
+    # an approved command the guardrail still allows runs as before
+    queued = ask(client, "agent:helper", "operator", "run", {"command": COMMAND})
+    client.post(f"/api/approvals/{queued['approval_id']}", json={"approve": True})
+    wait_for(lambda: ran == [COMMAND])
+
+
+def test_stopping_a_tool_follows_the_autonomy_level(client, wait_for):
+    hub = client.app.state.hub
+    add_tool(client, "wazuh", "Wazuh")
+    sleeper = f'"{sys.executable}" -c "import time; time.sleep(60)"'
+    running = lambda: hub.processes.status("wazuh")["running"]  # noqa: E731
+    client.patch("/api/settings", json={"autonomy": "manual"})
+    watcher = client.post("/api/agents", json={"name": "Watcher", "team": "wazuh", "permissions": ["read", "commands"]}).json()
+    ctx = hub.agents.get(watcher["id"]).context()
+    try:
+        assert client.portal.call(toolkit.execute, ctx, "stop_tool", {"tool_id": "wazuh"})["status"] == "not_running"
+        client.portal.call(hub.processes.start, "wazuh", sleeper)
+        queued = client.portal.call(toolkit.execute, ctx, "stop_tool", {"tool_id": "wazuh"})
+        assert queued["status"] == "pending_approval" and running()
+        approval = next(a for a in pending(client, "process") if a["id"] == queued["approval_id"])
+        assert approval["title"] == "Stop Wazuh" and approval["payload"] == {
+            "tool_id": "wazuh", "origin": watcher["id"], "action": "stop"}
+        # core agents and API tokens follow the autonomy level too
+        assert ask(client, "supervisor", "operator", "stop_tool", {"tool_id": "wazuh"})["status"] == "pending_approval"
+        assert ask(client, "token:ci", "operator", "stop_tool", {"tool_id": "wazuh"})["status"] == "pending_approval"
+        assert running()
+        assert client.post(f"/api/approvals/{approval['id']}", json={"approve": True}).status_code == 200
+        done = wait_for(lambda: (a := next(x for x in client.get("/api/approvals").json() if x["id"] == approval["id"]))["status"] == "done" and a)
+        assert done["result"] == {"stopped": True}
+        wait_for(lambda: not running())
+
+        # without the team guardrail the team agent stops it at once; a person always does
+        set_guardrails(client, team_actions_need_approval=False)
+        client.portal.call(hub.processes.start, "wazuh", sleeper)
+        assert client.portal.call(toolkit.execute, ctx, "stop_tool", {"tool_id": "wazuh"}) == {"status": "stopped", "stopped": True}
+        wait_for(lambda: not running())
+        client.portal.call(hub.processes.start, "wazuh", sleeper)
+        assert client.post("/api/tools/wazuh/stop").json() == {"status": "stopped", "stopped": True}
+        wait_for(lambda: not running())
+    finally:
+        client.portal.call(hub.processes.stop_all)
+
+
 # -- the toolkit -----------------------------------------------------------------------------------
 
 
@@ -511,7 +573,8 @@ def test_local_providers_without_tool_calling(client):
 def test_tool_supervisor_proposes_a_team_from_templates_and_approval_creates_it(client, wait_for, sign_in):
     add_tool(client, "wazuh", "Wazuh")
     assert sign_in("viewer").post("/api/tools/wazuh/team").status_code == 403
-    proposal = sign_in("operator").post("/api/tools/wazuh/team").json()
+    operator = sign_in("operator")
+    proposal = operator.post("/api/tools/wazuh/team").json()
     assert proposal["proposed"] and proposal["designer"] == "templates" and proposal["category"] == "siem"
     approval = next(a for a in pending(client, "agent_team") if a["id"] == proposal["approval_id"])
     assert approval["requested_by"] == "tool:wazuh" and approval["payload"]["team"] == "wazuh"
@@ -524,6 +587,11 @@ def test_tool_supervisor_proposes_a_team_from_templates_and_approval_creates_it(
     assert not again["proposed"] and again["approval_id"] == approval["id"]  # one proposal at a time
     assert client.get("/api/agents/teams").json()["teams"][1]["pending_approval"] == approval["id"]
 
+    # operators may ask for a team, but approving it creates agent definitions: only administrators decide it
+    refused = operator.post(f"/api/approvals/{approval['id']}", json={"approve": True})
+    assert refused.status_code == 403 and "administrators" in refused.json()["detail"]
+    assert operator.post(f"/api/approvals/{approval['id']}", json={"approve": False}).status_code == 403
+    assert pending(client, "agent_team")[0]["id"] == approval["id"] and not teams.defs(client.app.state.hub)
     assert client.post(f"/api/approvals/{approval['id']}", json={"approve": True}).status_code == 200
     done = wait_for(lambda: (a := next(x for x in client.get("/api/approvals").json() if x["id"] == approval["id"]))["status"] == "done" and a)
     assert sorted(done["result"]["created"]) == ["agent:wazuh-alert-triage", "agent:wazuh-health-watcher", "agent:wazuh-maintainer"]
@@ -554,6 +622,33 @@ def test_team_proposals_follow_the_guardrails(client, wait_for):
     assert agent(client, "agent:openvas-vuln-triage")["effective_permissions"] == ["read", "flows", "grc_write"]
     assert client.post("/api/tools/openvas/team", json={"designer": "claude"}).status_code == 400  # needs Claude
     assert client.post("/api/tools/nope/team").status_code == 404
+
+
+def test_a_paused_tool_supervisor_is_not_asked_for_a_team(client):
+    hub = client.app.state.hub
+    add_tool(client, "wazuh", "Wazuh")
+    asker = client.post("/api/agents", json={"name": "Asker", "team": "hub", "permissions": ["read", "agents"]}).json()
+    assert client.patch("/api/agents/tool:wazuh", json={"paused": True}).status_code == 200
+    started = time.monotonic()
+    refused = client.post("/api/tools/wazuh/team")
+    assert refused.status_code == 409 and "paused" in refused.json()["detail"]
+    with pytest.raises(RuntimeError, match="paused"):  # a team agent's request fails at once too
+        client.portal.call(toolkit.execute, hub.agents.get(asker["id"]).context(), "propose_team", {"tool_id": "wazuh"})
+    assert time.monotonic() - started < 10 and not pending(client, "agent_team")
+    client.patch("/api/agents/tool:wazuh", json={"paused": False})
+    assert client.post("/api/tools/wazuh/team").json()["proposed"]
+
+
+def test_validation_errors_never_echo_what_was_sent(client):
+    refused = client.post("/api/llm/providers", json={"api_key": KEY, "timeout": 1})
+    assert refused.status_code == 422 and KEY not in refused.text
+    detail = refused.json()["detail"]
+    assert {tuple(d["loc"]) for d in detail} == {("body", "name"), ("body", "timeout")}
+    assert all(set(d) == {"loc", "msg", "type"} and d["msg"] for d in detail)
+    add_tool(client, "wazuh", "Wazuh")
+    for response in (client.put("/api/tools/wazuh/connection", json={"config": {}, "secrets": {"token": KEY}}),
+                     client.patch("/api/llm/providers/nope", json={"api_key": KEY, "timeout": "soon"})):
+        assert response.status_code == 422 and KEY not in response.text
 
 
 def test_a_team_agent_cannot_get_a_stronger_team_through_its_lead(client):

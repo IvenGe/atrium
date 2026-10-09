@@ -13,7 +13,7 @@ import pytest
 from test_llm_paths import FakeLLM
 
 from hub.execution.runner import CommandResult
-from hub.extensions import selfpatch
+from hub.extensions import generate, selfpatch
 from hub.models import FileChange, Manifest, Tool
 
 HELLO = FileChange(path="hub/hello.py", content="def hello():\n    return 'hi'\n")
@@ -289,6 +289,19 @@ def test_claude_writes_the_change_through_the_api(client, repo, wait_for):
     client.post("/api/self-patches", json={"goal": "Change the readme"})
     wait_for(lambda: any("without having seen it" in e["text"] for e in client.get("/api/activity").json()))
     assert (repo / "README.md").read_text() == "# Atrium\n"
+
+
+@pytest.mark.parametrize("path", ["hub/./__init__.py", "hub//__init__.py", "./README.md", "hub/.//__init__.py",
+                                  "HUB/__init__.py"])
+def test_claude_cannot_reach_an_unshown_file_by_another_spelling(client, repo, path):
+    hub = client.app.state.hub
+    configure(client, repo)
+    hub.llm = FakeLLM(json_result={"title": "x", "rationale": "y", "changes": [{"path": path, "content": "pwned"}]})
+    with pytest.raises(ValueError, match="without having seen it"):
+        client.portal.call(generate.claude_self_patch, hub, "goal", None, "model")
+    hub.llm = FakeLLM(json_result={"title": "x", "rationale": "y", "changes": [{"path": "hub/./acme.py", "content": "A = 1\n"}]})
+    _, _, [change] = client.portal.call(generate.claude_self_patch, hub, "goal", None, "model")
+    assert change.path == "hub/acme.py"  # new files are fine, under the path check_path writes
 
 
 class ScriptedLLM(FakeLLM):

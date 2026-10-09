@@ -118,6 +118,24 @@ def test_plain_http_only_when_allowed_or_local(admin):
     assert lab.status_code == 200 and lab.json()["values"]["allow_http"] is True
 
 
+def test_plain_http_allowed_by_the_environment(tmp_path, idp):
+    lab = "http://keycloak.lab:8080/realms/hub"
+    allowed = Settings(oidc_allow_http=True, oidc_env=("oidc_allow_http",))
+    assert sso_settings.clean({"issuer": lab}, {}, {"allow_http"}, allowed)["issuer"] == lab
+    denied = Settings(oidc_allow_http=False, oidc_env=("oidc_allow_http",))
+    with pytest.raises(ValueError, match="plain http"):  # the environment wins over the body either way
+        sso_settings.clean({"issuer": lab, "allow_http": True}, {}, {"allow_http"}, denied)
+    c = hub_with(tmp_path, idp, oidc_allow_http=True, oidc_env=("oidc_allow_http",))
+    try:
+        assert c.post("/api/auth/sso/test", json={"issuer": lab, "client_id": "x"}).status_code == 200  # Test too
+        saved = c.put("/api/auth/sso", json={"issuer": lab, "client_id": "x"})  # the UI leaves allow_http out
+        assert saved.status_code == 200, saved.text
+        assert saved.json()["values"]["allow_http"] is True and saved.json()["source"]["allow_http"] == "environment"
+        assert saved.json()["values"]["issuer"] == lab
+    finally:
+        c.__exit__(None, None, None)
+
+
 def test_test_runs_discovery_without_saving(admin, idp):
     hub = admin.app.state.hub
     result = admin.post("/api/auth/sso/test", json={"issuer": ISSUER, "client_id": CLIENT_ID}).json()

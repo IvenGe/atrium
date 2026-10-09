@@ -40,14 +40,17 @@ tool has at most one (collection `connections`, keyed by tool id).
 Open a tool's page and choose the **Connection** tab:
 
 1. Pick the connector kind. Kinds the hub detected for the tool come first, with a confidence score (from the tool's
-   name and manifest capabilities). A detected built-in connector scores at least 50; anything else can use the
-   generic REST connector.
+   name and manifest capabilities); any tool can use the generic REST connector. A built-in connector detected with a
+   score of 50 or more is offered instead of generating one.
 2. Fill in the settings. Secret fields (API tokens, passwords, client secrets) are never shown again after saving:
    leave them empty to keep the stored value.
 3. **Test connection** runs the connector's checks (reachability, authentication, which data domains this instance
    supports) and shows a result per check. A successful test makes the Hub Supervisor plan the data flows again.
 4. Fields with choices (Snipe-IT model and status label, CISO Assistant folder, OpenVAS scan config, ...) are listed
    from the tool itself, using the stored credentials.
+
+Saving a tool's connection also has its supervisor propose an agent team for it, once
+([AGENTS.md](AGENTS.md#proposals)).
 
 For a tool without a built-in connector but with an OpenAPI spec, **Generate connector with Claude** asks the Patch
 Agent to write a generic REST mapping; it arrives as an approval of kind `repair` (diagnosis `generated`), and
@@ -174,7 +177,8 @@ A vulnerability scanner reached over GMP, the Greenbone Management Protocol.
 
 Reads the workforce directory into the People app, and each person's app assignments as accounts.
 
-- Settings: the Okta org URL (not the `-admin` address), an API token (Admin Console > Security > API > Tokens; a
+- Settings: the Okta org URL (`https://` only - plain http would send the token in clear text; `http://localhost` is
+  allowed for a local mock; not the `-admin` address), an API token (Admin Console > Security > API > Tokens; a
   read-only administrator's token is enough), **Read each person's groups** and **Read app assignments as accounts**
   (each one call per person; the second turns the accounts flow on), TLS verification.
 - `GET /api/v1/users` pages with `limit` and the `Link` header; next-page links to another host are refused. The plain

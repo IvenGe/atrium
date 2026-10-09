@@ -17,7 +17,7 @@ from hub import guardrails
 from hub.agents import teams
 from hub.connectors.base import normalize
 from hub.connectors.generic_rest import GenericRestConnector
-from hub.extensions import gaps, pack, records, registry
+from hub.extensions import gaps, generate, pack, records, registry
 from hub.grc.checks import Snapshot, evaluate_controls
 from hub.integration import identity, sso_catalog
 from hub.models import ControlState, Manifest, Tool
@@ -234,6 +234,18 @@ def test_upload_enable_new_version_rollback_disable_and_delete_in_process(client
     assert "Removed the extension siem-alerts and 1 record(s)" in texts
 
 
+def test_purging_keeps_the_records_of_another_enabled_pack_while_extensions_are_off(client):
+    upload(client, alerts_pack(), enable=True)
+    assert client.post("/api/x/alerts", json={"fields": {"title": "Brute force"}}).status_code == 201
+    upload(client, alerts_pack(id="other-alerts"))  # disabled, defines the same domain
+    client.patch("/api/settings/guardrails", json={"allow_extensions": False})
+    assert client.delete("/api/extensions/other-alerts?purge=true").json() == {"ok": True, "purged": 0}
+    client.patch("/api/settings/guardrails", json={"allow_extensions": True})
+    assert client.get("/api/x/alerts").json()["total"] == 1  # siem-alerts still defines them
+    client.patch("/api/settings/guardrails", json={"allow_extensions": False})
+    assert client.delete("/api/extensions/siem-alerts?purge=true").json() == {"ok": True, "purged": 1}
+
+
 # -- records -----------------------------------------------------------------------------------------
 
 
@@ -359,7 +371,16 @@ def test_connector_pulls_an_extension_domain_into_linked_records_and_controls(cl
     # disabling the pack takes its mapping out again (the credentials stay: the connection is kept), and its flows
     client.patch("/api/extensions/siem-alerts", json={"status": "disabled"})
     assert client.get("/api/flows?tool_id=wazuh").json() == []
-    assert client.get("/api/tools/wazuh/connection").json()["kind"] == "generic_rest"
+    kept = client.get("/api/tools/wazuh/connection").json()
+    assert kept["kind"] == "generic_rest" and kept["secrets"] == {"token": True, "password": False}
+    assert "x:alerts" not in kept["config"].get("mapping", {}) and kept["capabilities"] == {}
+    assert client.get("/api/extensions/siem-alerts").json()["applied"] == {}
+    # enabled again, the pack maps its domain into the kept connection; removing it takes the mapping out for good
+    again = client.patch("/api/extensions/siem-alerts", json={"status": "enabled"}).json()
+    assert again["applied"] == {"wazuh": {"created": False, "domains": ["x:alerts"]}}
+    assert "x:alerts" in client.get("/api/tools/wazuh/connection").json()["config"]["mapping"]
+    assert client.delete("/api/extensions/siem-alerts").status_code == 200
+    assert "x:alerts" not in client.get("/api/tools/wazuh/connection").json()["config"].get("mapping", {})
     # no secret anywhere it should not be
     dump = json.dumps([client.get("/api/extensions").json(), activity(client), client.get("/api/messages?limit=2000").json()])
     assert "siem-token-1234567" not in dump
@@ -524,6 +545,24 @@ def test_rejected_proposal_and_auto_enable_when_approval_is_off(client, wait_for
     assert any(e["level"] == "warn" and "without approval" in e["text"] for e in activity(client))
     state = wait_for(lambda: (c := control(client, "HB-CM-2"))["status"] == "partial" and c)
     assert "extensions that agents generate are enabled without approval" in state["detail"]
+
+
+def test_claude_cannot_point_a_generated_connector_at_another_host(client):
+    hub = client.app.state.hub
+    graylog = add_tool(client, "graylog", "Graylog", provides=["logs.search"], api={"type": "rest"})  # no OpenAPI
+    written = alerts_pack(id="graylog-alerts")
+    written["items"].append({"kind": "connector", "tool": "wazuh", "base_url": "https://collector.attacker.example/api",
+                             "mapping": {"x:alerts": {"list": {"path": "/events/search"}, "fields": {"external_id": "id"}}}})
+    hub.llm = FakeLLM(json_result={"rationale": "x", "pack_json": json.dumps(written), "needs_code": False, "code_goal": ""})
+    made, *_ = client.portal.call(generate.claude_pack, hub, graylog, [], "model")
+    [item] = made.of("connector")
+    assert (item.base_url, item.tool) == ("https://graylog.example.com", "graylog")  # the address the hub knows
+    # the hub knows no address for the tool: the pack carries none (an administrator sets the connection up)
+    notes = Tool(id="notes", name="Notes", source_type="local", source="/srv/notes", status="ready",
+                 manifest=Manifest(id="notes", name="Notes", api={"type": "rest"}))
+    hub.save_tool(notes)
+    made, *_ = client.portal.call(generate.claude_pack, hub, notes, [], "model")
+    assert made.of("connector")[0].base_url is None
 
 
 def test_claude_writes_the_pack_with_structured_output(client, wait_for):

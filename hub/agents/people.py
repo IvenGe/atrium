@@ -62,6 +62,7 @@ class PeopleSupervisor(FlowOwner):
     async def on_relink(self, body: dict[str, Any], msg: Message) -> dict[str, Any]:
         result = people.relink(self.hub)
         if result["assets"] or result["accounts"]:
+            await self.check_leavers()
             await self.tell("module:grc", "evaluate")
         return result
 

@@ -163,6 +163,7 @@ class AssetSupervisor(FlowOwner):
         linked = people.link_assets(self.hub)  # devices to the people they are checked out to
         if linked:
             counts["people_linked"] = linked
+            await self.tell("module:people", "leavers")  # a device checked out to someone who has left
         if counts["created"] or counts["updated"] or counts["merged"] or counts["retired"] or linked:
             await self.tell("module:grc", "evaluate")
         detail = f"{info['dropped']} record(s) could not be read: {'; '.join(info['errors'][:3])}" if info["dropped"] else ""

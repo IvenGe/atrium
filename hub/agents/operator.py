@@ -78,8 +78,20 @@ class OperatorAgent(BaseAgent):
         return {"status": "started", **(await self._launch(tool.id))}
 
     async def on_stop_tool(self, body: dict[str, Any], msg: Message) -> dict[str, Any]:
-        stopped = await self.hub.processes.stop(str(body.get("tool_id")))
-        return {"stopped": stopped}
+        """Stop a tool's process. Stopping changes state, so anyone but a person follows the autonomy level (team
+        agents: unless team_actions_need_approval is off), like starting it."""
+        tool_id = str(body.get("tool_id"))
+        if not self.hub.processes.status(tool_id)["running"]:
+            return {"status": "not_running", "stopped": False}
+        autonomy = guardrails.effective_autonomy(self.hub, msg.sender)
+        if not from_person(msg.sender) and autonomy != "autonomous":
+            tool = self.hub.get_tool(tool_id)
+            approval = self.hub.approvals.create(
+                "process", f"Stop {tool.name if tool else tool_id}",
+                f"Needs approval: stopping a tool's process changes state ({autonomy} mode).",
+                {"tool_id": tool_id, "origin": msg.sender, "action": "stop"}, self.id)
+            return {"status": "pending_approval", "approval_id": approval.id}
+        return {"status": "stopped", "stopped": await self.hub.processes.stop(tool_id)}
 
     async def on_approval_decided(self, body: dict[str, Any], msg: Message) -> None:
         approval = self.hub.approvals.get(body["approval_id"])
@@ -92,8 +104,25 @@ class OperatorAgent(BaseAgent):
             return
         try:
             if approval.kind == "process":
-                result = await self._launch(approval.payload["tool_id"])
+                if approval.payload.get("action") == "stop":
+                    result: dict[str, Any] = {"stopped": await self.hub.processes.stop(approval.payload["tool_id"])}
+                else:
+                    tool = self.hub.get_tool(approval.payload["tool_id"])
+                    blocked = self._now_blocked((tool.manifest.launch.command or "") if tool and tool.manifest else "")
+                    if blocked:
+                        self.hub.approvals.complete(approval.id, False, {"error": blocked})
+                        return
+                    result = await self._launch(approval.payload["tool_id"])
                 self.hub.approvals.complete(approval.id, True, result)
+                return
+            # the guardrail may have been switched back on since the request: a command it blocks never runs
+            blocked = self._now_blocked(approval.payload["command"])
+            if blocked:
+                self.hub.approvals.complete(approval.id, False, {"error": blocked})
+                self.log("warn", f"Refused approved command from {origin}: {approval.payload['command']}", reason=blocked)
+                if not from_person(origin):
+                    await self.tell(origin, "command.completed", {"status": "denied", "reason": blocked,
+                                                                  "command": approval.payload["command"]})
                 return
             result = await self.execute(approval.payload)
             self.hub.approvals.complete(approval.id, result["exit_code"] == 0, result)
@@ -111,6 +140,14 @@ class OperatorAgent(BaseAgent):
         block_catastrophic_commands is on."""
         return policy.decide(command, guardrails.effective_autonomy(self.hub, sender), from_person=from_person(sender),
                              trusted=trusted, block_catastrophic=bool(guardrails.value(self.hub, "block_catastrophic_commands")))
+
+    def _now_blocked(self, command: str) -> str | None:
+        """Why an approved command is refused after all - the block_catastrophic_commands guardrail as it is now (it
+        may have been switched back on while the approval waited) - or None."""
+        if not command.strip():
+            return None
+        risk, why = policy.classify(command, block_catastrophic=bool(guardrails.value(self.hub, "block_catastrophic_commands")))
+        return f"Blocked by the block_catastrophic_commands guardrail: {why}" if risk == "blocked" else None
 
     async def execute(self, request: dict[str, Any]) -> dict[str, Any]:
         target = request.get("target") or "local"

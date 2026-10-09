@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import re
+from pathlib import PurePosixPath
 from typing import TYPE_CHECKING
 
 from ..connectors import base as connector_sdk
@@ -78,6 +79,7 @@ async def claude_pack(hub: "Hub", tool: Tool, gaps: list[Gap], model: str) -> tu
         spec, known_base = await load_openapi(tool)
     except ValueError:
         pass
+    known_base = known_base or registry._base_url(hub, tool.id)  # without an OpenAPI document: the manifest / SaaS URL
     m = tool.manifest
     described = {"id": tool.id, "name": tool.name, "kind": m.kind if m else None,
                  "description": m.description if m else "", "provides": m.provides if m else [],
@@ -110,9 +112,13 @@ async def claude_pack(hub: "Hub", tool: Tool, gaps: list[Gap], model: str) -> tu
     for item in data.get("items") or []:
         if not isinstance(item, dict) or item.get("kind") != "connector":
             continue
-        item.setdefault("tool", tool.id)
-        if known_base and item.get("base_url") and endpoint_of(item["base_url"]) != endpoint_of(known_base):
-            item["base_url"] = known_base.rstrip("/")  # the mapping may pick the API root's path, never another host
+        item["tool"] = tool.id  # a generated pack maps only the tool it was made for
+        # a connection is created at the pack's base URL and an administrator enters the tool's API token there: the
+        # mapping may pick the API root's path, never another host - and with no known address, none at all
+        if not known_base:
+            item.pop("base_url", None)
+        elif item.get("base_url") and endpoint_of(item["base_url"]) != endpoint_of(known_base):
+            item["base_url"] = known_base.rstrip("/")
     return parse(data), rationale, needs_code, goal
 
 
@@ -137,10 +143,13 @@ async def claude_self_patch(hub: "Hub", goal: str, tool: Tool | None, model: str
     result = await hub.llm.json(system=SELF_PATCH_INSTRUCTIONS, prompt=prompt, schema=SELF_PATCH_SCHEMA, model=model,
                                 effort="high", max_tokens=64_000)
     changes = []
+    tracked = {n.lower() for n in names if n}
+    seen = {n.lower() for n in shown}
     for change in (result.get("changes") or [])[:selfpatch.MAX_FILES]:
-        path = str(change.get("path") or "").replace("\\", "/").strip()
-        path = path[2:] if path.startswith("./") else path
-        if path in names and path not in shown:
+        # normalised the way check_path normalises the path it writes ("hub/./x", "hub//x" and "./x" are "hub/x"),
+        # and compared without case (a case-insensitive file system writes "HUB/x" to "hub/x")
+        path = PurePosixPath(str(change.get("path") or "").replace("\\", "/").strip()).as_posix()
+        if path.lower() in tracked and path.lower() not in seen:
             raise ValueError(f"Claude tried to rewrite {path} without having seen it")
         changes.append(FileChange(path=path, content=str(change.get("content") or "")))
     if not changes:

@@ -50,6 +50,9 @@ class ToolContext:
         return tool_id
 
     async def ask(self, recipient: str, subject: str, body: dict[str, Any] | None = None, timeout: float = 300) -> dict[str, Any]:
+        target = self.hub.agents.get(recipient)
+        if target is not None and target.paused:  # it would answer only after it is resumed: fail now, not at the timeout
+            raise RuntimeError(f"{target.name} is paused")
         return await self.agent.ask(recipient, subject, body or {}, timeout)
 
 

@@ -220,6 +220,17 @@ def update_config(hub: "Hub", tool_id: str, changes: dict[str, Any], actor: str,
     return _put(hub, conn)
 
 
+def drop_mapping(hub: "Hub", tool_id: str, actor: str) -> Connection | None:
+    """Take every domain out of a generic REST connection (an extension that mapped the last ones was disabled): the
+    connection and its credentials stay, and it reads nothing until someone maps a domain again. The "at least one
+    domain" rule of a saved mapping does not apply here."""
+    conn = get(hub, tool_id)
+    if conn is None or "mapping" not in conn.config:
+        return conn
+    return _put(hub, conn.model_copy(update={"config": {k: v for k, v in conn.config.items() if k != "mapping"},
+                                             "last_test": None, "updated_by": actor, "updated_at": time.time()}))
+
+
 def record_test(hub: "Hub", tool_id: str, result: dict[str, Any]) -> None:
     conn = get(hub, tool_id)
     if conn is None:

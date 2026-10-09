@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.trustedhost import TrustedHostMiddleware
@@ -71,6 +72,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.exception_handler(AuthError)
     async def auth_error(request: Request, exc: AuthError) -> JSONResponse:
         return JSONResponse({"detail": exc.detail}, status_code=exc.status, headers=exc.headers)
+
+    # FastAPI's default 422 echoes each error's `input` (for a missing field: the whole body, API keys and passwords
+    # included) and `ctx`; only where and why go back.
+    @app.exception_handler(RequestValidationError)
+    async def validation_error(request: Request, exc: RequestValidationError) -> JSONResponse:
+        errors = [{"loc": list(e.get("loc", ())), "msg": str(e.get("msg", "")), "type": str(e.get("type", ""))}
+                  for e in exc.errors()]
+        return JSONResponse({"detail": errors}, status_code=422)
 
     app.include_router(build_auth_router(hub), prefix="/api")
     app.include_router(build_router(hub), prefix="/api")

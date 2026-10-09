@@ -93,6 +93,9 @@ def test_registry_and_settings():
     assert cfg["base_url"] == "https://acme.okta.com" and cfg["include_groups"] is True
     with pytest.raises(ValueError):
         clean_config(OktaConnector, {"base_url": "https://token:x@acme.okta.com"})
+    with pytest.raises(ValueError, match="https://"):  # the SSWS token would travel in clear text
+        clean_config(OktaConnector, {"base_url": "http://acme.okta.com"})
+    assert clean_config(OktaConnector, {"base_url": "http://localhost:8081"})["base_url"] == "http://localhost:8081"
     assert OktaConnector(clean_config(OktaConnector, {"base_url": BASE, "include_app_links": False}), {}).domains() == {
         "people": ["read"]}
 

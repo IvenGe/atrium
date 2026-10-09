@@ -43,6 +43,8 @@ Two entries of the same directory with the same email address stay two people. T
   person left. `terminated_at` records when the person became terminated.
 - **Leaving a directory**: a person a directory no longer lists counts as terminated there (flow option
   `retire_missing`, on by default). Keycloak has no terminated state, so this is how a deleted Keycloak user shows up.
+  A user deleted and re-created with a new id but the same email or login (a rehire, a re-sync, a SCIM re-provision)
+  is the same person under the new id, not a leaver.
 - **Removing a tool**: its accounts are deleted and people lose it as a source, but what it said about leavers is kept
   as a hand-set status.
 
@@ -103,8 +105,9 @@ A **leaver finding** is a suspended or terminated person who still has any of:
 
 A finding with access (an Atrium account or a tool account) has severity `fail`; one with only assets is `partial`.
 **Leavers** (`#/people/leavers`) shows one card per finding with what to clean up, and the People Supervisor writes each
-new finding once to the activity log (again when its severity changes), after every people or accounts pull, with the
-one-click actions it offers and the accounts to close in the tools.
+new finding once to the activity log (again when its severity changes) with the one-click actions it offers and the
+accounts to close in the tools. It checks after every people or accounts pull, after a person, an account link or an
+asset's owner or user is changed by hand, after an asset pull links a device to someone, and after a tool is removed.
 
 | Action | Role | What it does |
 | --- | --- | --- |
@@ -138,7 +141,7 @@ answer names the devices still checked out in the inventory tool), and accounts 
 
 | Endpoint | Role | Purpose |
 | --- | --- | --- |
-| `GET /api/people?q=&status=&department=&source=` | viewer | the list (status takes comma-separated values; source is a tool id or `manual`), with counts by status, departments, sources and the number of leavers |
+| `GET /api/people?q=&status=&department=&source=&brief=` | viewer | the list (status takes comma-separated values; source is a tool id or `manual`), with counts by status, departments, sources and the number of leavers; `brief=1` (the pickers) returns only id, name, email, title, status and initials, without asset and account counts or leavers |
 | `GET /api/people/leavers` | viewer | leaver findings with their actions |
 | `GET /api/people/{id}` | viewer | the person page: reports, assets, accounts per tool, Atrium account, risks, policies, vulnerabilities, activity, leaver finding, relationship graph |
 | `POST /api/people` | operator | add a person (`display_name` required); 409 when the email is taken |

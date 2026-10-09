@@ -169,6 +169,47 @@ def test_merge_rules_on_their_own(client):
     assert kept.sources == {} and kept.status == "suspended" and kept.manual_status == "suspended"
 
 
+def test_a_user_recreated_in_the_directory_with_a_new_id_has_not_left(client):
+    hub = client.app.state.hub
+    people.apply_people(hub, "okta", [{"external_id": "old1", "display_name": "Ann", "email": "ann@x.com", "status": "active"}])
+    # deleted and re-created (a rehire, a re-sync, a SCIM re-provision): same email, new id
+    counts = people.apply_people(hub, "okta", [{"external_id": "new1", "display_name": "Ann", "email": "ANN@x.com",
+                                                "status": "active"}])
+    assert counts["merged"] == 1 and counts["left"] == 0
+    [ann] = people.all_people(hub)
+    assert ann.sources == {"okta": "new1"} and ann.status == "active" and ann.terminated_at is None
+    assert [a.id for a in people.all_accounts(hub, "okta")] == ["okta|new1"] and people.leavers(hub) == []
+    # whoever really disappears still leaves
+    assert people.apply_people(hub, "okta", [])["left"] == 1 and people.get(hub, ann.id).status == "terminated"
+
+
+def test_the_people_list_indexes_links_once(client, monkeypatch):
+    hub = client.app.state.hub
+    hub.auth.create_user("p7", "plenty of entropy 42", role="viewer", email="P7@acme.com", actor="test")
+    people.apply_people(hub, "dir", [{"external_id": str(i), "display_name": f"Person {i}", "email": f"p{i}@acme.com",
+                                      "status": "terminated" if i % 10 == 7 else "active"} for i in range(300)])
+    pid = {p.email: p.id for p in people.all_people(hub)}
+    people.apply_accounts(hub, "wiki", [{"external_id": str(i), "email": f"p{i}@acme.com", "active": True} for i in range(300)])
+    for i in range(150):
+        client.post("/api/assets", json={"name": f"Laptop {i}", "type": "workstation", "owner_person_id": pid[f"p{i}@acme.com"],
+                                         "assigned_person_id": pid[f"p{i * 2 % 300}@acme.com"]})
+    client.post("/api/assets", json={"name": "Old", "owner_person_id": pid["p7@acme.com"], "status": "retired"})
+    calls = []
+    real = people.Links.of
+    monkeypatch.setattr(people.Links, "of", classmethod(lambda cls, *a: calls.append(1) or real(*a)))
+    listing = client.get("/api/people").json()
+    assert len(calls) == 2  # once for the counts, once for the leavers - not once per person
+    rows = {p["email"]: p for p in listing["people"]}
+    assert (rows["p7@acme.com"]["assets_owned"], rows["p7@acme.com"]["assets_assigned"]) == (1, 0)  # the retired one not counted
+    assert (rows["p14@acme.com"]["assets_owned"], rows["p14@acme.com"]["assets_assigned"]) == (1, 1)
+    assert rows["p7@acme.com"]["atrium_user"]["username"] == "p7"
+    assert (rows["p7@acme.com"]["accounts"], rows["p7@acme.com"]["active_accounts"]) == (2, 1)  # the directory: terminated
+    assert listing["leavers"] == len(people.leavers(hub)) == 30
+    short = client.get("/api/people?brief=1&status=terminated").json()
+    assert len(short["people"]) == 30 and set(short["people"][0]) == {"id", "display_name", "email", "title", "status", "initials"}
+    assert short["leavers"] is None
+
+
 # -- accounts, assets and leavers -----------------------------------------------------------------
 
 
@@ -303,6 +344,32 @@ def test_snipe_it_pulls_link_devices_to_their_users(client, wait_for):
     assert client.patch(f"/api/assets/{laptop['id']}", json={"owner_person_id": "p_missing"}).status_code == 400
     owned = client.patch(f"/api/assets/{laptop['id']}", json={"owner_person_id": frank["id"]}).json()
     assert owned["owner"] == "Frank"  # the free-text owner follows the person picked
+
+    # the inventory checks a device out to someone who has left: the People Supervisor reports it
+    people.create(hub, {"display_name": "Hal Left", "email": "hal@acme.com", "status": "suspended"}, "test")
+    rows[2] = hardware(3, {"id": 9, "name": "Hal H", "username": "hal", "email": "hal@acme.com"})
+    assert run(client, flows_["assets"]["id"])["counts"]["people_linked"] == 1
+    wait_for(lambda: leaver_reports(client, "Hal Left"))
+
+
+def leaver_reports(client, name: str) -> list[dict]:
+    return [e for e in client.get("/api/activity?limit=1000").json()
+            if e["actor"] == "module:people" and e["text"].startswith(f"Leaver: {name} ")]
+
+
+def test_the_people_supervisor_reports_leavers_however_they_leave(client, wait_for):
+    ann = client.post("/api/people", json={"display_name": "Ann Hand", "email": "ann@acme.com"}).json()
+    client.post("/api/assets", json={"name": "Laptop A", "type": "workstation", "assigned_person_id": ann["id"]})
+    client.patch(f"/api/people/{ann['id']}", json={"status": "terminated"})  # set by hand, no directory involved
+    [report] = wait_for(lambda: leaver_reports(client, "Ann Hand"))
+    assert "1 asset(s)" in report["text"] and "one-click: Unassign assets" in report["text"]
+    # a device handed by hand to someone who has already left
+    bob = client.post("/api/people", json={"display_name": "Bob Gone", "email": "bob@acme.com", "status": "suspended"}).json()
+    assert bob["status"] == "suspended" and bob["leaver"] is None
+    phone = client.post("/api/assets", json={"name": "Phone B", "assigned_person_id": bob["id"]})
+    assert phone.status_code == 201, phone.text
+    wait_for(lambda: leaver_reports(client, "Bob Gone"))
+    assert len(leaver_reports(client, "Ann Hand")) == 1  # each finding is reported once
 
 
 # -- the person API ---------------------------------------------------------------------------------

@@ -256,7 +256,8 @@ class SelfPatchRequest(BaseModel):
     tool_id: str | None = Field(None, max_length=64)
 
 
-ADMIN_APPROVALS = ("extension", "self_patch")  # changes to Atrium itself: only administrators decide them
+# changes to Atrium itself and new agent definitions: only administrators decide them (operators may still ask for them)
+ADMIN_APPROVALS = ("extension", "self_patch", "agent_team")
 EXTENSION_GUARDRAILS = ("allow_extensions", "extensions_need_approval", "allow_self_patching",
                         "self_patch_requires_tests", "self_patch_requires_approval", "self_patch_via_pull_request")
 
@@ -352,6 +353,7 @@ def build_router(hub: Hub) -> APIRouter:
         identity.forget_tool(hub, tool_id)
         flows.forget_tool(hub, tool_id, p.actor)
         people_app.forget_tool(hub, tool_id)
+        await hub.bus.tell(p.bus_id, "module:people", "leavers")  # people it said had left keep that status
         ext_registry.forget_tool(hub, tool_id, p.actor)
         await teams.forget_tool(hub, tool_id, p.actor)
         if tool.source_type == "github" and tool.path:
@@ -393,8 +395,11 @@ def build_router(hub: Hub) -> APIRouter:
     async def propose_team(tool_id: str, p: CurrentPrincipal, body: TeamRequest | None = None) -> dict[str, Any]:
         """Ask the tool's supervisor to propose an AI agent team (an "agent_team" approval, or created directly)."""
         tool = hub.get_tool(tool_id)
-        if tool is None or tool.manifest is None or hub.agents.get(f"tool:{tool_id}") is None:
+        lead = hub.agents.get(f"tool:{tool_id}")
+        if tool is None or tool.manifest is None or lead is None:
             raise not_found("Tool")
+        if lead.paused:  # a paused agent answers nothing: the request would only time out
+            raise HTTPException(409, f"{lead.name} is paused - resume it to propose a team")
         return await ask(p, f"tool:{tool_id}", "team.propose", {"designer": (body or TeamRequest()).designer}, timeout=600)
 
     @router.get("/tools/{tool_id}/strategies")
@@ -822,7 +827,8 @@ def build_router(hub: Hub) -> APIRouter:
     async def decide(approval_id: str, body: DecisionBody, p: CurrentPrincipal) -> dict[str, Any]:
         pending = hub.approvals.get(approval_id)
         if pending is not None and pending.kind in ADMIN_APPROVALS and p.role != "admin":
-            raise HTTPException(403, "Only administrators decide changes to Atrium itself (extensions and self-patches)")
+            raise HTTPException(403, "Only administrators decide changes to Atrium itself and new agents "
+                                     "(extensions, self-patches and agent teams)")
         try:
             approval = await hub.approvals.decide(approval_id, body.approve, body.note, p.actor, sender=p.bus_id)
         except KeyError as exc:
@@ -911,6 +917,8 @@ def build_router(hub: Hub) -> APIRouter:
         asset = Asset.model_validate(link_people(asset.model_dump(), given))
         hub.save("assets", asset, "asset")
         await hub.bus.tell(p.bus_id, "module:grc", "evaluate")
+        if asset.owner_person_id or asset.assigned_person_id:  # a device handed to a leaver is a leaver finding
+            await hub.bus.tell(p.bus_id, "module:people", "leavers")
         return asset.model_dump(mode="json")
 
     @router.patch("/assets/{asset_id}")
@@ -924,6 +932,8 @@ def build_router(hub: Hub) -> APIRouter:
         merged = Asset.model_validate(link_people({**current.model_dump(), **given, "updated_at": time.time()}, given))
         hub.save("assets", merged, "asset")
         await hub.bus.tell(p.bus_id, "module:grc", "evaluate")
+        if merged.owner_person_id or merged.assigned_person_id:
+            await hub.bus.tell(p.bus_id, "module:people", "leavers")
         return merged.model_dump(mode="json")
 
     @router.delete("/assets/{asset_id}")
@@ -957,12 +967,15 @@ def build_router(hub: Hub) -> APIRouter:
 
     async def people_changed(p: Principal) -> None:
         await hub.bus.tell(p.bus_id, "module:grc", "evaluate")
+        await hub.bus.tell(p.bus_id, "module:people", "leavers")  # the People Supervisor reports new leaver findings
 
     @router.get("/people")
-    async def list_people(q: str = "", status: str = "", department: str = "", source: str = "") -> dict[str, Any]:
+    async def list_people(q: str = "", status: str = "", department: str = "", source: str = "",
+                          brief: bool = False) -> dict[str, Any]:
         """Filters: q (name, email, login, title, department, groups), status (comma-separated), department, source
-        (a tool id or "manual")."""
-        return people_app.listing(hub, q=q[:200], status=status[:100], department=department[:200], source=source[:64])
+        (a tool id or "manual"). brief=1: id, name, email, title, status and initials only (for pickers)."""
+        return people_app.listing(hub, q=q[:200], status=status[:100], department=department[:200], source=source[:64],
+                                  short=brief)
 
     @router.get("/people/leavers")
     async def list_leavers() -> dict[str, Any]:

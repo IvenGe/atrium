@@ -10,7 +10,8 @@ const KIND_ICON = { command: "terminal", patch: "wrench", process: "play", flow:
   extension: "puzzle", self_patch: "branch" };
 const KIND_LABEL = { flow: "data flow", agent_team: "agent team", self_patch: "change to Atrium" };
 const APPROVE_LABEL = { flow: "Enable flow", scan: "Start scan", agent_team: "Create team", extension: "Enable extension" };
-const ADMIN_KINDS = new Set(["extension", "self_patch"]); // changes to Atrium itself: only administrators decide them (the server enforces it)
+// changes to Atrium itself and new agents: only administrators decide them (the server enforces it)
+const ADMIN_KINDS = new Set(["extension", "self_patch", "agent_team"]);
 const DESIGNER = { templates: "templates", claude: "designed by Claude", auto: "automatic" };
 const DIAGNOSIS = {
   credentials: "credentials refused", base_path: "API path", validation: "rejected data", unreachable: "unreachable", unknown: "unknown error",
@@ -118,7 +119,7 @@ function pendingCard(a, names) {
   return html`<section class="card">
     <div class="row" style="justify-content:space-between;flex-wrap:nowrap;align-items:flex-start">
       <div class="row" style="flex-wrap:nowrap;align-items:flex-start;gap:12px;min-width:0">
-        <div class="stat-icon">${icon(KIND_ICON[a.kind] || "checkCircle")}</div>
+        <div class="stat-icon">${icon(a.kind === "process" && a.payload.action === "stop" ? "stop" : KIND_ICON[a.kind] || "checkCircle")}</div>
         <div style="min-width:0"><h3 style="overflow-wrap:anywhere">${a.title}</h3>
           <div class="faint" style="font-size:12px">requested by <b>${a.requested_by}</b> - ${timeAgo(a.created_at)}</div></div></div>
       ${badge(KIND_LABEL[a.kind] || a.kind, "accent")}</div>
@@ -143,7 +144,9 @@ function pendingCard(a, names) {
       <button class="btn ok" data-act="approve" data-id="${a.id}" ${blocked ? "disabled" : ""}
         title="${blocked ? "The tests failed: it cannot be approved while the guardrail \"Self-patches must pass the tests\" is on" : ""}">${icon("check")}${approveLabel}</button>
     </div>
-    ${admin && !can("admin") ? html`<p class="faint" style="margin-top:12px;font-size:12.5px">Only administrators decide changes to Atrium itself (extensions and self-patches).</p>` : ""}</section>`;
+    ${admin && !can("admin") ? html`<p class="faint" style="margin-top:12px;font-size:12.5px">${a.kind === "agent_team"
+      ? "Only administrators decide new agent teams (they create agent definitions)."
+      : "Only administrators decide changes to Atrium itself (extensions and self-patches)."}</p>` : ""}</section>`;
 }
 
 /** The history's result column: links for pull requests, "Apply again" for a self-patch that could not be applied. */
@@ -167,6 +170,7 @@ function resultText(a) {
     const skipped = (r.skipped || []).map((s) => `${s.name}: ${s.reason}`).join("; ");
     return `${r.created.length} agent(s) created${skipped ? `; skipped ${skipped}` : ""}`;
   }
+  if (r.stopped !== undefined) return r.stopped ? "stopped" : "was not running";
   if (r.branch) return r.branch;
   if (r.exit_code !== undefined) return `exit ${r.exit_code}`;
   if (r.location) return r.location;

@@ -106,7 +106,8 @@ function teamCard(t) {
         <div class="faint" style="font-size:12px">${kind} - ${t.size}${t.max_size != null ? ` of ${t.max_size}` : ""} team agent${t.size === 1 ? "" : "s"}</div></div>
       <span class="row" style="gap:6px">
         ${t.pending_approval ? html`<a class="badge warn" href="#/approvals">proposal waiting</a>` : ""}
-        ${t.can_propose && !t.pending_approval ? html`<button class="btn sm" data-act="propose" data-team="${t.team}" data-min-role="operator">${icon("users")}Propose team</button>` : ""}
+        ${t.can_propose && !t.pending_approval ? html`<button class="btn sm" data-act="propose" data-team="${t.team}" data-min-role="operator"
+          ${t.lead?.paused ? html`disabled title="${t.lead.name} is paused - resume it to propose a team"` : ""}>${icon("users")}Propose team</button>` : ""}
         <button class="btn sm" data-act="new" data-team="${t.team}" data-min-role="admin" ${full ? html`disabled title="The team is at its maximum size (guardrail)"` : ""}>${icon("plus")}Add</button></span></header>
     ${t.lead ? leadRow(t.lead) : ""}
     ${t.members.length ? html`<div class="members">${t.members.map((m) => memberRow(m, t.lead?.id))}</div>`

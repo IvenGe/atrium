@@ -176,8 +176,9 @@ def _values(raw: Any, what: str) -> list[str]:
     return list(dict.fromkeys(out))
 
 
-def clean(body: dict[str, Any], current: dict[str, Any], env: set[str]) -> dict[str, Any]:
-    """The values to store (fields set by the environment are left alone); ValueError with a message for people."""
+def clean(body: dict[str, Any], current: dict[str, Any], env: set[str], settings: Settings | None = None) -> dict[str, Any]:
+    """The values to store (fields set by the environment are left alone); ValueError with a message for people.
+    `settings` holds the environment's values (HUB_OIDC_ALLOW_HTTP decides for the issuer when it is set)."""
     out = {k: v for k, v in current.items() if k not in ("updated_by", "updated_at")}
     preset = body.get("preset") or current.get("preset") or "generic"
     if preset not in PRESET_IDS:
@@ -190,9 +191,11 @@ def clean(body: dict[str, Any], current: dict[str, Any], env: set[str]) -> dict[
         out["provider_name"] = name or None
     if not out.get("provider_name"):
         out["provider_name"] = next(p["provider_name"] for p in PRESETS if p["id"] == preset)
-    allow_http = bool(body["allow_http"]) if "allow_http" in body and body["allow_http"] is not None \
-        else bool(current.get("allow_http"))
-    if "allow_http" not in env:
+    if "allow_http" in env:  # the environment wins here too
+        allow_http = bool(settings.oidc_allow_http) if settings is not None else False
+    else:
+        allow_http = bool(body["allow_http"]) if "allow_http" in body and body["allow_http"] is not None \
+            else bool(current.get("allow_http"))
         out["allow_http"] = allow_http
     if "issuer" in body and "issuer" not in env:
         out["issuer"] = _url(str(body.get("issuer") or ""), allow_http) if body.get("issuer") else None
@@ -226,7 +229,7 @@ def save(hub: "Hub", body: dict[str, Any], actor: str, *, generated_secret: str 
     """Validate and store the settings, then rebuild the OIDC client. Returns the stored document."""
     env = env_keys(hub.settings)
     current = stored(hub) or {}
-    doc = clean(body, current, env)
+    doc = clean(body, current, env, hub.settings)
     issuer = doc.get("issuer") if "issuer" not in env else hub.settings.oidc_issuer
     new_secret = generated_secret or str(body.get("client_secret") or "")
     changed_secret = False
@@ -321,7 +324,7 @@ def view(hub: "Hub") -> dict[str, Any]:
 
 def candidate(hub: "Hub", body: dict[str, Any]) -> Settings:
     """Settings as they would be with `body` saved (for the Test button; nothing is stored)."""
-    doc = clean(body, stored(hub) or {}, env_keys(hub.settings))
+    doc = clean(body, stored(hub) or {}, env_keys(hub.settings), hub.settings)
     doc.pop("client_secret", None)  # discovery needs no secret, and none is sent
     settings, _, _ = effective(hub, doc)
     return settings

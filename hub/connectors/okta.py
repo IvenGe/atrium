@@ -73,7 +73,9 @@ class OktaConnector(Connector):
     def validate_config(cls, config: dict[str, Any]) -> dict[str, Any]:
         base = str(config.get("base_url") or "").strip().rstrip("/")
         parts = urlsplit(base)
-        if parts.scheme not in ("http", "https") or not parts.hostname:
+        # Okta orgs are served over https only: plain http would send the API token in clear text (a local mock aside)
+        local = parts.scheme == "http" and parts.hostname in ("localhost", "127.0.0.1")
+        if not (parts.scheme == "https" or local) or not parts.hostname:
             raise ConnectorError("The Okta org URL must start with https://")
         if parts.username or parts.password or parts.query or parts.fragment:
             raise ConnectorError("Put the API token in its own field, not in the URL")

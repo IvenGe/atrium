@@ -62,11 +62,20 @@ Common names the analyzer understands:
 | `cache.redis`, `queue.amqp`, `search.index` | Infrastructure services |
 | `storage.s3`, `storage.files` | Object / file storage |
 | `notify.email` | Outgoing mail |
-| `git.hosting`, `ci`, `chat`, `docs.wiki`, `ticketing`, `assets.inventory` | Application domains |
-| `vuln.scanner`, `grc.compliance`, `grc.risks`, `identity.source` | Security domains: vulnerability scanners (OpenVAS / Greenbone), GRC tools (CISO Assistant), directories people come from (Keycloak, Okta) |
-| `monitoring.metrics`, `monitoring.dashboards`, `monitoring.uptime` | Observability |
+| `git.hosting`, `ci`, `chat`, `docs.wiki`, `ticketing`, `helpdesk`, `assets.inventory` | Application domains |
+| `vuln.scanner`, `grc.compliance`, `grc.risks`, `identity.source`, `directory.users` | Security domains: vulnerability scanners (OpenVAS / Greenbone), GRC tools (CISO Assistant), directories people come from (Keycloak, Okta) |
+| `siem`, `monitoring.alerts`, `logs.search`, `security.events` | Security monitoring (Wazuh, Graylog, ...) |
+| `monitoring.metrics`, `monitoring.dashboards`, `monitoring.uptime`, `monitoring.incidents` | Observability |
 
 The hub itself provides `events.bus` and `notify.webhook` to every tool.
+
+Some capabilities also decide what the hub offers a tool (besides its name):
+
+| Capability | Effect |
+| --- | --- |
+| `assets.inventory`, `vuln.scanner`, `grc.compliance` / `grc.risks`, `directory.users`, `scim` | the built-in connector detected for the tool (Snipe-IT, OpenVAS, CISO Assistant, Okta, SCIM), see [INTEGRATIONS.md](INTEGRATIONS.md#connectors) |
+| `siem`, `monitoring.alerts`, `monitoring.metrics`, `monitoring.uptime`, `monitoring.dashboards`, `logs.search`, `assets.inventory`, `vuln.scanner`, `grc.compliance`, `grc.risks` | the agent-team template proposed for the tool, see [AGENTS.md](AGENTS.md#proposals) |
+| `siem`, `monitoring.alerts`, `logs.search`, `security.events`; `ticketing`, `helpdesk`; `monitoring.uptime`, `monitoring.metrics`, `monitoring.incidents` | the hub-side gap (alerts, tickets, incidents) an extension pack can close, see [AGENTS.md](AGENTS.md#generated-packs) |
 
 ## Single sign-on
 
@@ -82,7 +91,8 @@ in through one of them:
 
 The provider for a tool is chosen in this order: the choice made for that tool (Integration hub > Identity, or
 `POST /api/tools/{id}/sso`), the tool's `auth.provider`, the suite default, the only provider in the suite. With two or
-more providers and none of these, someone has to choose. See [ARCHITECTURE.md](ARCHITECTURE.md#single-sign-on).
+more providers and none of these, someone has to choose. See
+[INTEGRATIONS.md](INTEGRATIONS.md#single-sign-on-to-the-suites-identity-provider).
 
 ## Events
 

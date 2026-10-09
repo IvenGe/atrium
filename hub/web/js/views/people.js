@@ -112,7 +112,7 @@ function personData(f, p) {
 }
 
 async function openPersonForm(p, done) {
-  const all = await get("/people").catch(() => ({ people: [], departments: [] }));
+  const all = await get("/people?brief=1").catch(() => ({ people: [], departments: [] }));
   modal({
     title: p ? `Edit ${p.display_name}` : "Add person",
     wide: true,

@@ -189,9 +189,10 @@ def apply_people(hub: "Hub", tool_id: str, records: list[dict[str, Any]], retire
             person.manager_id = target
             dirty.add(pid)
     if retire_missing:
+        found = set(seen.values())  # a person this pull saw under a new id (re-created in the directory) has not left
         for external, pid in by_source.items():
             person = people.get(pid)
-            if external in seen or person is None or person.source_status.get(tool_id) == "terminated":
+            if external in seen or pid in found or person is None or person.source_status.get(tool_id) == "terminated":
                 continue
             person.source_status = {**person.source_status, tool_id: "terminated"}  # gone from the directory
             recompute(person)
@@ -314,22 +315,53 @@ def forget_tool(hub: "Hub", tool_id: str) -> None:
 # --------------------------------------------------------------------------------------
 
 
+@dataclass
+class Links:
+    """What links to each person, indexed once (not per person): their active assets (in the order given), their tool
+    accounts, and Atrium users by email."""
+
+    assets: dict[str, list[Asset]]
+    accounts: dict[str, list[Account]]
+    users: dict[str, list[User]]
+
+    @classmethod
+    def of(cls, assets: list[Asset], accounts: list[Account], users: list[User]) -> "Links":
+        held: dict[str, list[Asset]] = {}
+        for a in assets:
+            if a.status == "retired":
+                continue
+            for pid in dict.fromkeys(p for p in (a.owner_person_id, a.assigned_person_id) if p):
+                held.setdefault(pid, []).append(a)
+        mine: dict[str, list[Account]] = {}
+        for account in accounts:
+            if account.person_id:
+                mine.setdefault(account.person_id, []).append(account)
+        by_email: dict[str, list[User]] = {}
+        for u in users:
+            if key(u.email):
+                by_email.setdefault(key(u.email), []).append(u)
+        return cls(held, mine, by_email)
+
+    def users_of(self, person: Person) -> list[User]:
+        return self.users.get(key(person.email), []) if key(person.email) else []
+
+
 def find_leavers(people: list[Person], assets: list[Asset], users: list[User], accounts: list[Account],
                  tool_names: dict[str, str] | None = None) -> list[dict[str, Any]]:
     """One finding per suspended or terminated person who still holds something: "fail" with access (an enabled
     Atrium account, an active tool account), "partial" with only assets."""
     names = tool_names or {}
+    links = Links.of(assets, accounts, users)
     out = []
     for person in people:
         if person.status not in LEFT:
             continue
         held = [{"id": a.id, "name": a.name, "type": a.type,
                  "relation": "owner" if a.owner_person_id == person.id else "assigned"}
-                for a in assets if a.status != "retired" and person.id in (a.owner_person_id, a.assigned_person_id)]
-        atrium = [{"id": u.id, "username": u.username, "role": u.role} for u in users
-                  if not u.disabled and person.email and key(u.email) == key(person.email)]
+                for a in links.assets.get(person.id, [])]
+        atrium = [{"id": u.id, "username": u.username, "role": u.role} for u in links.users_of(person) if not u.disabled]
         active = [{"id": a.id, "tool_id": a.tool_id, "tool": names.get(a.tool_id, a.tool_id), "login": a.login or a.email,
-                   "app": a.app} for a in accounts if a.person_id == person.id and a.active]
+                   "app": a.app} for a in links.accounts.get(person.id, []) if a.active]
         if not (held or atrium or active):
             continue
         actions = []
@@ -379,30 +411,33 @@ def person_for_user(user: User, people: list[Person]) -> Person | None:
     return next((p for p in people if user.email and key(p.email) == key(user.email)), None)
 
 
-def public(person: Person, *, names: dict[str, str] | None = None, assets: list[Asset] | None = None,
-           accounts: list[Account] | None = None, users: list[User] | None = None,
+def public(person: Person, *, names: dict[str, str] | None = None, links: Links | None = None,
            people: dict[str, Person] | None = None) -> dict[str, Any]:
     names = names or {}
-    owned = [a for a in assets or [] if a.owner_person_id == person.id and a.status != "retired"]
-    assigned = [a for a in assets or [] if a.assigned_person_id == person.id and a.status != "retired"]
-    mine = [a for a in accounts or [] if a.person_id == person.id]
-    user = user_for(person, users or [])
+    held = links.assets.get(person.id, []) if links else []
+    mine = links.accounts.get(person.id, []) if links else []
+    user = next(iter(links.users_of(person)), None) if links else None
     manager = (people or {}).get(person.manager_id or "")
     return {
         **person.model_dump(mode="json"), "initials": initials(person.display_name),
         "source_list": [{"id": k, "name": names.get(k, k), "external_id": v, "status": person.source_status.get(k)}
                         for k, v in person.sources.items()],
-        "manager": brief(manager), "assets_owned": len(owned), "assets_assigned": len(assigned),
+        "manager": brief(manager), "assets_owned": sum(1 for a in held if a.owner_person_id == person.id),
+        "assets_assigned": sum(1 for a in held if a.assigned_person_id == person.id),
         "accounts": len(mine), "active_accounts": sum(1 for a in mine if a.active),
         "atrium_user": {"id": user.id, "username": user.username, "role": user.role, "disabled": user.disabled}
         if user else None,
     }
 
 
-def listing(hub: "Hub", *, q: str = "", status: str = "", department: str = "", source: str = "") -> dict[str, Any]:
+def listing(hub: "Hub", *, q: str = "", status: str = "", department: str = "", source: str = "",
+            short: bool = False) -> dict[str, Any]:
+    """The People list (`short`: only what pickers need - no counts, links or leavers)."""
     people = all_people(hub)
     by_id = {p.id: p for p in people}
-    names, assets, accounts, users = source_names(hub), hub.all("assets", Asset), all_accounts(hub), hub.auth.users()
+    names = source_names(hub)
+    assets, accounts, users = ([], [], []) if short else (hub.all("assets", Asset), all_accounts(hub), hub.auth.users())
+    links = Links.of(assets, accounts, users)
     needle = key(q)
     statuses = {s.strip() for s in status.split(",") if s.strip()}
     items = []
@@ -414,14 +449,14 @@ def listing(hub: "Hub", *, q: str = "", status: str = "", department: str = "", 
         if needle and needle not in " ".join(filter(None, (p.display_name, p.email, p.login, p.title, p.department,
                                                            *p.groups))).lower():
             continue
-        items.append(public(p, names=names, assets=assets, accounts=accounts, users=users, people=by_id))
+        items.append(brief(p) if short else public(p, names=names, links=links, people=by_id))
     items.sort(key=lambda x: x["display_name"].lower())
     return {
         "people": items, "total": len(people),
         "departments": sorted({p.department for p in people if p.department}, key=str.lower),
         "sources": [{"id": s, "name": names.get(s, s)} for s in sorted({s for p in people for s in p.sources})],
         "statuses": {s: sum(1 for p in people if p.status == s) for s in ("active", "suspended", "terminated")},
-        "leavers": len(leavers(hub)),
+        "leavers": None if short else len(find_leavers(people, assets, users, accounts)),
     }
 
 
@@ -432,7 +467,7 @@ def detail(hub: "Hub", person: Person) -> dict[str, Any]:
     assets = hub.all("assets", Asset)
     accounts = all_accounts(hub)
     users = hub.auth.users()
-    view = public(person, names=names, assets=assets, accounts=accounts, users=users, people=people)
+    view = public(person, names=names, links=Links.of(assets, accounts, users), people=people)
     related = [a for a in assets if person.id in (a.owner_person_id, a.assigned_person_id)]
     asset_rows = [{"id": a.id, "name": a.name, "type": a.type, "status": a.status, "criticality": a.criticality,
                    "source": a.source, "relation": "owner" if a.owner_person_id == person.id else "assigned",
@@ -451,7 +486,7 @@ def detail(hub: "Hub", person: Person) -> dict[str, Any]:
     activity = [e for e in hub.store.tail("activity", 2000)
                 if (e.get("data") or {}).get("person_id") == person.id or (e.get("data") or {}).get("asset_id") in asset_ids
                 or (user is not None and e.get("actor") == user.username)][-30:]
-    finding = next((f for f in leavers(hub) if f["person_id"] == person.id), None)
+    finding = next(iter(find_leavers([person], assets, users, accounts, names)), None)
     tools = {t: names.get(t, t) for t in {*per_tool, *(s for s in person.sources if s != "manual")}}
     nodes = [{"id": f"asset:{a['id']}", "kind": "asset", "label": a["name"], "ref": a["id"], "relation": a["relation"]}
              for a in asset_rows if a["status"] != "retired"]
