@@ -2,8 +2,8 @@
 guardrails that bound them.
 
 A team belongs to a tool (team = the tool id; its lead is the Tool Supervisor), to the hub ("hub"; lead: the Hub
-Supervisor) or to a built-in app ("module:assets", "module:vulns", "module:grc", "module:people"; lead: that app's
-supervisor). Every
+Supervisor) or to a built-in app ("module:assets", "module:vulns", "module:grc", "module:people", "module:extensions";
+lead: that app's supervisor). Extension packs can add team templates for kinds of tools (classify, roles_for). Every
 custom agent has a parent: the agent that created it or, for an agent a person creates, the team's lead (or another
 agent of the team the person picks). Depth counts the levels below the core agents: a lead's members have depth 1.
 
@@ -31,7 +31,7 @@ if TYPE_CHECKING:
 
 COLLECTION = "agent_defs"
 MODULE_TEAMS = {"module:assets": "Assets", "module:vulns": "Vulnerabilities", "module:grc": "Compliance",
-                "module:people": "People"}
+                "module:people": "People", "module:extensions": "Extensions"}
 STALE_RUN = 30 * 60
 PERMISSION_INFO = {
     "read": "Read the hub's state: tools, assets, findings, risks, flows, approvals.",
@@ -489,8 +489,18 @@ MAINTAINER = Role("maintainer", "Maintainer", "Watches {tool}'s health, integrat
                   "maintenance.", True)
 
 
+def _extension_teams(hub: "Hub | None") -> list[Any]:
+    """Team templates of the active extension packs (hub/extensions)."""
+    if hub is None:
+        return []
+    from ..extensions import registry
+
+    return registry.team_items(hub)
+
+
 def classify(hub: "Hub", tool: Tool) -> str | None:
-    """What kind of tool this is, for the team templates: siem, grc, inventory, scanner - or None."""
+    """What kind of tool this is, for the team templates: siem, grc, inventory, scanner, a category an extension pack
+    adds - or None."""
     conn = connections.get(hub, tool.id)
     provides = set(tool.manifest.provides) if tool.manifest else set()
     text = " ".join([tool.id, tool.name, tool.manifest.name if tool.manifest else ""]).lower()
@@ -502,25 +512,52 @@ def classify(hub: "Hub", tool: Tool) -> str | None:
             return category
     detected = connectors.detect(tool)
     best = detected[0]["kind"] if detected and detected[0]["score"] >= 50 else None
-    return next((c for c, kinds, _, _ in CATEGORY_RULES if best in kinds), None)
+    builtin = next((c for c, kinds, _, _ in CATEGORY_RULES if best in kinds), None)
+    if builtin:
+        return builtin
+    for item in _extension_teams(hub):
+        match = item.match
+        if (conn is not None and conn.kind in match.connector_kinds) or provides & set(match.capabilities) \
+                or any(n in text for n in match.names):
+            return item.category
+    return None
 
 
-def roles_for(category: str | None) -> list[Role]:
-    return [*TEMPLATES.get(category or "", ()), MAINTAINER]
+def category_title(hub: "Hub | None", category: str | None) -> str | None:
+    if not category:
+        return None
+    if category in CATEGORIES:
+        return CATEGORIES[category]
+    return next((t.title for t in _extension_teams(hub) if t.category == category), category)
+
+
+def roles_for(category: str | None, hub: "Hub | None" = None) -> list[Role]:
+    """The template roles for a category: the built-in ones, those extension packs add, and a maintainer."""
+    roles = list(TEMPLATES.get(category or "", ()))
+    for item in _extension_teams(hub):
+        if category and item.category == category:
+            roles += [Role(r.role, r.title, r.description, r.instructions, tuple(r.permissions), r.schedule_minutes,
+                           r.task, r.rules_ok) for r in item.roles if r.role not in {x.role for x in roles}]
+    return [*roles, MAINTAINER]
+
+
+def fill_text(text: str, values: dict[str, str]) -> str:
+    """"{tool}" -> the tool's name; plain substitution (template texts may come from extension packs)."""
+    return re.sub(r"\{([a-z_]+)\}", lambda m: values.get(m.group(1), m.group(0)), text)
 
 
 def template_members(hub: "Hub", tool: Tool, category: str | None) -> list[dict[str, Any]]:
     provider = default_provider(hub)
     out = []
-    for role in roles_for(category):
+    for role in roles_for(category, hub):
         fill = {"tool": tool.name}
         out.append({
             "id": f"agent:{slug(f'{tool.id}-{role.role}')}", "name": f"{role.title} for {tool.name}"[:80],
-            "title": role.title, "description": role.description.format(**fill),
-            "instructions": role.instructions.format(**fill), "permissions": list(role.permissions),
+            "title": role.title, "description": fill_text(role.description, fill),
+            "instructions": fill_text(role.instructions, fill), "permissions": list(role.permissions),
             # a rules agent cannot do an analyst's task: it gets no schedule (it would only say it needs a model)
             "schedule_minutes": role.schedule_minutes if provider != "rules" or role.rules_ok else 0,
-            "task": role.task.format(**fill), "provider": provider, "model": "",
+            "task": fill_text(role.task, fill), "provider": provider, "model": "",
             "template": f"{category or 'any'}:{role.role}",
         })
     return out
@@ -560,12 +597,12 @@ async def design_with_claude(hub: "Hub", tool: Tool, category: str | None, model
     conn = connections.get(hub, tool.id)
     described = {
         "name": tool.name, "kind": m.kind if m else None, "description": m.description if m else "",
-        "provides": m.provides if m else [], "category": CATEGORIES.get(category or "", "general tool"),
+        "provides": m.provides if m else [], "category": category_title(hub, category) or "general tool",
         "connection": {"kind": conn.kind, "capabilities": connections.capabilities(conn)} if conn else None,
         "flows": [f.title for f in flows.all_flows(hub, tool.id)],
     }
-    templates = [{"title": r.title, "task": r.task.format(tool=tool.name), "permissions": list(r.permissions)}
-                 for r in roles_for(category)]
+    templates = [{"title": r.title, "task": fill_text(r.task, {"tool": tool.name}), "permissions": list(r.permissions)}
+                 for r in roles_for(category, hub)]
     prompt = (f"<tool>\n{described}\n</tool>\n<permissions>\n{PERMISSION_INFO}\n</permissions>\n"
               f"<template_team>\n{templates}\n</template_team>\n<max_agents>{limit}</max_agents>")
     result = await hub.llm.json(system=TEAM_DESIGN_INSTRUCTIONS, prompt=prompt, schema=TEAM_SCHEMA, model=model,
@@ -762,8 +799,8 @@ def overview(hub: "Hub") -> dict[str, Any]:
     out = [team("hub", {})]
     for tool in sorted(hub.tools(), key=lambda t: t.name.lower()):
         category = classify(hub, tool) if tool.manifest else None
-        out.append(team(tool.id, {"category": category, "category_title": CATEGORIES.get(category or ""),
-                                  "suggested": [r.title for r in roles_for(category)],
+        out.append(team(tool.id, {"category": category, "category_title": category_title(hub, category),
+                                  "suggested": [r.title for r in roles_for(category, hub)],
                                   "can_propose": tool.manifest is not None and f"tool:{tool.id}" in records}))
     out += [team(module, {}) for module in MODULE_TEAMS]
     values = hub.prefs["guardrails"]

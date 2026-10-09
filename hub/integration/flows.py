@@ -48,13 +48,25 @@ def save(hub: "Hub", flow: Flow) -> Flow:
     return hub.save(COLLECTION, flow, "flow")
 
 
+EXTENSIONS_OWNER = "module:extensions"  # extension domains ("x:<key>") are run by the Extensions Supervisor
+
+
 def owner(flow: Flow) -> str:
-    return OWNERS[flow.domain]
+    return OWNERS.get(flow.domain) or (EXTENSIONS_OWNER if flow.domain.startswith("x:") else OWNERS[flow.domain])
+
+
+def app_name(hub: "Hub", domain: str) -> str:
+    if domain in APPS:
+        return APPS[domain]
+    from ..extensions import registry
+
+    defn = registry.domain(hub, domain.removeprefix("x:"))
+    return f"Hub {defn.title}" if defn else f"Hub {domain.removeprefix('x:')}"
 
 
 def end_name(hub: "Hub", end: str, domain: str) -> str:
     if end == "hub":
-        return APPS[domain]
+        return app_name(hub, domain)
     tool = hub.get_tool(end.split(":", 1)[1])
     return tool.name if tool else end
 
@@ -62,7 +74,8 @@ def end_name(hub: "Hub", end: str, domain: str) -> str:
 def title(hub: "Hub", flow: Flow) -> str:
     if flow.direction == "scan":
         return f"Scan in-scope assets with {end_name(hub, flow.target, flow.domain)} -> {APPS['vulnerabilities']}"
-    return f"{end_name(hub, flow.source, flow.domain)} {flow.domain} -> {end_name(hub, flow.target, flow.domain)}"
+    what = flow.domain.removeprefix("x:")
+    return f"{end_name(hub, flow.source, flow.domain)} {what} -> {end_name(hub, flow.target, flow.domain)}"
 
 
 def key(flow: Flow) -> tuple[str, str, str, str | None]:

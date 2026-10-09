@@ -148,7 +148,8 @@ class ToolSupervisor(BaseAgent):
         if members is None:
             members = teams.template_members(self.hub, tool, category)
             roles = ", ".join(m["title"].lower() for m in members)
-            rationale = (f"{tool.name} looks like a {teams.CATEGORIES[category].lower()} tool, so its team gets: {roles}."
+            rationale = (f"{tool.name} looks like a {(teams.category_title(self.hub, category) or category).lower()} tool, "
+                         f"so its team gets: {roles}."
                          if category else f"No specialised template fits {tool.name}; every tool gets a maintainer.")
         asker = teams.get_def(self.hub, msg.sender)  # a team agent asked: the members get no more than it has
         if asker is not None:

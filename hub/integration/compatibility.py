@@ -52,8 +52,8 @@ def sso_check(tool: Tool, others: list[Tool], idp: IdentityPrefs | None = None) 
         return check("pass", f"Signs in through {provider.name} ({m.auth.sso.upper()}).")
     previous = next((p.name for p in providers if p.tool_id == m.auth.provider), None)
     prefix = f"Connected to {previous}, but {provider.name} is selected. " if previous else ""
-    how = sso_catalog.native(tool, provider)
-    entry = sso_catalog.match(tool)
+    how = sso_catalog.native(tool, provider, idp.catalog)
+    entry = sso_catalog.match(tool, idp.catalog)
     proxied = "oauth2-proxy" in (m.auth.notes or "")
     capable = how is not None or (m.auth.sso in SSO_MODES and not proxied)
     status = "warn" if capable else "fail"

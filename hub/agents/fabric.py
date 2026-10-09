@@ -45,6 +45,9 @@ class FlowOwner(BaseAgent):
     async def execute(self, flow: Flow, body: dict[str, Any], msg: Message) -> dict[str, Any]:
         raise NotImplementedError
 
+    def owns(self, domain: str) -> bool:
+        return domain in self.flow_domains
+
     # -- talking to the tool's supervisor ------------------------------------------------
 
     async def connector(self, tool_id: str, op: str, body: dict[str, Any], timeout: float = 900) -> dict[str, Any]:
@@ -106,7 +109,7 @@ class FlowOwner(BaseAgent):
         flow = flows.get(self.hub, flow_id)
         if flow is None:
             raise ValueError(f"Unknown flow '{flow_id}'")
-        if flow.domain not in self.flow_domains:
+        if not self.owns(flow.domain):
             raise ValueError(f"{self.name} does not own {flow.domain} flows")
         trigger = str(body.get("trigger") or ("manual" if msg.sender.startswith(("user:", "token:")) else "agent"))
         async with self._flow_locks.setdefault(flow_id, asyncio.Lock()):

@@ -74,9 +74,10 @@ def _sso_manifest(protocol: str, provider: IdentityProvider, how: str) -> dict[s
     return {"auth": {"sso": protocol, "provider": provider.tool_id, "notes": f"{how} ({provider.name})"}}
 
 
-def plan_sso_connect(tool: Tool, provider: IdentityProvider) -> Patch | None:
-    """Configure the tool's own OIDC/SAML support for `provider` and register it there as a client."""
-    config = sso_catalog.generate(tool, provider)
+def plan_sso_connect(tool: Tool, provider: IdentityProvider, extra: tuple[Any, ...] = ()) -> Patch | None:
+    """Configure the tool's own OIDC/SAML support for `provider` and register it there as a client. `extra`: SSO
+    recipes from extension packs."""
+    config = sso_catalog.generate(tool, provider, extra)
     if config is None or tool.manifest is None:
         return None
     url, cid = tool_url(tool.manifest), client_id_for(tool)
@@ -149,7 +150,7 @@ def plan_patch(tool: Tool, others: list[Tool], strategy: str, hub_url: str, idp:
 
     if strategy == "sso_connect":
         provider = selected_provider(tool, others, idp)
-        return plan_sso_connect(tool, provider) if provider else None
+        return plan_sso_connect(tool, provider, idp.catalog if idp else ()) if provider else None
 
     if strategy == "add_manifest":
         target = "repo" if (m.kind == "oss" and tool.path) else "adapter"

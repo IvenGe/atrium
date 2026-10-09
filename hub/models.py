@@ -135,7 +135,7 @@ class Host(BaseModel):
 
 class Approval(BaseModel):
     id: str
-    kind: Literal["command", "patch", "process", "flow", "scan", "repair", "agent_team"]
+    kind: Literal["command", "patch", "process", "flow", "scan", "repair", "agent_team", "extension", "self_patch"]
     title: str
     detail: str = ""
     payload: dict[str, Any] = {}
@@ -249,14 +249,17 @@ class Vulnerability(BaseModel):
 
 
 Domain = Literal["assets", "vulnerabilities", "risks", "controls", "people", "accounts"]
+BUILTIN_DOMAINS: tuple[str, ...] = ("assets", "vulnerabilities", "risks", "controls", "people", "accounts")
+EXTENSION_DOMAIN_RE = re.compile(r"^x:[a-z][a-z0-9_]{1,31}$")  # a data type an extension pack adds ("x:alerts")
 
 
 class Flow(BaseModel):
     """Data moving between a tool and the hub's apps. `source`/`target` are "hub" or "tool:<id>"; a scan flow
-    (action "scan") goes from the hub's in-scope assets to a scanner and brings the findings back."""
+    (action "scan") goes from the hub's in-scope assets to a scanner and brings the findings back. `domain` is a
+    built-in domain or an extension domain "x:<key>"."""
 
     id: str
-    domain: Domain
+    domain: str
     source: str
     target: str
     action: str | None = None
@@ -276,6 +279,13 @@ class Flow(BaseModel):
     failures: int = 0  # consecutive
     repair: str | None = None  # "requested" or the pending repair approval id
     job: dict[str, Any] | None = None  # scan flows: {status, job_id, started_at, hosts, asset_ids, progress, approval_id}
+
+    @field_validator("domain")
+    @classmethod
+    def _domain(cls, value: str) -> str:
+        if value not in BUILTIN_DOMAINS and not EXTENSION_DOMAIN_RE.match(value):
+            raise ValueError(f"Unknown data domain '{value}'")
+        return value
 
     @property
     def tool_id(self) -> str:

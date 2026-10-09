@@ -6,6 +6,7 @@ import time
 from typing import Any
 
 from ..bus import Message
+from ..extensions import controls as extension_controls
 from ..grc.baseline import CONTROLS, CONTROLS_BY_ID
 from ..grc.checks import Snapshot, evaluate_controls, framework_scores
 from ..integration import flows
@@ -39,6 +40,7 @@ class GrcSupervisor(FlowOwner):
             users=hub.auth.users(), oidc_enabled=hub.auth.oidc.enabled,
             vulnerabilities=hub.all("vulnerabilities", Vulnerability), guardrails=hub.prefs["guardrails"],
             people=people.all_people(hub), accounts=people.all_accounts(hub),
+            extension_results=extension_controls.evaluate(hub),
         )
 
     # -- data flows ------------------------------------------------------------------

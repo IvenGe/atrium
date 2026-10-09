@@ -407,10 +407,43 @@ CATALOG: tuple[CatalogEntry, ...] = (
 )
 
 
-def match(tool: Tool) -> CatalogEntry | None:
+def match(tool: Tool, extra: tuple[CatalogEntry, ...] = ()) -> CatalogEntry | None:
+    """The catalog entry for `tool`: the built-in ones first, then `extra` (recipes from extension packs)."""
     m = tool.manifest
     text = " ".join([tool.id, tool.name, tool.source, m.name if m else ""]).lower()
-    return next((e for e in CATALOG if any(a in text for a in e.aliases)), None)
+    return next((e for e in (*CATALOG, *extra) if any(a in text for a in e.aliases)), None)
+
+
+# --------------------------------------------------------------------------------------
+# recipes from extension packs (hub/extensions/pack.py, item kind "sso")
+# --------------------------------------------------------------------------------------
+
+
+def extension_entry(item) -> CatalogEntry:
+    """A catalog entry for an extension pack's SSO recipe. The recipe is data: its template is filled by plain text
+    substitution of known placeholders (never evaluated), and the client secret only appears as the placeholder the
+    hub fills when it writes the adapter files."""
+    from ..extensions.pack import fill
+
+    def generate(ctx: SsoContext) -> SsoConfig:
+        redirect = f"{ctx.url}{item.redirect_path}"
+        values = {"url": ctx.url, "issuer": ctx.issuer, "discovery": ctx.discovery, "client_id": ctx.client_id,
+                  "client_secret": CLIENT_SECRET, "provider_name": ctx.provider.name, "scopes": SCOPES,
+                  "redirect_uri": redirect, "authorize_endpoint": ctx.endpoint("authorize"),
+                  "token_endpoint": ctx.endpoint("token"), "userinfo_endpoint": ctx.endpoint("userinfo"),
+                  "tool_name": ctx.tool.name}
+        content = fill(item.template, values)
+        saml = item.protocol == "saml"
+        steps = [fill(s, values) for s in item.steps] or [
+            f"Apply {item.file} to {ctx.tool.name}'s configuration (see the file) and restart it."]
+        return SsoConfig(item.protocol, [FileChange(path=item.file, content=content)], [redirect],
+                         [*steps, *_unknown_endpoints(ctx)], public_client=item.public_client,
+                         acs_url=f"{ctx.url}{item.acs_path}" if saml and item.acs_path else None,
+                         slo_url=f"{ctx.url}{item.slo_path}" if saml and item.slo_path else None,
+                         entity_id=ctx.url if saml else None)
+
+    return CatalogEntry(f"x:{item.key}", item.name, tuple(item.match), (item.protocol,), "{url}" + item.redirect_path,
+                        generate, note=f"From an extension pack ({item.name})")
 
 
 # --------------------------------------------------------------------------------------
@@ -502,12 +535,13 @@ def generic_oidc(ctx: SsoContext) -> SsoConfig:
             f"{ctx.provider.name}. Look it up in the tool's documentation and narrow the redirect URI."])
 
 
-def native(tool: Tool, provider: IdentityProvider) -> tuple[str, Protocol] | None:
-    """(how, protocol) when `tool` can sign in through `provider` natively; how is a catalog key, "env" or "generic"."""
+def native(tool: Tool, provider: IdentityProvider, extra: tuple[CatalogEntry, ...] = ()) -> tuple[str, Protocol] | None:
+    """(how, protocol) when `tool` can sign in through `provider` natively; how is a catalog key, "env" or "generic".
+    `extra`: recipes from extension packs."""
     m = tool.manifest
     if m is None or "oauth2-proxy" in (m.auth.notes or ""):
         return None
-    entry = match(tool)
+    entry = match(tool, extra)
     if entry is not None:
         protocol = next((p for p in entry.protocols if p in provider.protocols), None)
         return (entry.key, protocol) if protocol else None
@@ -520,9 +554,9 @@ def native(tool: Tool, provider: IdentityProvider) -> tuple[str, Protocol] | Non
     return None
 
 
-def generate(tool: Tool, provider: IdentityProvider) -> SsoConfig | None:
+def generate(tool: Tool, provider: IdentityProvider, extra: tuple[CatalogEntry, ...] = ()) -> SsoConfig | None:
     """The tool-side configuration that connects `tool` to `provider`, or None if it cannot sign in natively."""
-    how = native(tool, provider)
+    how = native(tool, provider, extra)
     if how is None or tool.manifest is None:
         return None
     key, protocol = how
@@ -531,6 +565,6 @@ def generate(tool: Tool, provider: IdentityProvider) -> SsoConfig | None:
         return generic_env(ctx)
     if key == "generic":
         return generic_oidc(ctx)
-    entry = next(e for e in CATALOG if e.key == key)
+    entry = next(e for e in (*CATALOG, *extra) if e.key == key)
     assert entry.generate is not None
     return entry.generate(ctx)

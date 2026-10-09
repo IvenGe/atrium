@@ -213,7 +213,10 @@ def test_guardrail_settings_are_admin_only_validated_and_logged(client, sign_in,
     assert settings["guardrails"] == {
         "limit_to_parent_permissions": True, "allow_nested_teams": False, "max_team_depth": 1, "limit_team_size": True,
         "max_team_size": 5, "team_actions_need_approval": True, "block_catastrophic_commands": True,
-        "scans_need_approval": True, "team_requires_approval": True}
+        "scans_need_approval": True, "team_requires_approval": True,
+        # extensions and self-patching (EXTEND_SPEC)
+        "allow_extensions": True, "extensions_need_approval": True, "allow_self_patching": True,
+        "self_patch_requires_tests": True, "self_patch_requires_approval": True, "self_patch_via_pull_request": True}
     catalog = {g["key"]: g for g in settings["guardrail_catalog"]}
     assert catalog["block_catastrophic_commands"]["risk"] and catalog["max_team_size"]["max"] == 50
     assert not any(g["relaxed"] for g in catalog.values())

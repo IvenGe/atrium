@@ -20,6 +20,11 @@ from .auth.service import CurrentPrincipal, Principal
 from .bus import AgentError
 from .connectors.base import ConnectorError
 from .core import Hub
+from .extensions import gaps as ext_gaps
+from .extensions import pack as ext_pack
+from .extensions import records as ext_records
+from .extensions import registry as ext_registry
+from .extensions import selfpatch
 from .grc.baseline import POLICY_TEMPLATES
 from .grc.checks import framework_scores
 from .integration import connections, flows, identity, importer, strategies
@@ -218,6 +223,44 @@ class AtriumClientRequest(BaseModel):
     run_registration: bool = False
 
 
+class ExtensionStatus(BaseModel):
+    status: Literal["enabled", "disabled"]
+
+
+class ExtensionRollback(BaseModel):
+    version: str | None = Field(None, max_length=40)  # default: the version before the current one
+
+
+class ExtendRequest(BaseModel):
+    designer: Literal["auto", "templates", "claude"] = "auto"
+
+
+class RecordBody(BaseModel):
+    fields: dict[str, Any] = Field(default_factory=dict)
+    asset_id: str | None = Field(None, max_length=64)  # a link set by hand (default: linked by the domain's rules)
+    person_id: str | None = Field(None, max_length=64)
+
+
+class RecordPatch(BaseModel):
+    """Only what is sent changes: a field set to null is cleared; asset_id / person_id null unlinks by hand;
+    relink=true makes both links automatic again."""
+
+    fields: dict[str, Any] | None = None
+    asset_id: str | None = Field(None, max_length=64)
+    person_id: str | None = Field(None, max_length=64)
+    relink: bool = False
+
+
+class SelfPatchRequest(BaseModel):
+    goal: str = Field(min_length=1, max_length=4000)
+    tool_id: str | None = Field(None, max_length=64)
+
+
+ADMIN_APPROVALS = ("extension", "self_patch")  # changes to Atrium itself: only administrators decide them
+EXTENSION_GUARDRAILS = ("allow_extensions", "extensions_need_approval", "allow_self_patching",
+                        "self_patch_requires_tests", "self_patch_requires_approval", "self_patch_via_pull_request")
+
+
 def build_router(hub: Hub) -> APIRouter:
     router = APIRouter()
 
@@ -263,6 +306,9 @@ def build_router(hub: Hub) -> APIRouter:
             "flows_enabled": sum(1 for f in flows.all_flows(hub) if f.status == "enabled"),
             "people": len(people_app.all_people(hub)),
             "leavers": len(people_app.leavers(hub)),
+            "extensions": sum(1 for r in ext_registry.records(hub) if r.status == "enabled"),
+            "extension_domains": len(ext_registry.active_domains(hub)),
+            "restart_required": hub.restart_required is not None,
             "llm": hub.llm.status(),
             "autonomy": hub.prefs["autonomy"],
         }
@@ -762,11 +808,20 @@ def build_router(hub: Hub) -> APIRouter:
             if a.kind == "patch":
                 patch = hub.get_patch(a.payload.get("patch_id", ""))
                 item["patch"] = patch.model_dump(mode="json", exclude={"changes", "adapter_changes"}) if patch else None
+            elif a.kind == "extension":
+                rec = ext_registry.get(hub, a.payload.get("extension_id", ""))
+                item["extension"] = ext_registry.public(hub, rec) if rec else None
+            elif a.kind == "self_patch":
+                patch = selfpatch.get(hub, a.payload.get("self_patch_id", ""))
+                item["self_patch"] = selfpatch.public(patch) if patch else None
             out.append(item)
         return out
 
     @router.post("/approvals/{approval_id}")
     async def decide(approval_id: str, body: DecisionBody, p: CurrentPrincipal) -> dict[str, Any]:
+        pending = hub.approvals.get(approval_id)
+        if pending is not None and pending.kind in ADMIN_APPROVALS and p.role != "admin":
+            raise HTTPException(403, "Only administrators decide changes to Atrium itself (extensions and self-patches)")
         try:
             approval = await hub.approvals.decide(approval_id, body.approve, body.note, p.actor, sender=p.bus_id)
         except KeyError as exc:
@@ -1229,6 +1284,268 @@ def build_router(hub: Hub) -> APIRouter:
                      f"Tested the local model provider {result['provider']['name']}: {result['detail']}",
                      provider_id=provider_id)
         return result
+
+    # -- extensions ----------------------------------------------------------------------
+
+    def extension_or_404(ext_id: str) -> ext_registry.ExtensionRecord:
+        rec = ext_registry.get(hub, ext_id)
+        if rec is None:
+            raise not_found("Extension")
+        return rec
+
+    def domains_view() -> list[dict[str, Any]]:
+        out = []
+        for key, (defn, pack_id) in ext_registry.active_domains(hub).items():
+            items = ext_records.all_records(hub, key)
+            out.append({**defn.model_dump(mode="json"), "extension_id": pack_id, "collection": ext_records.collection(key),
+                        "count": sum(1 for r in items if not r.stale), "stale": sum(1 for r in items if r.stale)})
+        return out
+
+    @router.get("/extensions")
+    async def list_extensions() -> dict[str, Any]:
+        """Packs with their items and versions, the extension domains (apps), the gaps tools leave, the guardrails."""
+        recs = sorted(ext_registry.records(hub), key=lambda r: ({"proposed": 0, "enabled": 1}.get(r.status, 2), r.id))
+        values = hub.prefs["guardrails"]
+        return {"extensions": [ext_registry.public(hub, r) for r in recs], "domains": domains_view(),
+                "gaps": [{**g.as_dict(), "tool": t.name} for t in hub.tools() for g in ext_gaps.detect(hub, t)],
+                "allowed": ext_registry.allowed(hub), "kinds": list(ext_pack.KINDS),
+                "guardrails": {k: values.get(k) for k in EXTENSION_GUARDRAILS},
+                "self_patching": selfpatch.availability(hub), "restart_required": hub.restart_required}
+
+    @router.get("/extensions/{ext_id}")
+    async def get_extension(ext_id: str) -> dict[str, Any]:
+        """One pack with every version's JSON and its history."""
+        return ext_registry.public(hub, extension_or_404(ext_id), full=True)
+
+    @router.post("/extensions", status_code=201)
+    async def upload_extension(body: dict[str, Any], p: CurrentPrincipal, enable: bool = False) -> dict[str, Any]:
+        """Upload a pack (JSON): a new pack, or a new version of one (active at once when the pack is enabled)."""
+        try:
+            pack = ext_pack.parse(body)
+            rec = ext_registry.upload(hub, pack, p.actor, enable)
+        except LookupError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        if rec.status == "enabled":
+            await ext_registry.changed(hub, p.bus_id)
+        return ext_registry.public(hub, rec)
+
+    @router.patch("/extensions/{ext_id}")
+    async def set_extension_status(ext_id: str, body: ExtensionStatus, p: CurrentPrincipal) -> dict[str, Any]:
+        rec = extension_or_404(ext_id)
+        pending = rec.approval_id if rec.status == "proposed" else None
+        try:
+            rec = ext_registry.set_status(hub, ext_id, body.status, p.actor)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        if pending:  # deciding here also settles the proposal in the approval queue
+            try:
+                await hub.approvals.decide(pending, body.status == "enabled", f"{body.status.capitalize()} in Extensions",
+                                           p.actor, sender=p.bus_id)
+            except (KeyError, ValueError):
+                pass
+        await ext_registry.changed(hub, p.bus_id)
+        return ext_registry.public(hub, ext_registry.get(hub, ext_id) or rec)
+
+    @router.post("/extensions/{ext_id}/rollback")
+    async def rollback_extension(ext_id: str, p: CurrentPrincipal, body: ExtensionRollback | None = None) -> dict[str, Any]:
+        extension_or_404(ext_id)
+        try:
+            rec = ext_registry.rollback(hub, ext_id, p.actor, (body or ExtensionRollback()).version)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        await ext_registry.changed(hub, p.bus_id)
+        return ext_registry.public(hub, rec)
+
+    @router.delete("/extensions/{ext_id}")
+    async def delete_extension(ext_id: str, p: CurrentPrincipal, purge: bool = False) -> dict[str, Any]:
+        """Remove a pack with all its versions; purge=true also removes the records of the domains it defined."""
+        extension_or_404(ext_id)
+        removed = ext_registry.remove(hub, ext_id, p.actor, purge)
+        await ext_registry.changed(hub, p.bus_id)
+        return {"ok": True, "purged": removed}
+
+    @router.post("/tools/{tool_id}/extend")
+    async def extend_for_tool(tool_id: str, p: CurrentPrincipal, body: ExtendRequest | None = None) -> dict[str, Any]:
+        """Ask the Patch Agent to close the tool's hub-side gaps with an extension pack (and, with Claude, a self-patch
+        when only code can close one)."""
+        tool = hub.get_tool(tool_id)
+        if tool is None or tool.manifest is None:
+            raise not_found("Tool")
+        return await ask(p, "patcher", "extension.propose", {"tool_id": tool_id,
+                                                              "designer": (body or ExtendRequest()).designer}, timeout=900)
+
+    # -- extension domains: records ------------------------------------------------------
+
+    def domain_or_404(key: str):
+        found = ext_registry.active_domains(hub).get(key)
+        if found is None:
+            raise not_found("Extension domain")
+        return found
+
+    def record_or_404(key: str, record_id: str) -> ext_records.ExtRecord:
+        record = ext_records.get(hub, key, record_id)
+        if record is None:
+            raise not_found("Record")
+        return record
+
+    def typed_fields(defn: ext_pack.DomainItem, given: dict[str, Any]) -> dict[str, Any]:
+        """Values a person entered, typed by the domain's fields (None clears one); 400 for anything that does not fit."""
+        out: dict[str, Any] = {}
+        for name, value in given.items():
+            spec = defn.field(name)
+            if spec is None:
+                raise HTTPException(400, f"{defn.title} has no field '{name}'")
+            if value is None or value == "":
+                out[name] = None
+                continue
+            typed = ext_records.coerce_value(spec, value)
+            if typed is None:
+                expected = f"one of {', '.join(spec.values)}" if spec.type == "enum" else f"a valid {spec.type}"
+                raise HTTPException(400, f"{spec.label} must be {expected}")
+            out[name] = typed
+        return out
+
+    def link_target(kind: str, value: str | None) -> str | None:
+        if not value:
+            return None
+        if kind == "asset" and hub.one("assets", value, Asset) is None:
+            raise HTTPException(400, f"Unknown asset '{value}'")
+        if kind == "person" and people_app.get(hub, value) is None:
+            raise HTTPException(400, f"Unknown person '{value}'")
+        return value
+
+    def record_view(record: ext_records.ExtRecord, pack_id: str | None = None) -> dict[str, Any]:
+        return {**ext_records.public(hub, record), "extension_id": pack_id}
+
+    @router.get("/x")
+    async def extension_domains() -> list[dict[str, Any]]:
+        """The enabled extension domains - each is an app in the sidebar."""
+        return domains_view()
+
+    @router.get("/x/{domain}")
+    async def list_extension_records(domain: str, q: str = "", asset_id: str = "", person_id: str = "", source: str = "",
+                                     stale: bool = False, limit: int = 1000) -> dict[str, Any]:
+        """Filters: q (title, external id and every field), asset_id, person_id, source (a tool id or "manual");
+        stale=true includes records their tool no longer reports."""
+        defn, pack_id = domain_or_404(domain)
+        return {"domain": {**defn.model_dump(mode="json"), "extension_id": pack_id},
+                **ext_records.listing(hub, defn, q=q[:200], asset_id=asset_id[:64], person_id=person_id[:64],
+                                      source=source[:64], include_stale=stale, limit=limit)}
+
+    @router.post("/x/{domain}", status_code=201)
+    async def create_extension_record(domain: str, body: RecordBody, p: CurrentPrincipal) -> dict[str, Any]:
+        defn, pack_id = domain_or_404(domain)
+        fields = {k: v for k, v in typed_fields(defn, body.fields).items() if v is not None}
+        missing = [f.label for f in defn.fields if f.required and f.name not in fields]
+        if missing:
+            raise HTTPException(400, f"Required: {', '.join(missing)}")
+        record = ext_records.ExtRecord(domain=defn.key, fields=fields, title=ext_records.title_of(defn, fields))
+        if body.asset_id:
+            record.asset_id, record.asset_source = link_target("asset", body.asset_id), "manual"
+        if body.person_id:
+            record.person_id, record.person_source = link_target("person", body.person_id), "manual"
+        ext_records.Linker(hub).apply(defn, record)
+        ext_records.save(hub, record)
+        hub.activity(p.actor, "info", f"Added {defn.singular or defn.title} '{record.title}'", domain=defn.key,
+                     record_id=record.id)
+        await hub.bus.tell(p.bus_id, "module:grc", "evaluate")
+        return record_view(record, pack_id)
+
+    @router.get("/x/{domain}/{record_id}")
+    async def get_extension_record(domain: str, record_id: str) -> dict[str, Any]:
+        defn, pack_id = domain_or_404(domain)
+        return {**record_view(record_or_404(defn.key, record_id), pack_id), "domain_def": defn.model_dump(mode="json")}
+
+    @router.patch("/x/{domain}/{record_id}")
+    async def update_extension_record(domain: str, record_id: str, body: RecordPatch, p: CurrentPrincipal) -> dict[str, Any]:
+        defn, pack_id = domain_or_404(domain)
+        record = record_or_404(defn.key, record_id)
+        given = body.model_dump(exclude_unset=True)
+        changed = []
+        if body.fields:
+            merged = {**record.fields, **typed_fields(defn, body.fields)}
+            fields = {k: v for k, v in merged.items() if v is not None}
+            missing = [f.label for f in defn.fields if f.required and f.name not in fields]
+            if missing:
+                raise HTTPException(400, f"Required: {', '.join(missing)}")
+            record.fields, record.title = fields, ext_records.title_of(defn, fields, record.external_id)
+            changed.append("fields")
+        if "asset_id" in given:
+            record.asset_id, record.asset_source = link_target("asset", body.asset_id), "manual"
+            changed.append("asset")
+        if "person_id" in given:
+            record.person_id, record.person_source = link_target("person", body.person_id), "manual"
+            changed.append("person")
+        if body.relink:
+            record.asset_source = record.person_source = "auto"
+            changed.append("links automatic")
+        ext_records.Linker(hub).apply(defn, record)
+        ext_records.save(hub, record)
+        if changed:
+            hub.activity(p.actor, "info", f"Changed {defn.singular or defn.title} '{record.title}': {', '.join(changed)}"
+                         + (" (its tool may overwrite pulled fields on the next pull)" if record.source != "manual"
+                            and "fields" in changed else ""), domain=defn.key, record_id=record.id)
+        await hub.bus.tell(p.bus_id, "module:grc", "evaluate")
+        return record_view(record, pack_id)
+
+    @router.delete("/x/{domain}/{record_id}")
+    async def delete_extension_record(domain: str, record_id: str, p: CurrentPrincipal) -> dict[str, Any]:
+        defn, _ = domain_or_404(domain)
+        record = record_or_404(defn.key, record_id)
+        ext_records.delete(hub, defn.key, record_id)
+        if record.source != "manual":
+            flows.drop_link(hub, record.source, ext_records.collection(defn.key), record_id)
+        hub.activity(p.actor, "info", f"Removed {defn.singular or defn.title} '{record.title}'", domain=defn.key)
+        await hub.bus.tell(p.bus_id, "module:grc", "evaluate")
+        return {"ok": True}
+
+    # -- self-patches (changes to Atrium's own code) -------------------------------------
+
+    def self_patch_or_404(patch_id: str) -> selfpatch.SelfPatch:
+        patch = selfpatch.get(hub, patch_id)
+        if patch is None:
+            raise not_found("Self-patch")
+        return patch
+
+    @router.get("/self-patches")
+    async def list_self_patches() -> dict[str, Any]:
+        return {"patches": [selfpatch.public(x, diff=False) for x in selfpatch.all_patches(hub)],
+                "restart_required": hub.restart_required, "availability": selfpatch.availability(hub)}
+
+    @router.get("/self-patches/{patch_id}")
+    async def get_self_patch(patch_id: str) -> dict[str, Any]:
+        return selfpatch.public(self_patch_or_404(patch_id))
+
+    @router.post("/self-patches", status_code=202)
+    async def request_self_patch(body: SelfPatchRequest, p: CurrentPrincipal) -> dict[str, Any]:
+        """Ask the Patch Agent (Claude) for a change to Atrium's own code; it appears in Approvals once its tests ran."""
+        state = selfpatch.availability(hub)
+        if not state["allowed"]:
+            raise HTTPException(400, "Self-patching is switched off (guardrail allow_self_patching)")
+        if not state["claude"]:
+            raise HTTPException(400, "Self-patches need Claude - set ANTHROPIC_API_KEY")
+        if not state["git_checkout"]:
+            raise HTTPException(400, "Atrium does not run from a git checkout, so it cannot patch itself")
+        if body.tool_id and hub.get_tool(body.tool_id) is None:
+            raise not_found("Tool")
+        await hub.bus.tell(p.bus_id, "patcher", "self_patch.propose", {"goal": body.goal.strip(), "tool_id": body.tool_id})
+        hub.activity(p.actor, "info", f"Asked the Patch Agent for a change to Atrium: {body.goal.strip()[:200]}")
+        return {"accepted": True, "detail": "The Patch Agent writes the change on a branch and runs the tests; it "
+                                            "appears in Approvals when they are done."}
+
+    @router.post("/self-patches/{patch_id}/apply")
+    async def apply_self_patch(patch_id: str, p: CurrentPrincipal) -> dict[str, Any]:
+        """Apply an approved self-patch again (after a refusal such as a dirty working tree)."""
+        patch = self_patch_or_404(patch_id)
+        if patch.status != "approved":
+            raise HTTPException(400, f"The self-patch is {patch.status}: only an approved one that could not be "
+                                     "applied can be applied again")
+        result = await selfpatch.apply(hub, patch, p.actor)
+        if result["ok"] and patch.approval_id:
+            hub.approvals.complete(patch.approval_id, True, result)
+        return {**result, "self_patch": selfpatch.public(selfpatch.get(hub, patch_id) or patch)}
 
     # -- live events (SSE) ---------------------------------------------------------------
 

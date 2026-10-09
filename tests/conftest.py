@@ -14,8 +14,10 @@ from hub.config import Settings
 
 @pytest.fixture(autouse=True)
 def no_llm(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Tests never call a real model."""
+    """Tests never call a real model - and never self-patch (or run the tests of) this checkout: self-patch tests
+    point hub.self_patch at a temporary repository."""
     monkeypatch.setenv("HUB_LLM", "off")
+    monkeypatch.setenv("HUB_SELF_PATCH", "off")
 
 
 ADMIN_PASSWORD = "correct horse battery staple"

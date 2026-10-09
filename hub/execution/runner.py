@@ -78,15 +78,18 @@ async def run_local(
     return CommandResult(proc.returncode or 0, _decode(out), time.monotonic() - started)
 
 
-async def run_exec(args: list[str], cwd: str | Path | None = None, timeout: float = 600) -> CommandResult:
-    """Run a program with an argv list - no shell, so arguments cannot inject commands."""
+async def run_exec(args: list[str], cwd: str | Path | None = None, timeout: float = 600,
+                   env: dict[str, str] | None = None) -> CommandResult:
+    """Run a program with an argv list - no shell, so arguments cannot inject commands. `env` replaces the
+    environment (default: this process's)."""
     started = time.monotonic()
     proc = await asyncio.create_subprocess_exec(
         *args,
         cwd=str(cwd) if cwd else None,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT,
-        env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+        env={**(os.environ if env is None else env), "GIT_TERMINAL_PROMPT": "0"},
+        **new_group_kwargs(),
     )
     try:
         out, _ = await asyncio.wait_for(proc.communicate(), timeout)

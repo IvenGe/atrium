@@ -17,6 +17,7 @@ from .auth.service import AuthService
 from .bus import Bus
 from .config import AUTONOMY_LEVELS, Settings
 from .execution.processes import ProcessManager
+from .extensions import selfpatch
 from .integration import flows
 from .integration.toolbus import ToolBus
 from .llm import LLM
@@ -49,6 +50,10 @@ class Hub:
         self.agents = AgentRegistry(self)
         self.connector_transport: httpx.AsyncBaseTransport | None = None  # tests route connector HTTP through a mock
         self.llm_transport: httpx.AsyncBaseTransport | None = None  # ... and local model servers' HTTP
+        # Atrium's own repository, test command and git / gh runners for self-patches (tests inject fakes)
+        self.self_patch = selfpatch.SelfPatchConfig()
+        self.restart_required: dict[str, Any] | None = None  # set when a self-patch was merged; a restart clears it
+        self.approvals.guards["self_patch"] = lambda approval, approve: selfpatch.check_decision(self, approval, approve)
         self._background: list[asyncio.Task[None]] = []
         self._sla_checked = 0.0
 

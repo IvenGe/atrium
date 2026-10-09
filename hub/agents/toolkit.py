@@ -191,6 +191,24 @@ async def _risks(ctx: ToolContext, args: dict[str, Any]) -> Any:
              "source": r.source, "owner": r.owner} for r in risks[:50]]
 
 
+@tool("extension_records", "Records of an app an extension pack adds (alerts, tickets, incidents...). domain: its key, "
+      "or '' to list the enabled extension domains; q: text to search for or ''. At most 100, most severe first.",
+      "read", {"domain": STR, "q": STR})
+async def _extension_records(ctx: ToolContext, args: dict[str, Any]) -> Any:
+    from ..extensions import records, registry
+
+    domains = registry.active_domains(ctx.hub)
+    key = str(args.get("domain") or "").strip().removeprefix("x:")
+    if not key:
+        return [{"domain": k, "title": d.title, "fields": [f.name for f in d.fields]} for k, (d, _) in domains.items()]
+    if key not in domains:
+        raise ValueError(f"No enabled extension domain '{key}' (enabled: {', '.join(domains) or 'none'})")
+    listed = records.listing(ctx.hub, domains[key][0], q=str(args.get("q") or "")[:200], source=ctx.tool_scope or "",
+                             limit=100)
+    return [{k: r[k] for k in ("id", "title", "fields", "source", "asset", "person", "updated_at")}
+            for r in listed["records"]]
+
+
 @tool("list_approvals", "Actions waiting for human approval.", "read")
 async def _approvals(ctx: ToolContext, args: dict[str, Any]) -> Any:
     return [{"id": a.id, "title": a.title, "kind": a.kind, "requested_by": a.requested_by}

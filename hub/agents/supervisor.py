@@ -8,6 +8,8 @@ from pathlib import Path
 from typing import Any
 
 from ..bus import Message
+from ..extensions import gaps as extension_gaps
+from ..extensions import registry as extension_registry
 from ..integration import connections, flows, identity, importer, strategies
 from ..integration.compatibility import evaluate_suite, suite_matrix
 from ..integration.identity import SSO_STRATEGIES
@@ -101,9 +103,22 @@ class HubSupervisor(BaseAgent):
             await self._sso_sweep(exclude=tool_id)
         if teams.classify(self.hub, tool):  # a known complex tool (SIEM, GRC, inventory, scanner) gets a team proposal
             await self.tell(f"tool:{tool_id}", "team.propose", {"auto": True})
+        await self.extend_for(tool)
         await self.tell("module:assets", "sync")
         await self.tell("module:grc", "evaluate")
         return {"tool_id": tool_id, "score": tool.report.score, "level": tool.report.level, "gaps": len(gaps)}
+
+    async def extend_for(self, tool) -> list[dict[str, Any]]:
+        """Hub-side gaps (a data domain Atrium does not model, no connector, unknown SSO) go to the Patch Agent, which
+        extends Atrium - once per tool (see PatchAgent.on_extension_propose)."""
+        if not extension_registry.allowed(self.hub) or extension_registry.covers_tool(self.hub, tool.id):
+            return []
+        gaps = [g.as_dict() for g in extension_gaps.detect(self.hub, tool)]
+        if gaps:
+            self.log("info", f"Atrium lacks {len(gaps)} thing(s) for {tool.name}: " + "; ".join(g["title"] for g in gaps)
+                     + " - asking the Patch Agent to extend Atrium", tool_id=tool.id)
+            await self.tell("patcher", "extension.propose", {"tool_id": tool.id, "auto": True})
+        return gaps
 
     async def on_tool_patched(self, body: dict[str, Any], msg: Message) -> dict[str, Any]:
         self.reevaluate()

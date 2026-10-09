@@ -17,6 +17,10 @@ from ..bus import Message
 from ..connectors import base as connector_sdk
 from ..connectors import generic_rest
 from ..connectors.base import ConnectorError, endpoint_of
+from ..extensions import gaps as ext_gaps
+from ..extensions import generate as ext_generate
+from ..extensions import registry as ext_registry
+from ..extensions import selfpatch
 from ..integration import connections, flows, identity
 from ..integration.analyzer import list_files
 from ..integration.identity import SSO_STRATEGIES
@@ -378,10 +382,151 @@ class PatchAgent(BaseAgent):
         if approved and change:
             self.log("info", f"Applied '{approval.title}'")
 
+    # -- extending Atrium itself -------------------------------------------------------
+
+    async def on_extension_propose(self, body: dict[str, Any], msg: Message) -> dict[str, Any]:
+        """Close a tool's hub-side gaps (extensions/gaps.py): a pack written by Claude (when available, unless
+        `designer` is "templates") or from the templates, proposed as an approval of kind "extension" - enabled at once
+        while the extensions_need_approval guardrail is off. When only a change to Atrium's code can close a gap and
+        Claude is available, a self-patch is requested as well. `auto`: the hub asked by itself (once per tool)."""
+        tool = self._tool(body.get("tool_id"))
+        designer = str(body.get("designer") or "auto")
+        if designer not in ("auto", "templates", "claude"):
+            raise ValueError("designer is auto, templates or claude")
+        if designer == "claude" and not self.hub.llm.available:
+            raise ValueError("Writing an extension with Claude needs ANTHROPIC_API_KEY; use the templates instead")
+        result: dict[str, Any] = {"tool_id": tool.id, "gaps": [], "proposed": False, "approval_id": None,
+                                  "extension_id": None, "enabled": False, "self_patch": None, "designer": None,
+                                  "detail": ""}
+        if not ext_registry.allowed(self.hub):
+            return {**result, "detail": "Extensions are switched off (guardrail allow_extensions)"}
+        async with self._lock(f"extend:{tool.id}"):
+            if body.get("auto") and ext_registry.covers_tool(self.hub, tool.id):
+                return {**result, "detail": f"{tool.name} already has an extension or a proposal"}
+            pending = next((r for r in ext_registry.records(self.hub) if r.source_tool == tool.id and r.status == "proposed"), None)
+            if pending is not None:
+                return {**result, "approval_id": pending.approval_id, "extension_id": pending.id,
+                        "detail": f"An extension for {tool.name} is already waiting for approval"}
+            gaps = ext_gaps.detect(self.hub, tool)
+            result["gaps"] = [g.as_dict() for g in gaps]
+            if not gaps:
+                return {**result, "detail": f"Atrium has no gap to close for {tool.name}"}
+            pack, rationale, needs_code, goal = None, "", False, ""
+            if designer != "templates" and self.hub.llm.available:
+                try:
+                    pack, rationale, needs_code, goal = await ext_generate.claude_pack(self.hub, tool, gaps, self.model)
+                    result["designer"] = "claude"
+                except Exception as exc:  # the templates always work
+                    self.log("warn", f"Claude could not write an extension for {tool.name}, using the templates: {exc}")
+            if pack is None:
+                pack = ext_gaps.template_pack(self.hub, tool, gaps, self.id)
+                if pack is not None:
+                    result["designer"] = "templates"
+                    kind = ext_gaps.category(tool)
+                    rationale = rationale or (f"{tool.name} is a {ext_gaps.KINDS[kind]['title'].lower()} tool"
+                                              if kind else tool.name) + ": " + "; ".join(g.title for g in gaps) + "."
+            if pack is not None:
+                result.update(await self._submit_extension(tool, pack, rationale, result["designer"], gaps, msg.sender))
+            code_gaps = [g for g in gaps if not g.expressible]
+            if (needs_code or code_gaps) and self._may_self_patch(tool.id):
+                goal = goal or " ".join(f"{g.title}: {g.detail}" for g in code_gaps)
+                await self.tell(self.id, "self_patch.propose", {"goal": goal, "tool_id": tool.id})
+                result["self_patch"] = "requested"
+            if not result["detail"]:
+                missing = [g.title for g in gaps if g.needs_claude and not self.hub.llm.available]
+                result["detail"] = (f"No template fits {tool.name}'s gaps" + (f" ({'; '.join(missing)} need Claude)"
+                                                                             if missing else ""))
+        return result
+
+    def _may_self_patch(self, tool_id: str) -> bool:
+        return (self.hub.llm.available and bool(guardrails.value(self.hub, "allow_self_patching"))
+                and selfpatch.config(self.hub).root() is not None
+                and not any(p.tool_id == tool_id for p in selfpatch.all_patches(self.hub)))
+
+    async def _submit_extension(self, tool: Tool, pack: Any, rationale: str, designer: str | None,
+                                gaps: list[Any], origin: str) -> dict[str, Any]:
+        rec = ext_registry.propose(self.hub, pack, self.id)
+        summary = pack.summary()
+        lines = [f"- {kind}: {count}" for kind, count in summary["kinds"].items()]
+        detail = (rationale + "\n\n" if rationale else "") + f"{pack.name} {pack.version} adds:\n" + "\n".join(lines)
+        if not guardrails.value(self.hub, "extensions_need_approval"):
+            try:
+                ext_registry.set_status(self.hub, rec.id, "enabled", f"{self.id} (extensions_need_approval off)")
+            except ValueError as exc:
+                ext_registry.set_status(self.hub, rec.id, "disabled", self.id)
+                return {"proposed": True, "extension_id": rec.id, "enabled": False,
+                        "detail": f"Generated {pack.name}, but it cannot be enabled: {exc}"}
+            self.log("warn", f"Enabled the extension {pack.name} without approval (guardrail extensions_need_approval "
+                             "is off)", extension_id=rec.id)
+            await ext_registry.changed(self.hub, self.id)
+            return {"proposed": True, "extension_id": rec.id, "enabled": True, "detail": f"Enabled {pack.name}."}
+        payload = {"extension_id": rec.id, "version": pack.version, "tool_id": tool.id, "designer": designer,
+                   "summary": summary, "gaps": [g.as_dict() for g in gaps], "pack": pack.model_dump(mode="json")}
+        approval = self.hub.approvals.create("extension", f"Extend Atrium for {tool.name}: {pack.name}", detail, payload,
+                                             self.id)
+        rec = ext_registry.get(self.hub, rec.id) or rec
+        rec.approval_id = approval.id
+        ext_registry.save(self.hub, rec)
+        self.log("info", f"Proposed the extension {pack.name} for {tool.name}", extension_id=rec.id)
+        return {"proposed": True, "approval_id": approval.id, "extension_id": rec.id, "enabled": False,
+                "detail": f"Proposed {pack.name}; waiting for approval."}
+
+    async def _decide_extension(self, approval_id: str, approved: bool, actor: str) -> None:
+        approval = self.hub.approvals.get(approval_id)
+        if approval is None:
+            return
+        rec = ext_registry.get(self.hub, str(approval.payload.get("extension_id")))
+        if rec is None:
+            if approved:
+                self.hub.approvals.complete(approval_id, False, {"error": "The extension was removed"})
+            return
+        if not approved:
+            if rec.status == "proposed":
+                rec.status, rec.approval_id = "disabled", None
+                rec.log(actor, "rejected")
+                ext_registry.save(self.hub, rec, actor)
+            return
+        if rec.status == "proposed":
+            try:
+                rec = ext_registry.set_status(self.hub, rec.id, "enabled", actor)
+            except ValueError as exc:
+                rec.status, rec.approval_id = "disabled", None
+                rec.notes = [*rec.notes, f"Not enabled: {exc}"]
+                ext_registry.save(self.hub, rec, actor)
+                self.hub.approvals.complete(approval_id, False, {"error": str(exc)})
+                return
+            await ext_registry.changed(self.hub, self.id)
+        self.hub.approvals.complete(approval_id, True, {"enabled": rec.status == "enabled", "notes": rec.notes})
+
+    async def on_self_patch_propose(self, body: dict[str, Any], msg: Message) -> dict[str, Any]:
+        """With Claude: a change to Atrium's own repository for `goal`, tested in a worktree and proposed as an approval
+        of kind "self_patch" (see extensions/selfpatch.py)."""
+        goal = str(body.get("goal") or "").strip()
+        if not goal:
+            raise ValueError("Describe what the change to Atrium should achieve")
+        if not self.hub.llm.available:
+            raise ValueError("Self-patches need Claude - set ANTHROPIC_API_KEY")
+        tool = self.hub.get_tool(str(body.get("tool_id"))) if body.get("tool_id") else None
+        title, rationale, changes = await ext_generate.claude_self_patch(self.hub, goal, tool, self.model)
+        patch = await selfpatch.propose(self.hub, title=title, rationale=rationale, changes=changes, goal=goal,
+                                        tool_id=tool.id if tool else None, requested_by=self.id)
+        patch = await selfpatch.submit(self.hub, patch, self.id)
+        self.log("info", f"Proposed the self-patch '{patch.title}' ({'tests passed' if patch.tests and patch.tests.get('ok') else 'tests failed'})",
+                 self_patch_id=patch.id)
+        return {"self_patch_id": patch.id, "approval_id": patch.approval_id, "status": patch.status,
+                "tests_passed": bool(patch.tests and patch.tests.get("ok"))}
+
     async def on_approval_decided(self, body: dict[str, Any], msg: Message) -> None:
         approval = self.hub.approvals.get(body["approval_id"])
+        actor = str(body.get("decided_by") or msg.sender)
         if approval is not None and approval.kind == "repair":
-            await self._decide_repair(approval.id, bool(body.get("approved")), str(body.get("decided_by") or msg.sender))
+            await self._decide_repair(approval.id, bool(body.get("approved")), actor)
+            return
+        if approval is not None and approval.kind == "extension":
+            await self._decide_extension(approval.id, bool(body.get("approved")), actor)
+            return
+        if approval is not None and approval.kind == "self_patch":
+            await selfpatch.decided(self.hub, approval.id, bool(body.get("approved")), actor)
             return
         patch = self.hub.get_patch(approval.payload.get("patch_id", "")) if approval else None
         if approval is None or patch is None:

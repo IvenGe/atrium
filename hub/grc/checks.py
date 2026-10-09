@@ -33,6 +33,8 @@ class Snapshot:
     guardrails: dict[str, Any] = field(default_factory=guardrails.defaults)
     people: list[Person] = field(default_factory=list)
     accounts: list[Account] = field(default_factory=list)
+    # results of the active extension packs' control rules (hub/extensions/controls.py), merged into their controls
+    extension_results: list[dict[str, Any]] = field(default_factory=list)
 
 
 Result = tuple[str, str, list[str]]  # status, detail, evidence
@@ -168,10 +170,16 @@ def check_tools_manifest(s: Snapshot) -> Result:
 
 def check_patch_review(s: Snapshot) -> Result:
     applied = [p for p in s.patches if p.status == "applied"]
+    off, loose, guards = _guardrail_findings(s, "HB-CM-2")  # self-patching and extension guardrails
+    evidence = [p.title for p in applied[:10]] + guards
+    if off:
+        return "fail", "Changes to Atrium's own code are not reviewed - switched off: " + "; ".join(off) + ".", evidence
     if s.autonomy == "autonomous":
-        return "partial", "Patches are reviewed as branches, but autonomous mode applies them without approval.", []
+        return "partial", "Patches are reviewed as branches, but autonomous mode applies them without approval.", evidence
+    if loose:
+        return "partial", "Patches go through the approval queue, but " + " and ".join(loose) + ".", evidence
     return "pass", f"Patches go through the approval queue ({len(applied)} applied, "\
-        f"{sum(1 for p in s.patches if p.status == 'rejected')} rejected).", [p.title for p in applied[:10]]
+        f"{sum(1 for p in s.patches if p.status == 'rejected')} rejected).", evidence
 
 
 def check_tools_health(s: Snapshot) -> Result:
@@ -276,13 +284,36 @@ CHECKS: dict[str, Callable[[Snapshot], Result]] = {
 }
 
 
+RATED = {"pass": 0, "partial": 1, "fail": 2}
+
+
+def with_extension_evidence(state: ControlState, results: list[dict[str, Any]]) -> ControlState:
+    """Combine a control's own check with the extension rules that rate it: the worse status counts (a control the
+    hub cannot check itself takes the rules' status only when they find a problem); every rule adds evidence."""
+    rated = [r for r in results if r.get("status") in RATED]
+    if not rated:
+        return state
+    worst = max((r["status"] for r in rated), key=RATED.__getitem__)
+    if state.status in RATED:
+        status = max(state.status, worst, key=RATED.__getitem__)
+    else:
+        status = worst if worst != "pass" else state.status
+    problems = [r["detail"] for r in rated if r["status"] != "pass"]
+    detail = state.detail + (f" Extension evidence: {'; '.join(problems)}." if problems else "")
+    evidence = [*state.evidence, *(f"{r['extension']}: {r['detail']}" for r in rated)]
+    return state.model_copy(update={"status": status, "detail": detail, "evidence": evidence})
+
+
 def run_check(control: Control, snapshot: Snapshot) -> ControlState:
     now = time.time()
+    extra = [r for r in snapshot.extension_results if r.get("control") == control.id]
     if not control.check:
-        return ControlState(id=control.id, status="manual", detail="Assess manually.", evaluated_at=now)
+        state = ControlState(id=control.id, status="manual", detail="Assess manually.", evaluated_at=now)
+        return with_extension_evidence(state, extra)
     fn = check_policy(control.check.split(":", 1)[1]) if control.check.startswith("policy:") else CHECKS[control.check]
     status, detail, evidence = fn(snapshot)
-    return ControlState(id=control.id, status=status, detail=detail, evidence=evidence, evaluated_at=now)  # type: ignore[arg-type]
+    state = ControlState(id=control.id, status=status, detail=detail, evidence=evidence, evaluated_at=now)  # type: ignore[arg-type]
+    return with_extension_evidence(state, extra)
 
 
 def evaluate_controls(snapshot: Snapshot, overrides: dict[str, ControlState]) -> list[ControlState]:

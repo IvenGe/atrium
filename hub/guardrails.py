@@ -4,7 +4,7 @@ Each guardrail is registered once - its default, its type, and what relaxing it 
 a person switches a protection off). Later features add their own with `register`, naming the compliance control that
 relaxing it weakens (`control`, `weakens`, `finding`; see `weakened`). Values live in the "guardrails" preference;
 every change is logged with the actor (relaxations as warnings) and the GRC Supervisor re-evaluates the controls
-(HB-AC-6 for the agent guardrails, HB-AC-2 for the approval switches).
+(HB-AC-6 for the agent guardrails, HB-AC-2 for the approval switches, HB-CM-2 for extensions and self-patching).
 """
 
 from __future__ import annotations
@@ -31,6 +31,9 @@ class Guardrail:
     control: str | None = None
     weakens: Literal["fail", "partial"] = "partial"
     finding: str = ""
+    # the protective position when it is not the default: switches that allow a capability ("allow_extensions") are
+    # on by default but off is the safe side, so switching them back on is logged as relaxing
+    safe_value: bool | None = None
 
     @property
     def kind(self) -> str:
@@ -38,8 +41,9 @@ class Guardrail:
 
     @property
     def safe(self) -> bool | int:
-        """The protective position of a switch (its default); numbers are tighter when lower."""
-        return self.default
+        """The protective position of a switch (its default unless `safe_value` says otherwise); numbers are tighter
+        when lower."""
+        return self.default if self.safe_value is None else self.safe_value
 
     def relaxes(self, old: Any, new: Any) -> bool:
         if self.kind == "bool":
@@ -101,6 +105,37 @@ for _g in (
               "Agents would create new agents - with their roles, schedules and permissions - without a person "
               "reviewing them.", group="teams", control="HB-AC-2",
               finding="agent teams are created without approval"),
+    # extensions and self-patching (hub/extensions/)
+    Guardrail("allow_extensions", "Allow extensions",
+              "Extension packs can add data types, connector mappings, SSO recipes, compliance evidence and team "
+              "templates to Atrium. Packs are data only: nothing in them is ever executed. Off: no pack is active and "
+              "none is proposed.", True,
+              "Enabled packs change what Atrium models and which tool APIs its connections call.", group="extensions",
+              safe_value=False),
+    Guardrail("extensions_need_approval", "Generated extensions need approval",
+              "Extension packs the Patch Agent generates after an import wait in the approval queue before they are "
+              "enabled.", True,
+              "Packs an agent generated (from templates or with Claude) would be enabled without a person reviewing the "
+              "data types, connector mappings and compliance rules they add.", group="extensions", control="HB-CM-2",
+              finding="extensions that agents generate are enabled without approval"),
+    Guardrail("allow_self_patching", "Allow self-patching",
+              "When an extension cannot express what a new tool needs, the Patch Agent (with Claude) may propose a "
+              "change to Atrium's own code on a separate branch, tested before anyone decides. Off: it never does.",
+              True, "Claude-written changes to Atrium's own code would be proposed (and their tests run) again.",
+              group="self_patching", safe_value=False),
+    Guardrail("self_patch_requires_tests", "Self-patches must pass the tests",
+              "A change to Atrium's own code can only be approved when Atrium's test suite passed on its branch.", True,
+              "Changes to Atrium's own code could be merged although its test suite fails on them - a broken or "
+              "insecure Atrium after the next restart.", group="self_patching", control="HB-CM-2", weakens="fail"),
+    Guardrail("self_patch_requires_approval", "Self-patches need approval",
+              "Changes to Atrium's own code wait in the approval queue (an administrator decides).", True,
+              "Claude-written changes to Atrium's own code would be merged into the running checkout without a person "
+              "reading them first.", group="self_patching", control="HB-CM-2", weakens="fail"),
+    Guardrail("self_patch_via_pull_request", "Self-patches go through a pull request",
+              "An approved self-patch is pushed as a branch and opened as a pull request (GitHub CLI, origin remote) "
+              "instead of being merged locally. Without the GitHub CLI or an origin remote it is merged locally.", True,
+              "Approved changes to Atrium's own code would be merged straight into the current branch, without the "
+              "review and CI of a pull request.", group="self_patching"),
 ):
     register(_g)
 

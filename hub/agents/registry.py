@@ -18,6 +18,7 @@ class AgentRegistry:
 
     def start_core(self) -> None:
         from .assets import AssetSupervisor
+        from .extensions import ExtensionSupervisor
         from .grc import GrcSupervisor
         from .operator import OperatorAgent
         from .patcher import PatchAgent
@@ -27,7 +28,7 @@ class AgentRegistry:
 
         for agent in (HubSupervisor(self.hub), PatchAgent(self.hub), OperatorAgent(self.hub),
                       AssetSupervisor(self.hub), GrcSupervisor(self.hub), VulnerabilitySupervisor(self.hub),
-                      PeopleSupervisor(self.hub)):
+                      PeopleSupervisor(self.hub), ExtensionSupervisor(self.hub)):
             self.add(agent)
 
     def start_custom(self) -> None:

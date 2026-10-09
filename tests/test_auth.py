@@ -134,6 +134,16 @@ def test_password_policy(password, message):
     ("POST", "/api/people/p_1/actions/disable_atrium_account", "admin"),
     ("POST", "/api/people/p_1/actions/disable_atrium_account/", "admin"),
     ("GET", "/api/accounts", "viewer"), ("PATCH", "/api/accounts/okta|00u1", "operator"),
+    ("GET", "/api/extensions", "viewer"), ("GET", "/api/extensions/wazuh-alerts", "viewer"),
+    ("POST", "/api/extensions", "admin"), ("POST", "/api/extensions/", "admin"),
+    ("PATCH", "/api/extensions/wazuh-alerts", "admin"), ("DELETE", "/api/extensions/wazuh-alerts", "admin"),
+    ("POST", "/api/extensions/wazuh-alerts/rollback", "admin"), ("POST", "/api/extensions/a/b", "operator"),
+    ("POST", "/api/tools/wazuh/extend", "admin"), ("GET", "/api/x", "viewer"), ("GET", "/api/x/alerts", "viewer"),
+    ("GET", "/api/x/alerts/x_1", "viewer"), ("POST", "/api/x/alerts", "operator"),
+    ("PATCH", "/api/x/alerts/x_1", "operator"), ("DELETE", "/api/x/alerts/x_1", "operator"),
+    ("GET", "/api/self-patches", "viewer"), ("GET", "/api/self-patches/sp_1", "viewer"),
+    ("POST", "/api/self-patches", "admin"), ("POST", "/api/self-patches/sp_1/apply", "admin"),
+    ("POST", "/api/self-patches/sp_1", "operator"), ("POST", "/api/approvals/ap_1", "operator"),
 ])
 def test_required_role(method, path, role):
     assert required_role(method, path) == role
@@ -179,6 +189,12 @@ def contract_role(method: str, path: str) -> str | None:
     # People: operators change people and links; disabling someone's Atrium account is account administration
     if (method, path) == ("POST", "/api/people/{person_id}/actions/{action}"):
         return "operator"  # per action: see test_required_role
+    # extensions and self-patches change Atrium itself (reading them and extension records follow the default)
+    if (method, path) in {("POST", "/api/extensions"), ("PATCH", "/api/extensions/{ext_id}"),
+                          ("DELETE", "/api/extensions/{ext_id}"), ("POST", "/api/extensions/{ext_id}/rollback"),
+                          ("POST", "/api/tools/{tool_id}/extend"), ("POST", "/api/self-patches"),
+                          ("POST", "/api/self-patches/{patch_id}/apply")}:
+        return "admin"
     return "viewer" if method in ("GET", "HEAD") else "operator"
 
 

@@ -28,7 +28,8 @@ SELF_SERVICE = {
 ADMIN_TREES = ("/api/users", "/api/tokens")
 # Single routes that need admin: settings (SLA, guardrails), agent definitions (create, configure, remove), the AI
 # model providers (they may hold API keys), the identity providers (credentials for sign-in), tool connections
-# (they hold the tools' API credentials), the Sign-in & SSO settings and disabling a person's Atrium account.
+# (they hold the tools' API credentials), the Sign-in & SSO settings, disabling a person's Atrium account, extensions
+# and self-patches.
 # Everything else in the People app follows the default: viewers read, operators change people and links.
 ADMIN_ROUTES = (
     ("PATCH", re.compile(r"/api/settings")),
@@ -52,6 +53,17 @@ ADMIN_ROUTES = (
     ("POST", re.compile(r"/api/auth/sso/test")),
     # People: disabling someone's Atrium account is account administration
     ("POST", re.compile(r"/api/people/[^/]+/actions/disable_atrium_account")),
+    # Extensions and self-patches change Atrium itself: uploading, enabling, rolling back and removing packs, asking
+    # the Patch Agent to extend Atrium for a tool, and asking for or applying a change to Atrium's own code. (Deciding
+    # their approvals needs admin too - checked by the approvals route, per kind.) Reading them, and the records of
+    # extension domains (viewer reads, operator changes), follow the default.
+    ("POST", re.compile(r"/api/extensions")),
+    ("PATCH", re.compile(r"/api/extensions/[^/]+")),
+    ("DELETE", re.compile(r"/api/extensions/[^/]+")),
+    ("POST", re.compile(r"/api/extensions/[^/]+/rollback")),
+    ("POST", re.compile(r"/api/tools/[^/]+/extend")),
+    ("POST", re.compile(r"/api/self-patches")),
+    ("POST", re.compile(r"/api/self-patches/[^/]+/apply")),
 )
 # Reads that act on a tool with its stored credentials, so they need operator.
 OPERATOR_READS = (

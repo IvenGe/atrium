@@ -21,7 +21,7 @@
     }
 
 "fields" maps canonical fields (base.py) to dotted paths in a remote item: a string, a list of paths (collected into a
-list) or an object (e.g. facts). Body templates: a string that is exactly "{field}" inserts the record's value with
+list) or an object (e.g. facts). An extension domain ("x:alerts", hub/extensions) maps its own field names the same way. Body templates: a string that is exactly "{field}" inserts the record's value with
 its type, other strings interpolate; dotted record paths work ("{facts.serial}"). Without a body the record is mapped
 back through "fields". Every path is relative to base_url: a mapping can never send the credentials to another
 scheme, host or port, and pagination links pointing elsewhere are refused.
@@ -37,7 +37,7 @@ from urllib.parse import quote, urlsplit
 
 import httpx
 
-from .base import DOMAINS, Connector, ConnectorError, ConnectorField, check, dotted, endpoint_of
+from .base import DOMAINS, Connector, ConnectorError, ConnectorField, check, dotted, endpoint_of, is_domain
 
 AUTH_TYPES = ("bearer", "token", "header", "basic", "none")
 PAGINATION = ("none", "offset", "page", "next")
@@ -99,8 +99,8 @@ def validate_mapping(mapping: Any) -> dict[str, Any]:
     if not isinstance(mapping, dict) or not mapping:
         raise _fail("expected an object with at least one domain (assets, vulnerabilities, risks, controls)")
     for domain, spec in mapping.items():
-        if domain not in DOMAINS:
-            raise _fail(f"unknown domain '{domain}' (use {', '.join(DOMAINS)})")
+        if not isinstance(domain, str) or not is_domain(domain):
+            raise _fail(f"unknown domain '{domain}' (use {', '.join(DOMAINS)} or an extension domain x:<key>)")
         if not isinstance(spec, dict) or not any(spec.get(k) for k in ("list", "create", "update")):
             raise _fail(f"{domain} needs 'list' (read) and/or 'create' / 'update' (write)")
         _check_fields(spec.get("fields") or {}, f"{domain}.fields")
@@ -247,7 +247,7 @@ class GenericRestConnector(Connector):
         out = {}
         for domain, spec in self.mapping.items():
             ops = (["read"] if spec.get("list") else []) + (["write"] if spec.get("create") or spec.get("update") else [])
-            if domain in DOMAINS and ops:
+            if is_domain(domain) and ops:
                 out[domain] = ops
         return out
 

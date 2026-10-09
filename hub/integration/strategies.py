@@ -11,7 +11,8 @@ Flow rules, from each connection's capabilities (its last successful test, else 
   do both gets the push only and nothing loops back);
 - writes controls -> push the hub's controls with their evidence; reads risks -> pull them into the risk register;
 - reads people (a directory: Okta, Keycloak, SCIM, HR) -> pull them into the People app; reads accounts -> pull the
-  tool's user accounts into the People app (linked to people; leavers with active accounts fail HB-AC-7).
+  tool's user accounts into the People app (linked to people; leavers with active accounts fail HB-AC-7);
+- reads an enabled extension domain ("x:alerts") -> pull it into that domain's app; only writes it -> push to it.
 
 Proposals become approvals of kind "flow" (enabled straight away in autonomous mode).
 """
@@ -34,7 +35,10 @@ BUILTIN_SCORE = 50  # a detected built-in connector at least this sure is offere
 
 def proposals(hub: "Hub") -> list[Flow]:
     """Flows the rules call for that do not exist yet (in any state: a rejected proposal stays rejected)."""
+    from ..extensions import registry
+
     existing = {flows.key(f) for f in flows.all_flows(hub)}
+    extension_domains = registry.active_domains(hub)
     out: list[Flow] = []
     for conn in connections.all_connections(hub):
         tool = hub.get_tool(conn.id)
@@ -88,6 +92,13 @@ def proposals(hub: "Hub") -> list[Flow]:
             add("accounts", end, "hub", None,
                 f"{name} has user accounts: they are linked to people in the People app, so leavers who can still "
                 "sign in are found.")
+        for key, (defn, _) in extension_domains.items():
+            domain, what = f"x:{key}", defn.title.lower()
+            if reads(domain):
+                add(domain, end, "hub", None, f"{name} reports {what}: they are kept in the hub's {defn.title} app (an "
+                                              "extension), linked to assets and people.")
+            elif writes(domain):
+                add(domain, "hub", end, None, f"{name} can take {what}: it receives the hub's {defn.title} records.")
     return out
 
 

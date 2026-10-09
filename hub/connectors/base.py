@@ -21,6 +21,9 @@ normalises them with ``normalize``; unknown keys are dropped, timestamps are POS
                      email, then login
 ``accounts``         external_id, login, email, display_name, active (bool), last_login, app (the application, for a
                      directory that lists app assignments) - user accounts in a tool; linked to persons by email/login
+``x:<key>``          a data type an enabled extension pack adds (hub/extensions, e.g. ``x:alerts``): external_id plus
+                     the domain's fields by name (scalars or lists of scalars); the hub types them against the
+                     domain's field definitions
 
 An asset record's ``facts`` may carry ``assigned_email`` / ``assigned_username`` (the user the device is checked out
 to): the hub links the asset to that person (``assigned_person_id``).
@@ -63,6 +66,8 @@ if TYPE_CHECKING:
 
 Domain = Literal["assets", "vulnerabilities", "risks", "controls", "people", "accounts"]
 DOMAINS: tuple[str, ...] = ("assets", "vulnerabilities", "risks", "controls", "people", "accounts")
+EXTENSION_DOMAIN = re.compile(r"^x:[a-z][a-z0-9_]{1,31}$")  # a data type an extension pack adds, e.g. "x:alerts"
+FIELD_NAME = re.compile(r"^[a-z][a-z0-9_]{0,39}$")
 FieldKind = Literal["text", "url", "secret", "select", "number", "bool", "json"]
 FAILED_SCAN_STATES = {"failed", "stopped", "interrupted"}
 EXCERPT = 500
@@ -435,10 +440,53 @@ RECORD_MODELS: dict[str, type[_Record]] = {
     "assets": AssetRecord, "vulnerabilities": VulnerabilityRecord, "risks": RiskRecord, "controls": ControlRecord,
     "people": PersonRecord, "accounts": AccountRecord,
 }
+EXT_FIELDS = 60
+EXT_TEXT = 4000
+
+
+def is_domain(name: str) -> bool:
+    """A built-in domain or an extension domain ("x:<key>")."""
+    return name in DOMAINS or bool(EXTENSION_DOMAIN.match(name or ""))
+
+
+def _ext_value(value: Any) -> Any:
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    if isinstance(value, dict):  # {"name": ...} objects collapse to their name, like the canonical records
+        return _text(value)
+    if isinstance(value, (list, tuple)):
+        return [v for v in (_ext_value(x) for x in list(value)[:50]) if v is not None and not isinstance(v, list)]
+    return str(value)[:EXT_TEXT]
+
+
+def extension_record(record: dict[str, Any]) -> dict[str, Any]:
+    """An extension domain's record: external_id plus flat values (scalars or lists of scalars) under field-like
+    names. The hub types them against the domain's field definitions when it stores them."""
+    external_id = _text(record.get("external_id"))
+    if not external_id:
+        raise ValueError("external_id is required")
+    out: dict[str, Any] = {"external_id": external_id[:500]}
+    if record.get("hub_id") is not None:
+        out["hub_id"] = str(record["hub_id"])
+    for name, value in record.items():
+        if name in ("external_id", "hub_id") or not FIELD_NAME.match(str(name)) or len(out) > EXT_FIELDS:
+            continue
+        out[name] = _ext_value(value)
+    return out
 
 
 def normalize(domain: str, records: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[str]]:
     """Canonical records of `domain`, plus one message per record that had to be dropped."""
+    if EXTENSION_DOMAIN.match(domain or ""):
+        valid, errors = [], []
+        for index, record in enumerate(records):
+            try:
+                if not isinstance(record, dict):
+                    raise ValueError("not an object")
+                valid.append(extension_record(record))
+            except ValueError as exc:
+                errors.append(f"record {record.get('external_id', index) if isinstance(record, dict) else index}: {exc}")
+        return valid, errors
     model = RECORD_MODELS.get(domain)
     if model is None:
         raise ConnectorError(f"Unknown data domain '{domain}'")
