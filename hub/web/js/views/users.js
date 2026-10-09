@@ -1,5 +1,6 @@
 import { del, get, patch, post } from "../api.js";
 import { avatar, generatePassword, passwordProblem, POLICY_HINT, roleBadge, session, usernameProblem } from "../auth.js";
+import { personChip } from "../people.js";
 import { actions, badge, can, confirmDialog, copyText, emptyState, field, html, icon, modal, options, setHTML, timeAgo, toast } from "../ui.js";
 
 const ROLES = [["viewer", "Viewer"], ["operator", "Operator"], ["admin", "Admin"]];
@@ -111,12 +112,21 @@ function showSecret(t) {
   setTimeout(() => input.select(), 40);
 }
 
+/** The person in the People app with the same email; a leaver whose account is still enabled is flagged. */
+function personCell(u) {
+  if (!u.person) return html`<span class="faint" title="${u.email ? `No person in People has ${u.email}` : "Add an email to link this user to a person"}">-</span>`;
+  const left = u.person.status !== "active";
+  return html`<div class="row" style="gap:6px">${personChip(u.person)}
+    ${left && !u.disabled ? html`<span class="badge bad" title="This person has left (${u.person.status}) but the account can still sign in">${icon("alert")}left - still enabled</span>` : ""}</div>`;
+}
+
 function userRow(u, self) {
   const details = [u.display_name, u.email].filter(Boolean).join(" - ");
   return html`<tr>
     <td><div class="row" style="flex-wrap:nowrap;gap:10px">${avatar(u)}
       <div style="min-width:0"><div class="row" style="gap:6px;flex-wrap:nowrap"><b>${u.username}</b>${self ? badge("you", "accent") : ""}</div>
         <div class="faint" style="font-size:12px;max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${details || "-"}</div></div></div></td>
+    <td>${personCell(u)}</td>
     <td><select class="input-sm" data-role-for="${u.id}" aria-label="Role of ${u.username}" ${self ? "disabled" : ""}>${options(ROLES, u.role)}</select></td>
     <td>${u.auth_source === "oidc" ? badge("SSO", "info") : badge("local")}</td>
     <td><div class="row" style="gap:6px">${u.disabled ? badge("disabled", "bad") : badge("active", "ok")}${u.must_change_password ? badge("password change pending", "warn") : ""}</div></td>
@@ -165,7 +175,7 @@ export async function render(el) {
       <section class="card flush" style="margin-bottom:16px"><header><h2>Users (${users.length})</h2>
           <span class="faint" style="font-size:12px">${admins} active admin${admins === 1 ? "" : "s"}</span></header>
         ${users.length ? html`<div class="table-wrap" style="margin-top:10px"><table class="table"><thead><tr>
-            <th>User</th><th>Role</th><th>Sign-in</th><th>Status</th><th>Last login</th><th></th></tr></thead><tbody>
+            <th>User</th><th title="The person in People with the same email">Person</th><th>Role</th><th>Sign-in</th><th>Status</th><th>Last login</th><th></th></tr></thead><tbody>
             ${users.map((u) => userRow(u, u.id === me))}</tbody></table></div>`
           : html`<div style="padding:0 16px 16px">${emptyState("users", "No users", "Add the people who run the suite.")}</div>`}
       </section>
@@ -201,7 +211,8 @@ export async function render(el) {
         title: `Edit ${u.username}`,
         minRole: "admin",
         body: html`${field("Display name", html`<input name="display_name" value="${u.display_name || ""}" autocomplete="off">`)}
-          ${field("Email", html`<input name="email" type="email" value="${u.email || ""}" autocomplete="off">`)}
+          ${field("Email", html`<input name="email" type="email" value="${u.email || ""}" autocomplete="off">`,
+            u.person ? html`Linked by this email to ${u.person.display_name} (${u.person.status}) in People.` : "The email links the user to a person in People.")}
           ${u.auth_source === "oidc" ? html`<p class="faint" style="font-size:12px">Signs in through SSO; the role is synced from the identity provider at each sign-in.</p>` : ""}`,
         async onSubmit(data) {
           await patch(`/users/${encodeURIComponent(u.id)}`, {

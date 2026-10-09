@@ -18,6 +18,8 @@ const GROUPS = [
   ["App supervisors - built-in apps", (a) => a.role === "module-supervisor"],
 ];
 const ROLE_ICON = { supervisor: "bot", patcher: "wrench", operator: "terminal", "module-supervisor": "shield", "tool-supervisor": "grid", "team-agent": "bot" };
+const MODULE_ICON = { "module:assets": "box", "module:people": "contact", "module:vulns": "bug" };
+const agentIcon = (a) => MODULE_ICON[a.id] || ROLE_ICON[a.role] || "bot";
 const PROVIDER_ICON = { anthropic: "bot", local: "server", rules: "sliders" };
 const MODE = { llm: "Claude", local: "local model", rules: "rules" };
 const DESIGNERS = [
@@ -41,7 +43,7 @@ function providerBadge(a) {
 function agentCard(a) {
   const tone = a.status === "working" ? "working" : a.status === "paused" ? "warn" : "ok";
   return html`<div class="card agent-card">
-    <div class="head">${builtinIcon(a.id === "module:assets" ? "box" : ROLE_ICON[a.role] || "bot", a.role === "tool-supervisor" ? colorFor(a.scope) : "#7c3aed", "sm")}
+    <div class="head">${builtinIcon(agentIcon(a), a.role === "tool-supervisor" ? colorFor(a.scope) : "#7c3aed", "sm")}
       <div style="flex:1;min-width:0"><b>${a.name}</b><div class="faint" style="font-size:12px">${a.title}</div></div>
       <span class="row" style="gap:6px;font-size:12px"><span class="dot ${tone}"></span>${a.status}</span></div>
     <div class="desc">${a.description}</div>
@@ -64,7 +66,7 @@ function coreButtons(a) {
 function leadRow(a) {
   const tone = a.status === "working" ? "working" : a.status === "paused" ? "warn" : "ok";
   return html`<div class="team-lead">
-    ${builtinIcon(ROLE_ICON[a.role] || "bot", a.role === "tool-supervisor" ? colorFor(a.scope) : "#7c3aed", "sm")}
+    ${builtinIcon(agentIcon(a), a.role === "tool-supervisor" ? colorFor(a.scope) : "#7c3aed", "sm")}
     <div style="flex:1 1 150px;min-width:0"><div class="row" style="gap:6px"><b>${a.name}</b>${badge("lead", "accent")}</div>
       <div class="faint" style="font-size:12px"><span class="dot ${tone}"></span> ${a.status} - ${a.handled} handled${a.last_active ? ` - active ${timeAgo(a.last_active)}` : ""}</div></div>
     ${a.id === "supervisor" ? html`<button class="icon-btn sm" data-act="chat-with" data-id="${a.id}" title="Chat with ${a.name}" aria-label="Chat with ${a.name}" data-min-role="operator">${icon("chat")}</button>` : ""}

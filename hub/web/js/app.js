@@ -9,6 +9,7 @@ import * as agents from "./views/agents.js";
 import * as approvals from "./views/approvals.js";
 import * as operator from "./views/operator.js";
 import * as assets from "./views/assets.js";
+import * as people from "./views/people.js";
 import * as vulnerabilities from "./views/vulnerabilities.js";
 import * as compliance from "./views/compliance.js";
 import * as settings from "./views/settings.js";
@@ -24,6 +25,7 @@ export const APPS = [
   { route: "approvals", name: "Approvals", icon: "checkCircle", color: "#ca8a04", view: approvals },
   { route: "operator", name: "Operator", icon: "terminal", color: "#334155", view: operator },
   { route: "assets", name: "Assets", icon: "box", color: "#0d9488", view: assets },
+  { route: "people", name: "People", icon: "contact", color: "#e11d48", view: people },
   { route: "vulnerabilities", name: "Vulnerabilities", icon: "bug", color: "#dc2626", view: vulnerabilities },
   { route: "compliance", name: "Compliance hub", short: "Compliance", icon: "shield", color: "#16a34a", view: compliance },
   { route: "settings", name: "Settings", icon: "sliders", color: "#64748b", view: settings },
@@ -49,8 +51,8 @@ function chrome() {
   const nav = [
     ...APPS.slice(0, 2),
     { section: "Run the suite" }, ...APPS.slice(2, 6),
-    { section: "Govern" }, ...APPS.slice(6, 9),
-    { section: "" }, ...APPS.slice(9),
+    { section: "Govern" }, ...APPS.slice(6, 10),
+    { section: "" }, ...APPS.slice(10),
   ];
   setHTML($("nav"), nav.map((a) => a.section !== undefined
     ? html`<div class="section">${a.section}</div>`
@@ -157,9 +159,11 @@ async function signOut() {
 async function openPalette() {
   if (!signedIn) return;
   closePopovers();
-  const [agentList, assetList] = await Promise.all([get("/agents").catch(() => []), get("/assets").catch(() => [])]);
+  const [agentList, assetList, peopleList] = await Promise.all([get("/agents").catch(() => []), get("/assets").catch(() => []),
+    get("/people").then((r) => r.people).catch(() => [])]);
   const operatorActions = can("operator") ? [
     { label: "Import a tool", kind: "Action", icon: "plus", run: () => tools.openImport() },
+    { label: "Add a person", kind: "Action", icon: "contact", run: () => people.openAddPerson() },
     { label: "Run a command", kind: "Action", icon: "terminal", go: "#/operator" },
     { label: "Scan for vulnerabilities", kind: "Action", icon: "radar", go: "#/vulnerabilities" },
     { label: "Ask the Hub Supervisor", kind: "Action", icon: "chat", go: "#/agents" },
@@ -168,13 +172,18 @@ async function openPalette() {
     ...APPS.filter((a) => can(a.minRole)).map((a) => ({ label: a.name, kind: "Page", icon: a.icon, go: `#/${a.route}` })),
     { label: "Data flows", kind: "Page", icon: "flow", go: "#/integration", sub: "Integration hub" },
     { label: "Scan scope", kind: "Page", icon: "radar", go: "#/vulnerabilities/scope", sub: "Vulnerabilities" },
+    { label: "Leavers", kind: "Page", icon: "alert", go: "#/people/leavers", sub: "People" },
+    { label: "Accounts in tools", kind: "Page", icon: "key", go: "#/people/accounts", sub: "People" },
+    ...(can("admin") ? [{ label: "Sign-in & SSO", kind: "Page", icon: "shield", go: "#/settings/sso", sub: "Settings" }] : []),
     ...operatorActions,
     ...(session.user?.has_password ? [{ label: "Change password", kind: "Account", icon: "key", run: openChangePassword }] : []),
     { label: "Sessions", kind: "Account", icon: "monitor", run: openSessions },
     { label: "Sign out", kind: "Account", icon: "logout", run: signOut },
     ...state.tools.map((t) => ({ label: t.name, kind: "Tool", icon: "grid", go: `#/tools/${t.id}`, sub: t.source })),
     ...agentList.map((a) => ({ label: a.name, kind: "Agent", icon: "bot", go: "#/agents", sub: a.title })),
-    ...assetList.filter((a) => a.status !== "retired").map((a) => ({ label: a.name, kind: "Asset", icon: "box", go: "#/assets", sub: a.type })),
+    ...assetList.filter((a) => a.status !== "retired").map((a) => ({ label: a.name, kind: "Asset", icon: "box", go: `#/assets/${encodeURIComponent(a.id)}`, sub: a.type })),
+    ...peopleList.map((p) => ({ label: p.display_name, kind: "Person", icon: "user", go: `#/people/${encodeURIComponent(p.id)}`,
+      sub: [p.title, p.email, p.status !== "active" ? p.status : ""].filter(Boolean).join(" - ") })),
   ];
   if (!signedIn) return; // signed out while loading
   const backdrop = document.createElement("div");

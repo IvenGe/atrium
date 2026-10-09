@@ -27,6 +27,11 @@
   --sev-medium: #f59e0b;
   --sev-low: #38bdf8;
   --sev-info: #8d98b3;
+  --map-asset: #14b8a6;
+  --map-tool: #8b5cf6;
+  --map-group: #0ea5e9;
+  --map-manager: #ec4899;
+  --map-atrium: #6366f1;
   color-scheme: dark;
 }
 :root[data-theme="light"] {
@@ -54,6 +59,11 @@
   --sev-medium: #b45309;
   --sev-low: #0284c7;
   --sev-info: #5f6b85;
+  --map-asset: #0d9488;
+  --map-tool: #7c3aed;
+  --map-group: #0284c7;
+  --map-manager: #db2777;
+  --map-atrium: #4f46e5;
   color-scheme: light;
 }
 
@@ -227,6 +237,7 @@ main { padding: 24px; width: 100%; max-width: 1440px; }
 .cols-5 { grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
 .cols-3 { grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
 .split { grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr); }
+.split > * { min-width: 0; } /* wide tables scroll in their .table-wrap instead of widening the column */
 .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; min-width: 0; }
 .card > header { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 12px; }
 .card.flush { padding: 0; overflow: hidden; }
@@ -541,6 +552,59 @@ button.sev-tile:hover { background: var(--hover); }
 .guard-num input { width: 84px; padding: 5px 8px; }
 .guard-num.inactive { opacity: .55; }
 
+/* ---------- people ---------- */
+.avatar.sm { width: 22px; height: 22px; font-size: 9.5px; }
+.avatar.xl { width: 64px; height: 64px; font-size: 23px; }
+.person-chip { display: inline-flex; align-items: center; gap: 6px; min-width: 0; max-width: 100%; color: var(--text); vertical-align: middle; }
+a.person-chip:hover { text-decoration: none; }
+a.person-chip:hover .name { text-decoration: underline; }
+.person-chip .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chip-list { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
+.person-head h1 { margin-top: 2px; overflow-wrap: anywhere; }
+.card.stat.alarm { border-color: color-mix(in srgb, var(--bad) 45%, transparent); }
+.card.stat.alarm .stat-icon { background: color-mix(in srgb, var(--bad) 14%, transparent); color: var(--bad); }
+.leaver { border-left: 4px solid var(--warn); }
+.leaver.fail { border-left-color: var(--bad); }
+.leaver-actions { flex-wrap: wrap; justify-content: flex-end; gap: 6px; max-width: 340px; }
+.holdings { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 6px 16px; margin-top: 6px; }
+.holdings h4 { display: flex; align-items: center; gap: 6px; margin: 4px 0 2px; font-size: 12px; font-weight: 650; color: var(--muted); }
+.holdings h4 svg.i { width: 14px; height: 14px; }
+.holdings ul { margin: 0; padding-left: 18px; font-size: 12.5px; }
+.relmap-wrap { overflow-x: auto; }
+.relmap { display: block; width: 100%; height: auto; max-height: 420px; }
+.relmap text { text-anchor: middle; fill: var(--text); font-size: 11px; font-weight: 600; }
+.relmap text.lbl, .relmap text.rel { paint-order: stroke; stroke: var(--surface); stroke-width: 4px; stroke-linejoin: round; } /* readable over edges */
+.relmap text.rel { fill: var(--faint); font-size: 10px; font-weight: 500; }
+.relmap text.ini { fill: #fff; font-size: 11px; font-weight: 700; }
+.relmap text.ini.big { font-size: 17px; }
+.relmap text.strong { font-size: 12.5px; font-weight: 700; }
+.relmap .edge { stroke: var(--node); stroke-width: 1.6; opacity: .6; }
+.relmap .edge.dashed { stroke-dasharray: 5 4; }
+.relmap .node circle { fill: var(--node); stroke: var(--surface); stroke-width: 3; }
+.relmap svg.glyph { color: #fff; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.relmap .node.link { cursor: pointer; }
+.relmap .node.link:hover circle, .relmap .node.link:focus-visible circle { stroke: var(--text); }
+.relmap .node:focus { outline: none; }
+.relmap .center .halo { fill: none; stroke-width: 3; stroke: var(--ok); }
+.relmap .center.st-suspended .halo { stroke: var(--warn); }
+.relmap .center.st-terminated .halo { stroke: var(--bad); }
+.mk-asset { --node: var(--map-asset); }
+.mk-tool { --node: var(--map-tool); }
+.mk-group { --node: var(--map-group); }
+.mk-manager { --node: var(--map-manager); }
+.mk-atrium { --node: var(--map-atrium); }
+.map-legend { margin-top: 8px; }
+.map-legend i { background: var(--node, var(--faint)); }
+.map-legend i.dash { background: none; height: 0; border-top: 2px dashed var(--faint); }
+
+/* ---------- sign-in & SSO settings ---------- */
+.preset-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 8px; margin-bottom: 10px; }
+.radio-card.preset { padding: 10px 12px; gap: 10px; min-width: 0; }
+.preset-url { font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sso-step { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--faint); margin: 16px 0 8px; }
+.sso-step:first-child { margin-top: 0; }
+.sso-notes { margin: 0 0 6px; padding: 10px 12px 10px 28px; border-radius: 10px; border: 1px solid var(--border); background: var(--surface-2); font-size: 12.5px; color: var(--muted); }
+
 /* ---------- responsive ---------- */
 @media (max-width: 1100px) {
   .split { grid-template-columns: 1fr; }
@@ -559,6 +623,9 @@ button.sev-tile:hover { background: var(--hover); }
   .form-grid { grid-template-columns: 1fr; }
   .sla-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .clip { max-width: 260px; }
+  .leaver > .row { flex-wrap: wrap !important; }
+  .leaver-actions { max-width: none; justify-content: flex-start; }
+  .avatar.xl { width: 48px; height: 48px; font-size: 18px; }
 }
 @media (max-width: 560px) {
   .get-started .txt { display: none; }
@@ -568,6 +635,7 @@ button.sev-tile:hover { background: var(--hover); }
   .topbar { gap: 6px; padding: 0 10px; }
   .secret .txt { display: none; }
   .auth-card { padding: 22px 18px 18px; }
+  .relmap { min-width: 500px; } /* labels stay readable; the map scrolls inside its card */
 }
 @media (max-width: 460px) {
   .brand > span:last-child { display: none; }

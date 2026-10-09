@@ -1,5 +1,6 @@
 import { del, get, patch, post } from "../api.js";
-import { actions, badge, can, confirmDialog, field, html, icon, modal, setHTML, timeAgo, toast } from "../ui.js";
+import { mountSso } from "../signin.js";
+import { actions, badge, can, confirmDialog, emptyState, field, html, icon, modal, setHTML, timeAgo, toast } from "../ui.js";
 
 const LEVELS = [
   ["manual", "Manual", "Every agent command and patch waits for your approval."],
@@ -120,8 +121,8 @@ export async function render(el, ctx) {
             and restart the hub. Without it the agents use deterministic rules and templates, or a local model provider.</div></div>`}
           ${s.llm.last_error ? html`<p style="color:var(--bad);margin-top:8px;font-size:12.5px">Last error: ${s.llm.last_error}</p>` : ""}</div>
         <div class="card" data-min-role="admin"><header><h2>Users &amp; access</h2>${icon("users")}</header>
-          <p class="muted" style="margin-bottom:10px">Accounts, roles and API tokens for scripts and integrations.</p>
-          <a class="btn" href="#/users">${icon("arrow")}Manage users</a></div>
+          <p class="muted" style="margin-bottom:10px">Accounts, roles and API tokens for scripts and integrations; single sign-on below.</p>
+          <div class="row"><a class="btn" href="#/users">${icon("arrow")}Manage users</a><a class="btn" href="#/settings/sso" data-act="to-sso">${icon("shield")}Sign-in &amp; SSO</a></div></div>
         <div class="card"><header><h2>About</h2></header><dl class="kv"><dt>Version</dt><dd>${s.version}</dd><dt>Data directory</dt><dd class="mono">${s.data_dir}</dd>
           <dt>API docs</dt><dd><a href="/api/docs" target="_blank" rel="noopener">/api/docs</a></dd></dl></div>
         <div data-min-role="admin"><button class="btn primary">${icon("check")}Save settings</button></div>
@@ -130,13 +131,19 @@ export async function render(el, ctx) {
     <div class="grid split" style="margin-top:16px">
       <section class="card" id="guardrails-card"></section>
       <section class="card" id="providers-card"></section>
-    </div>`);
+    </div>
+    ${admin ? html`<section class="card" id="sso-card" style="margin-top:16px"><div class="empty faint">Loading the sign-in settings...</div></section>` : ""}`);
   const guardEl = el.querySelector("#guardrails-card");
   const provEl = el.querySelector("#providers-card");
+  const ssoEl = el.querySelector("#sso-card");
   const drawGuards = () => setHTML(guardEl, guardrailsView(s.guardrail_catalog || [], admin));
   const drawProviders = () => setHTML(provEl, providersView(pv));
   drawGuards();
   drawProviders();
+  if (ssoEl) {
+    mountSso(ssoEl).catch((err) => setHTML(ssoEl, emptyState("alert", "Sign-in settings unavailable", err.message)));
+    if (ctx.params[0] === "sso") setTimeout(() => ssoEl.scrollIntoView({ behavior: "smooth", block: "start" }), 120);
+  }
 
   const form = el.querySelector("#settings-form");
   if (!admin) form.querySelectorAll("input").forEach((input) => { input.disabled = true; });
@@ -256,6 +263,10 @@ export async function render(el, ctx) {
       if (p) providerForm(p);
     },
     "prov-test"(d, btn) { testProvider(d.id, btn); },
+    "to-sso"() {
+      history.replaceState(null, "", "#/settings/sso");
+      ssoEl?.scrollIntoView({ behavior: "smooth", block: "start" });
+    },
     async "prov-remove"(d) {
       const p = pv.providers.find((x) => x.id === d.id);
       if (!p || !(await confirmDialog(`Remove ${p.name}?`, "Agents can no longer run on it. Providers still used by agents cannot be removed.", "Remove"))) return;

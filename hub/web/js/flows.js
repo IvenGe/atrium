@@ -10,6 +10,8 @@ export const DOMAINS = {
   vulnerabilities: { label: "Vulnerabilities", icon: "bug", app: "Hub Vulnerabilities", href: "#/vulnerabilities" },
   risks: { label: "Risks", icon: "alert", app: "Hub risk register", href: "#/compliance/risks" },
   controls: { label: "Controls", icon: "shield", app: "Hub controls and evidence", href: "#/compliance/controls" },
+  people: { label: "People", icon: "contact", app: "Hub People", href: "#/people" },
+  accounts: { label: "Accounts", icon: "key", app: "Hub People (accounts)", href: "#/people/accounts" },
 };
 const ASSET_TYPES = ["server", "workstation", "network", "software", "saas", "cloud", "data", "other"];
 const SEVERITIES = ["critical", "high", "medium", "low", "info"];
@@ -20,6 +22,8 @@ const RETIRE_LABEL = {
   assets: "Retire assets that disappear from the tool",
   vulnerabilities: "Mark findings fixed that the tool no longer reports",
   risks: "Close risks that disappear from the tool",
+  people: "Count people who disappear from the directory as having left it",
+  accounts: "Remove accounts that disappear from the tool",
 };
 
 export function scheduleLabel(minutes) {

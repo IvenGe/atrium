@@ -78,10 +78,16 @@ const ICONS = {
   bug: '<rect x="8" y="7" width="8" height="13" rx="4"/><path d="M10 7a2 2 0 0 1 4 0M12 11v9M8 13H4M20 13h-4M8 17.5l-3 1.5M16 17.5l3 1.5M8.5 9.5 5 7.5M15.5 9.5l3.5-2"/>',
   radar: '<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><path d="m12 12 6.5-6.5"/><circle cx="12" cy="12" r="1"/>',
   flow: '<path d="M4 8h14M14 4l4 4-4 4M20 16H6M10 12l-4 4 4 4"/>',
+  contact: '<rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="9" cy="11" r="2.5"/><path d="M5.5 16.5a3.5 3.5 0 0 1 7 0M15 10h3M15 13.5h3"/>',
 };
 
 export function icon(name, extra = "") {
   return raw(`<svg class="i ${extra}" viewBox="0 0 24 24" aria-hidden="true">${ICONS[name] || ICONS.grid}</svg>`);
+}
+
+/** An icon placed inside an <svg> drawing, at (x, y) with an explicit size. */
+export function glyph(name, x, y, size = 18) {
+  return raw(`<svg class="glyph" x="${+x}" y="${+y}" width="${+size}" height="${+size}" viewBox="0 0 24 24" aria-hidden="true">${ICONS[name] || ICONS.grid}</svg>`);
 }
 
 // ---------- formatting ----------
@@ -173,6 +179,7 @@ const TONES = {
   enabled: "ok", disabled: "", fixed: "ok", in_progress: "info", accepted: "", false_positive: "", info: "",
   running: "info", awaiting_approval: "warn", failing: "bad", available: "info", needs_decision: "warn",
   needs_claude: "", unavailable: "", not_needed: "", withdrawn: "",
+  suspended: "warn", terminated: "bad",
 };
 export function badge(text, tone) {
   const t = tone ?? TONES[text] ?? "";
