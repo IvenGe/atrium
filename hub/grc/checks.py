@@ -37,6 +37,8 @@ class Snapshot:
     extension_results: list[dict[str, Any]] = field(default_factory=list)
     # network facts (hub/integration/network.compliance_facts): devices, drift, segmentation - ids only, no device text
     network: dict[str, Any] = field(default_factory=dict)
+    # framework self-assessments that are not archived (hub/grc/frameworks/assessments.control_summaries)
+    frameworks: list[dict[str, Any]] = field(default_factory=list)
 
 
 Result = tuple[str, str, list[str]]  # status, detail, evidence

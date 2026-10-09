@@ -61,25 +61,40 @@ Rules:
 
 Writing - a write-capable connector declares ``network_write = {"ops": [...], "rollback": <mode>, "window_s": int}``
 (``WRITE_OPS``, ``ROLLBACK_MODES``) and implements the methods in ``base.Connector``. They receive operations
-validated by ``parse_ops`` (canonical dicts, see ``AllowOp`` / ``DisableRulesOp``)::
+validated by ``parse_ops`` (canonical dicts, see ``AllowOp`` / ``DisableRulesOp`` / ``EnableRulesOp``)::
 
     {"op": "allow", "source": {"zone": "lan", "cidrs": ["10.0.10.0/24"]},
      "destination": {"zone": "opt1", "cidrs": ["10.0.20.0/24"]},
      "services": [{"proto": "tcp", "ports": "443"}], "log": True,
      "description": "Users to intranet web", "marker": "atrium:chg_31"}
     {"op": "disable_rules", "rules": [{"id": "7c1d", "vendor_ref": "7c1d-...-uuid"}]}
+    {"op": "enable_rules", "rules": [{"id": "7c1d", "vendor_ref": "7c1d-...-uuid"}]}
 
 ``zone`` is the native zone or interface id the rule binds to (the hub's zone id without "z:<device id>:"). An allow
 never uses "any": both sides are explicit networks and every service is explicit (at most 16). Approvals bind to
 ``ops_hash(ops)``, so connectors must not reinterpret ops (no widening, no merging). The rule an allow creates is a
 pass rule bound inbound to the source zone's interface(s) (or, for zone-based products, from the source zone to the
 destination zone), placed before the rules that could block it (connectors say where in ``preview_change``), with
-the op's ``marker`` (plus its description) as the rule's description/comment.
+the op's ``marker`` (plus its description) as the rule's description/comment. ``disable_rules`` disables rules in
+place (never deletes them). ``enable_rules`` is only ever sent as the revert of an applied ``disable_rules`` (or of an
+allow's created rule being disabled): a connector that offers ``disable_rules`` should offer it too (same mechanism);
+``inverse_ops`` builds a change's inverse.
 
 Helpers for both sides: ``ops_diff`` (the diff text a preview shows), ``ops_applied`` / ``ops_reverted`` (did a
-re-read show the change / its undo - what the hub verifies before confirming), ``record_hash`` (what history and
-drift compare: hit counters and read times excluded), ``management_guard`` (anti-lockout), ``rule_ref`` (a rule's
-id safe for logs, compliance details and agent-visible text).
+re-read show the change / its undo - what the hub verifies before confirming), ``inverse_ops`` (the ops that undo an
+applied change: what a "revert" proposal and a ``backup_restore`` connector's rollback use), ``record_hash`` (what
+history and drift compare: hit counters and read times excluded), ``derived_revision`` (a revision for products that
+report none), ``management_guard`` (anti-lockout), ``rule_ref`` (a rule's id safe for logs, compliance details and
+agent-visible text).
+
+``test()`` - use the check names in ``TEST_CHECKS`` (reachability, tls, authentication, privileges, version,
+api_features; add vendor ones after them) so the Network app can show the same checklist for every vendor, and
+``LEAST_PRIVILEGE_NOTE`` when the credential can write while device changes may still be off.
+
+SSH-based connectors (host firewalls, pfSense CE, IOS-XE CLI) use ``SSH_FIELDS`` as their connection settings,
+``validate_ssh_config`` in ``validate_config`` and ``ssh_target(config, secrets)`` for ``Connector.ssh()``; build
+commands only from fixed verbs and ``runner.posix_command`` / ``runner.ps_quote``-quoted values, and pass scripts on
+stdin.
 """
 
 from __future__ import annotations
@@ -102,8 +117,10 @@ DIRECTIONS = ("in", "out", "any")
 ALIAS_KINDS = ("network", "host", "port", "url", "geoip", "other")
 POLICY_KEYS = ("inbound", "outbound", "forward")
 POLICY_VALUES = ("pass", "block", "reject", "unknown")
-WRITE_OPS = ("allow", "disable_rules")
+WRITE_OPS = ("allow", "disable_rules", "enable_rules")
 ROLLBACK_MODES = ("savepoint", "backup_restore", "deadman", "commit_confirm", "none")
+TEST_CHECKS = ("reachability", "tls", "authentication", "privileges", "version", "api_features")
+LEAST_PRIVILEGE_NOTE = "this credential can write; a read-only one is recommended until device changes are enabled"
 CHANGE_PROTOCOLS = ("tcp", "udp", "icmp")  # what an allow may open
 MAX_SERVICES = 16
 MAX_RULES = 20_000
@@ -118,8 +135,8 @@ CONTROL_CHARS = re.compile("[\x00-\x08\x0b-\x1f\x7f-\x9f\u061c\u200b-\u200f\u202
 # The method names of the write contract (and the op names): never connector actions, so the generic
 # connector.action path can never reach them (base.Connector refuses such actions at class creation).
 RESERVED_ACTIONS = frozenset({"backup", "preview_change", "apply_change", "confirm_change", "rollback_change",
-                              "restore_backup", "write_capability", "allow", "disable_rules", "restore", "revert",
-                              "apply", "confirm", "rollback"})
+                              "restore_backup", "write_capability", "allow", "disable_rules", "enable_rules",
+                              "restore", "revert", "apply", "confirm", "rollback"})
 MANAGEMENT_PORTS = (22, 23, 80, 443, 830, 8080, 8443, 8728, 8729, 4444, 3389, 5985, 5986)
 
 
@@ -700,7 +717,14 @@ class DisableRulesOp(_Strict):
     rules: list[RuleRef] = Field(min_length=1, max_length=50)
 
 
-ChangeOp = Annotated[Union[AllowOp, DisableRulesOp], Field(discriminator="op")]
+class EnableRulesOp(_Strict):
+    """Enable rules again - only sent as the revert of an applied change (see ``inverse_ops``)."""
+
+    op: Literal["enable_rules"]
+    rules: list[RuleRef] = Field(min_length=1, max_length=50)
+
+
+ChangeOp = Annotated[Union[AllowOp, DisableRulesOp, EnableRulesOp], Field(discriminator="op")]
 _OPS = TypeAdapter(list[ChangeOp])
 
 
@@ -713,6 +737,31 @@ def parse_ops(ops: Any) -> list[dict[str, Any]]:
     except ValidationError as exc:
         raise ValueError("; ".join(f"{'.'.join(map(str, e['loc']))}: {e['msg']}" for e in exc.errors()[:3])) from exc
     return [op.model_dump(mode="json") for op in parsed]
+
+
+def inverse_ops(ops: list[dict[str, Any]], applied: dict[str, Any]) -> list[dict[str, Any]]:
+    """The ops that undo an applied change, from its ops and what ``apply_change`` returned (``created``: the rules
+    each allow made, ``{"op": index, "id", "vendor_ref"}``): an allow's rule is disabled, disabled rules are enabled
+    again and enabled ones disabled. ValueError when an allow's created rule is unknown (re-read the device and find
+    the rule by its marker first)."""
+    out: list[dict[str, Any]] = []
+    created = [c for c in (applied or {}).get("created") or [] if isinstance(c, dict)]
+    for index, op in enumerate(parse_ops(ops)):
+        if op["op"] == "allow":
+            refs = [{"id": str(c["id"]), "vendor_ref": str(c.get("vendor_ref") or c["id"])}
+                    for c in created if c.get("op") == index and c.get("id")]
+            if not refs:
+                raise ValueError(f"the rule that operation {index + 1} created is not known - re-read the device")
+            out.append({"op": "disable_rules", "rules": refs})
+        else:
+            out.append({"op": "enable_rules" if op["op"] == "disable_rules" else "disable_rules", "rules": op["rules"]})
+    return parse_ops(out)
+
+
+def derived_revision(*parts: Any) -> str:
+    """A revision for a product that reports none: "h-" + 16 hex characters of the SHA-256 of what was read (pass the
+    raw configuration objects; volatile fields such as counters and timestamps should be left out)."""
+    return "h-" + hashlib.sha256(canonical_json(list(parts)).encode()).hexdigest()[:16]
 
 
 def validate_write_spec(spec: Any) -> dict[str, Any] | None:
@@ -1065,7 +1114,7 @@ def ops_diff(record: dict[str, Any], ops: list[dict[str, Any]]) -> str:
                     lines.append(f"? rule {display_id(ref['id'])} is not in the snapshot")
                     continue
                 lines.append("- " + rule_line(rule, names))
-                lines.append("+ " + rule_line({**rule, "enabled": False}, names))
+                lines.append("+ " + rule_line({**rule, "enabled": op["op"] == "enable_rules"}, names))
     return "\n".join(lines)
 
 
@@ -1078,28 +1127,40 @@ def _find_rule(record: dict[str, Any], ref: dict[str, Any]) -> dict[str, Any] | 
 
 def ops_applied(record: dict[str, Any], ops: list[dict[str, Any]]) -> list[str]:
     """Problems showing that a re-read `record` does NOT hold the change (empty = applied): every allow's rule (found
-    by its marker) is there, enabled, a pass rule with the op's networks and services; every rule disable_rules named
-    is there and disabled."""
+    by its marker) is there, enabled, a pass rule with exactly the op's networks and services; every rule
+    disable_rules / enable_rules named is there and disabled / enabled."""
     problems = []
     for op in parse_ops(ops):
         if op["op"] == "allow":
             change_id = find_marker(op["marker"])
             found = [r for r in record.get("rules") or [] if r.get("marker") == change_id]
-            match = [r for r in found if r.get("enabled", True) and r.get("action") == "pass"
-                     and set(op["source"]["cidrs"]) <= set((r.get("source") or {}).get("cidrs") or [])
-                     and set(op["destination"]["cidrs"]) <= set((r.get("destination") or {}).get("cidrs") or [])
-                     and {(s["proto"], s.get("ports")) for s in op["services"]}
-                     <= {(s["proto"], s.get("ports")) for s in r.get("services") or []}]
-            if not match:
+            if not any(rule_matches_allow(r, op) for r in found):
                 problems.append(f"the rule marked {op['marker']} is " + ("not as proposed" if found else "missing"))
         else:
+            want = op["op"] == "enable_rules"
             for ref in op["rules"]:
                 rule = _find_rule(record, ref)
                 if rule is None:
                     problems.append(f"rule {display_id(ref['id'])} is missing")
-                elif rule.get("enabled", True):
-                    problems.append(f"rule {display_id(ref['id'])} is still enabled")
+                elif bool(rule.get("enabled", True)) != want:
+                    problems.append(f"rule {display_id(ref['id'])} is still {'disabled' if want else 'enabled'}")
     return problems
+
+
+def rule_matches_allow(rule: dict[str, Any], op: dict[str, Any]) -> bool:
+    """Whether a normalised rule is what an allow op asked for: an enabled pass rule from exactly the op's source
+    networks to exactly its destination networks for exactly its services (no wider)."""
+    source, destination = rule.get("source") or {}, rule.get("destination") or {}
+    if not rule.get("enabled", True) or rule.get("action") != "pass" or source.get("negate") or destination.get("negate"):
+        return False
+    if source.get("any") or destination.get("any") or source.get("aliases") or destination.get("aliases") \
+            or source.get("nets") or destination.get("nets") or source.get("self") or destination.get("self"):
+        return False
+    services = rule.get("services")
+    return (set(source.get("cidrs") or []) == set(op["source"]["cidrs"])
+            and set(destination.get("cidrs") or []) == set(op["destination"]["cidrs"])
+            and services is not None
+            and {(s["proto"], s.get("ports")) for s in services} == {(s["proto"], s.get("ports")) for s in op["services"]})
 
 
 def ops_reverted(before: dict[str, Any], after: dict[str, Any], ops: list[dict[str, Any]]) -> list[str]:
@@ -1109,8 +1170,8 @@ def ops_reverted(before: dict[str, Any], after: dict[str, Any], ops: list[dict[s
     for op in parse_ops(ops):
         if op["op"] == "allow":
             change_id = find_marker(op["marker"])
-            if any(r.get("marker") == change_id for r in after.get("rules") or []):
-                problems.append(f"the rule marked {op['marker']} is still on the device")
+            if any(r.get("marker") == change_id and r.get("enabled", True) for r in after.get("rules") or []):
+                problems.append(f"the rule marked {op['marker']} is still active on the device")
         else:
             for ref in op["rules"]:
                 old, new = _find_rule(before, ref), _find_rule(after, ref)
