@@ -147,6 +147,12 @@ async def _assets(ctx: ToolContext, args: dict[str, Any]) -> Any:
     return await ctx.ask("module:assets", "summary")
 
 
+@tool("people_summary", "People in the People app by status, their accounts, and leavers who still have access or "
+      "company devices.", "read")
+async def _people(ctx: ToolContext, args: dict[str, Any]) -> Any:
+    return await ctx.ask("module:people", "summary")
+
+
 @tool("compliance_summary", "Framework scores, failing controls and top risks.", "read")
 async def _compliance(ctx: ToolContext, args: dict[str, Any]) -> Any:
     return await ctx.ask("module:grc", "summary")
@@ -213,9 +219,10 @@ async def _test_connection(ctx: ToolContext, args: dict[str, Any]) -> Any:
     return result
 
 
-@tool("read_tool_records", "Read records of one domain (assets, vulnerabilities, risks or controls) from a tool's own "
-      "API; returns the count and the first 20 records.", "tool_api",
-      {"tool_id": STR, "domain": {"type": "string", "enum": ["assets", "vulnerabilities", "risks", "controls"]}})
+@tool("read_tool_records", "Read records of one domain (assets, vulnerabilities, risks, controls, people or accounts) "
+      "from a tool's own API; returns the count and the first 20 records.", "tool_api",
+      {"tool_id": STR, "domain": {"type": "string", "enum": ["assets", "vulnerabilities", "risks", "controls", "people",
+                                                              "accounts"]}})
 async def _read_records(ctx: ToolContext, args: dict[str, Any]) -> Any:
     reply = await ctx.ask(f"tool:{ctx.scoped(args['tool_id'])}", "connector.pull", {"domain": args["domain"]}, timeout=600)
     if reply.get("failure"):

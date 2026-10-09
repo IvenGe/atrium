@@ -2,7 +2,8 @@
 guardrails that bound them.
 
 A team belongs to a tool (team = the tool id; its lead is the Tool Supervisor), to the hub ("hub"; lead: the Hub
-Supervisor) or to a built-in app ("module:assets", "module:vulns", "module:grc"; lead: that app's supervisor). Every
+Supervisor) or to a built-in app ("module:assets", "module:vulns", "module:grc", "module:people"; lead: that app's
+supervisor). Every
 custom agent has a parent: the agent that created it or, for an agent a person creates, the team's lead (or another
 agent of the team the person picks). Depth counts the levels below the core agents: a lead's members have depth 1.
 
@@ -29,7 +30,8 @@ if TYPE_CHECKING:
     from ..core import Hub
 
 COLLECTION = "agent_defs"
-MODULE_TEAMS = {"module:assets": "Assets", "module:vulns": "Vulnerabilities", "module:grc": "Compliance"}
+MODULE_TEAMS = {"module:assets": "Assets", "module:vulns": "Vulnerabilities", "module:grc": "Compliance",
+                "module:people": "People"}
 STALE_RUN = 30 * 60
 PERMISSION_INFO = {
     "read": "Read the hub's state: tools, assets, findings, risks, flows, approvals.",

@@ -9,6 +9,7 @@ from ..bus import Message
 from ..grc.baseline import CONTROLS, CONTROLS_BY_ID
 from ..grc.checks import Snapshot, evaluate_controls, framework_scores
 from ..integration import flows
+from .. import people
 from ..models import Asset, ControlState, Flow, Patch, Policy, Risk, Vulnerability
 from ..store import new_id
 from .fabric import FlowOwner
@@ -37,6 +38,7 @@ class GrcSupervisor(FlowOwner):
             audit_entries=hub.store.count("activity") + hub.store.count("messages"),
             users=hub.auth.users(), oidc_enabled=hub.auth.oidc.enabled,
             vulnerabilities=hub.all("vulnerabilities", Vulnerability), guardrails=hub.prefs["guardrails"],
+            people=people.all_people(hub), accounts=people.all_accounts(hub),
         )
 
     # -- data flows ------------------------------------------------------------------

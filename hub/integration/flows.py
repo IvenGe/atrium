@@ -23,9 +23,10 @@ if TYPE_CHECKING:
 
 COLLECTION = "flows"
 LINKS = "sync_links"
-OWNERS = {"assets": "module:assets", "vulnerabilities": "module:vulns", "risks": "module:grc", "controls": "module:grc"}
+OWNERS = {"assets": "module:assets", "vulnerabilities": "module:vulns", "risks": "module:grc", "controls": "module:grc",
+          "people": "module:people", "accounts": "module:people"}
 APPS = {"assets": "Hub Assets", "vulnerabilities": "Hub Vulnerabilities", "risks": "Hub risk register",
-        "controls": "Hub controls and evidence"}
+        "controls": "Hub controls and evidence", "people": "Hub People", "accounts": "Hub People (accounts)"}
 DEFAULT_SCHEDULE = {"pull": 60, "push": 60, "scan": 7 * 24 * 60}
 REPAIR_AFTER = 3  # consecutive failures before the Hub Supervisor asks the Patch Agent for a repair
 STALE_RUN = 30 * 60  # a run marked as under way for longer than this was interrupted

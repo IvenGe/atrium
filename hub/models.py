@@ -197,7 +197,10 @@ class Asset(BaseModel):
     id: str = ""
     name: str
     type: AssetType = "other"
-    owner: str | None = None
+    owner: str | None = None  # free text (shown, and kept for back-compat); owner_person_id is the link
+    owner_person_id: str | None = None  # the accountable person (People app)
+    assigned_person_id: str | None = None  # who uses it (e.g. the laptop's user)
+    assigned_source: Literal["auto", "manual"] = "auto"  # auto: linked from the inventory's assigned user
     criticality: Literal["low", "medium", "high", "critical"] = "medium"
     status: Literal["active", "maintenance", "retired"] = "active"
     source: str = "manual"  # manual | tool:<id> | host:<id> | sync:<tool id> (pulled by a data flow)
@@ -245,7 +248,7 @@ class Vulnerability(BaseModel):
         return self.status in OPEN_STATES and self.due_at is not None and self.due_at < time.time()
 
 
-Domain = Literal["assets", "vulnerabilities", "risks", "controls"]
+Domain = Literal["assets", "vulnerabilities", "risks", "controls", "people", "accounts"]
 
 
 class Flow(BaseModel):
@@ -377,6 +380,65 @@ class LlmProvider(BaseModel):
 
 
 # --------------------------------------------------------------------------------------
+# People: the workforce directory and the accounts people hold in tools
+# --------------------------------------------------------------------------------------
+
+PersonStatus = Literal["active", "suspended", "terminated"]
+PERSON_STATUS_RANK = {"active": 0, "suspended": 1, "terminated": 2}  # the most "left" source status wins
+
+
+class Person(BaseModel):
+    """Someone in the organisation, merged from every directory that knows them (by email, then login). Stored in
+    "people"; `sources` maps a tool id (or "manual") to the person's id there."""
+
+    id: str = Field(default_factory=lambda: new_id("p_"))
+    display_name: str = Field(min_length=1, max_length=200)
+    email: str | None = Field(None, max_length=254)
+    login: str | None = Field(None, max_length=254)
+    title: str | None = Field(None, max_length=200)
+    department: str | None = Field(None, max_length=200)
+    manager_id: str | None = None
+    status: PersonStatus = "active"
+    manual_status: PersonStatus | None = None  # set by a person; a directory saying "left" still wins
+    source_status: dict[str, PersonStatus] = {}  # tool id -> status there
+    sources: dict[str, str] = {}  # tool id (or "manual") -> external id
+    groups: list[str] = []  # every source's groups (plus groups set by hand under "manual")
+    source_groups: dict[str, list[str]] = {}
+    location: str | None = Field(None, max_length=200)
+    phone: str | None = Field(None, max_length=64)
+    created_at: float = Field(default_factory=now)
+    updated_at: float = Field(default_factory=now)
+    terminated_at: float | None = None
+
+    @field_validator("email")
+    @classmethod
+    def _email(cls, value: str | None) -> str | None:
+        value = (value or "").strip()
+        if value and ("@" not in value or any(c.isspace() for c in value)):
+            raise ValueError("Enter a valid email address")
+        return value or None
+
+
+class Account(BaseModel):
+    """A user account in a tool (or, for a directory, the person's entry there). Stored in "accounts" with the id
+    "<tool id>|<external id>"; `origin` is the flow domain that brought it (a pull only retires its own)."""
+
+    id: str
+    tool_id: str
+    external_id: str
+    origin: Literal["people", "accounts"] = "accounts"
+    login: str | None = None
+    email: str | None = None
+    display_name: str | None = None
+    app: str | None = None  # the application, for directories that list app assignments (Okta app links)
+    active: bool = True
+    last_login: float | None = None
+    person_id: str | None = None
+    person_source: Literal["auto", "manual"] = "auto"
+    updated_at: float = Field(default_factory=now)
+
+
+# --------------------------------------------------------------------------------------
 # GRC: risks, policies, control states
 # --------------------------------------------------------------------------------------
 
@@ -389,6 +451,7 @@ class Risk(BaseModel):
     likelihood: int = Field(3, ge=1, le=5)
     impact: int = Field(3, ge=1, le=5)
     owner: str | None = None
+    owner_person_id: str | None = None
     treatment: Literal["mitigate", "accept", "transfer", "avoid"] = "mitigate"
     status: Literal["open", "in_treatment", "closed"] = "open"
     source: str = "manual"  # manual | auto:<control id> | sync:<tool id> | vuln:<asset id or host>
@@ -414,6 +477,7 @@ class Policy(BaseModel):
     version: str = "0.1"
     status: Literal["draft", "approved", "retired"] = "draft"
     owner: str | None = None
+    owner_person_id: str | None = None
     review_due: str | None = None  # ISO date
     updated_at: float = Field(default_factory=now)
 

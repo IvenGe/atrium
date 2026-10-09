@@ -21,11 +21,13 @@ class AgentRegistry:
         from .grc import GrcSupervisor
         from .operator import OperatorAgent
         from .patcher import PatchAgent
+        from .people import PeopleSupervisor
         from .supervisor import HubSupervisor
         from .vulns import VulnerabilitySupervisor
 
         for agent in (HubSupervisor(self.hub), PatchAgent(self.hub), OperatorAgent(self.hub),
-                      AssetSupervisor(self.hub), GrcSupervisor(self.hub), VulnerabilitySupervisor(self.hub)):
+                      AssetSupervisor(self.hub), GrcSupervisor(self.hub), VulnerabilitySupervisor(self.hub),
+                      PeopleSupervisor(self.hub)):
             self.add(agent)
 
     def start_custom(self) -> None:

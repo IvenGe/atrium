@@ -10,6 +10,7 @@ import socket
 import time
 from typing import Any
 
+from .. import people
 from ..bus import Message
 from ..connectors.base import valid_scan_target
 from ..integration import flows
@@ -159,7 +160,10 @@ class AssetSupervisor(FlowOwner):
                     asset.status = "retired"
                     self._save(asset)
                     counts["retired"] += 1
-        if counts["created"] or counts["updated"] or counts["merged"] or counts["retired"]:
+        linked = people.link_assets(self.hub)  # devices to the people they are checked out to
+        if linked:
+            counts["people_linked"] = linked
+        if counts["created"] or counts["updated"] or counts["merged"] or counts["retired"] or linked:
             await self.tell("module:grc", "evaluate")
         detail = f"{info['dropped']} record(s) could not be read: {'; '.join(info['errors'][:3])}" if info["dropped"] else ""
         return {"counts": counts, "detail": detail}
@@ -173,7 +177,8 @@ class AssetSupervisor(FlowOwner):
             if value.lower() not in merged_addresses:
                 merged_addresses.append(value.lower())
         external_ids = {**(asset.facts.get("external_ids") or {}), tool_id: record["external_id"]}
-        asset.facts = {**asset.facts, **record["facts"], "addresses": merged_addresses, "external_ids": external_ids}
+        kept = {k: v for k, v in asset.facts.items() if k not in people.ASSIGNMENT_FACTS}  # the tool says who has it now
+        asset.facts = {**kept, **record["facts"], "addresses": merged_addresses, "external_ids": external_ids}
         if owned:
             asset.name, asset.type, asset.status = record["name"], record["type"], record["status"]  # type: ignore[assignment]
             asset.owner = record["owner"] or asset.owner

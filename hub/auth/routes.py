@@ -181,7 +181,11 @@ def build_auth_router(hub: "Hub") -> APIRouter:
 
     @router.get("/users")
     async def list_users() -> list[dict[str, Any]]:
-        return [public_user(u) for u in auth.users()]
+        """Accounts, each with the person (People app) who has the same email, if any."""
+        from ..people import all_people, brief, person_for_user
+
+        everyone = all_people(hub)
+        return [{**public_user(u), "person": brief(person_for_user(u, everyone))} for u in auth.users()]
 
     @router.post("/users", status_code=201)
     async def create_user(body: NewUser, principal: CurrentPrincipal) -> dict[str, Any]:

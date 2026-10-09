@@ -7,7 +7,8 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from .. import guardrails
-from ..models import OPEN_STATES, Asset, ControlState, Host, Patch, Policy, Risk, Tool, User, Vulnerability
+from ..models import OPEN_STATES, Account, Asset, ControlState, Host, Patch, Person, Policy, Risk, Tool, User, Vulnerability
+from ..people import find_leavers
 from .baseline import CONTROLS, FRAMEWORKS, Control
 
 SSO_MODES = {"oidc", "saml", "oauth2", "ldap"}
@@ -30,6 +31,8 @@ class Snapshot:
     oidc_enabled: bool = False
     vulnerabilities: list[Vulnerability] = field(default_factory=list)
     guardrails: dict[str, Any] = field(default_factory=guardrails.defaults)
+    people: list[Person] = field(default_factory=list)
+    accounts: list[Account] = field(default_factory=list)
 
 
 Result = tuple[str, str, list[str]]  # status, detail, evidence
@@ -142,6 +145,20 @@ def check_dormant_accounts(s: Snapshot) -> Result:
     return status, f"{len(dormant)}/{len(enabled)} enabled accounts have not signed in for 90 days: {shown}", []
 
 
+def check_leavers(s: Snapshot) -> Result:
+    if not s.people:
+        return "na", "No people in the People app yet - connect a directory (Okta, Keycloak, SCIM) or add people.", []
+    left = [p for p in s.people if p.status in ("suspended", "terminated")]
+    findings = find_leavers(s.people, s.assets, s.users, s.accounts, {t.id: t.name for t in s.tools})
+    evidence = [f"{len(s.people)} people, {len(left)} suspended or terminated", f"{len(s.accounts)} tool accounts linked"]
+    if not findings:
+        return "pass", (f"None of the {len(left)} people who left or are suspended still has access or company assets."
+                        if left else f"No leavers among {len(s.people)} people."), evidence
+    shown = "; ".join(f["summary"] for f in findings[:4]) + ("..." if len(findings) > 4 else "")
+    status = "fail" if any(f["severity"] == "fail" for f in findings) else "partial"
+    return status, f"{len(findings)} leaver(s) not cleaned up: {shown}", evidence
+
+
 def check_tools_manifest(s: Snapshot) -> Result:
     analysed = [t for t in s.tools if t.manifest]
     missing = [t.name for t in analysed if t.manifest and not t.manifest.native]
@@ -246,6 +263,7 @@ CHECKS: dict[str, Callable[[Snapshot], Result]] = {
     "ssh_hardening": check_ssh_hardening,
     "hub_auth": check_hub_auth,
     "dormant_accounts": check_dormant_accounts,
+    "leavers": check_leavers,
     "tools_manifest": check_tools_manifest,
     "patch_review": check_patch_review,
     "tools_health": check_tools_health,

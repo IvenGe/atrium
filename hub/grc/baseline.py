@@ -62,6 +62,11 @@ CONTROLS: list[Control] = [
             "hold more permissions than the agent that created them, and agent teams are bounded in size and depth.",
             "agent_guardrails", {"ISO27001": "A.8.2 / A.8.32", "SOC2": "CC6.1 / CC8.1", "NIS2": "21(2)(i)"},
             ("AI agents operate without guardrails", 3, 5)),
+    Control("HB-AC-7", "Access control", "Leavers lose access and return assets",
+            "People who left or are suspended have no enabled Atrium account and no active account in the tools, and "
+            "no longer own or use company assets.",
+            "leavers", {"ISO27001": "A.5.18 / A.5.11", "SOC2": "CC6.2 / CC6.3", "NIS2": "21(2)(i)"},
+            ("Former staff keep access or company devices", 3, 4)),
     Control("HB-CM-1", "Configuration management", "Integration configuration as code",
             "Every tool's integration contract (hub manifest) is explicit and versioned.",
             "tools_manifest", {"ISO27001": "A.8.9", "SOC2": "CC7.1"}, None),

@@ -283,6 +283,11 @@ class CustomAgent(BaseAgent):
             s = await ctx.ask("module:assets", "summary")
             return (f"**Assets:** {s['total']} active, {s['without_owner']} without an owner; "
                     + ", ".join(f"{v} {k}" for k, v in s["by_type"].items()))
+        if team == "module:people":
+            s = await ctx.ask("module:people", "summary")
+            return (f"**People:** {s['total']} ({', '.join(f'{v} {k}' for k, v in s['by_status'].items())}), "
+                    f"{s['accounts']} accounts; {s['leavers_count']} leaver(s) still holding access or assets"
+                    + ("".join(f"\n- {line}" for line in s["leavers"]) if s["leavers"] else ""))
         if team == "module:grc":
             s = await ctx.ask("module:grc", "summary")
             return "**Compliance:**\n" + "\n".join(f"- {f['name']}: {f['score']}%" for f in s["frameworks"]) + (

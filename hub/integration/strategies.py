@@ -9,7 +9,9 @@ Flow rules, from each connection's capabilities (its last successful test, else 
 - reads assets, and is the system of record for them or cannot take them -> pull into Hub Assets;
 - writes assets and is not their system of record -> push Hub Assets (the hub's list is canonical, so a tool that can
   do both gets the push only and nothing loops back);
-- writes controls -> push the hub's controls with their evidence; reads risks -> pull them into the risk register.
+- writes controls -> push the hub's controls with their evidence; reads risks -> pull them into the risk register;
+- reads people (a directory: Okta, Keycloak, SCIM, HR) -> pull them into the People app; reads accounts -> pull the
+  tool's user accounts into the People app (linked to people; leavers with active accounts fail HB-AC-7).
 
 Proposals become approvals of kind "flow" (enabled straight away in autonomous mode).
 """
@@ -78,6 +80,14 @@ def proposals(hub: "Hub") -> list[Flow]:
                 f"{name} manages compliance: it receives the hub's controls with their automated evidence.")
         if reads("risks"):
             add("risks", end, "hub", None, f"{name} keeps risk scenarios: they are pulled into the hub's risk register.")
+        if reads("people"):
+            add("people", end, "hub", None,
+                f"{name} is a directory of people: they are merged into the People app (by email, then login), with "
+                "their status, manager and groups, so leavers are noticed.")
+        if reads("accounts"):
+            add("accounts", end, "hub", None,
+                f"{name} has user accounts: they are linked to people in the People app, so leavers who can still "
+                "sign in are found.")
     return out
 
 

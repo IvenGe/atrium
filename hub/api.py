@@ -12,6 +12,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from . import connectors, guardrails, llm_providers
+from . import people as people_app
 from .agents import teams
 from .agents import vulns as vuln_app
 from .agents.grc import control_catalog
@@ -24,7 +25,8 @@ from .grc.checks import framework_scores
 from .integration import connections, flows, identity, importer, strategies
 from .integration.compatibility import suite_matrix
 from .integration.identity import SSO_STRATEGIES
-from .models import OPEN_STATES, SEVERITY_ORDER, AgentPermission, Asset, ControlState, Host, Policy, Risk, Vulnerability
+from .models import (OPEN_STATES, SEVERITY_ORDER, AgentPermission, Asset, ControlState, Host, PersonStatus, Policy, Risk,
+                     Vulnerability)
 from .secrets import SecretError
 from .store import new_id
 
@@ -152,6 +154,43 @@ class ControlOverride(BaseModel):
     clear: bool = False
 
 
+class PersonBody(BaseModel):
+    display_name: str = Field(min_length=1, max_length=200)
+    email: str | None = Field(None, max_length=254)
+    login: str | None = Field(None, max_length=254)
+    title: str | None = Field(None, max_length=200)
+    department: str | None = Field(None, max_length=200)
+    manager_id: str | None = Field(None, max_length=64)
+    status: PersonStatus | None = None  # set by hand; a directory saying the person left still wins
+    groups: list[str] = Field(default_factory=list, max_length=200)
+    location: str | None = Field(None, max_length=200)
+    phone: str | None = Field(None, max_length=64)
+
+
+class PersonPatch(BaseModel):
+    """Only the fields sent change; "status": null clears a status set by hand."""
+
+    display_name: str | None = Field(None, min_length=1, max_length=200)
+    email: str | None = Field(None, max_length=254)
+    login: str | None = Field(None, max_length=254)
+    title: str | None = Field(None, max_length=200)
+    department: str | None = Field(None, max_length=200)
+    manager_id: str | None = Field(None, max_length=64)
+    status: PersonStatus | None = None
+    groups: list[str] | None = Field(None, max_length=200)
+    location: str | None = Field(None, max_length=200)
+    phone: str | None = Field(None, max_length=64)
+
+
+class PersonAction(BaseModel):
+    asset_ids: list[str] | None = Field(None, max_length=5000)  # unassign_assets: only these (default: all)
+
+
+class AccountLink(BaseModel):
+    person_id: str | None = Field(None, max_length=64)  # null: unlinked by hand
+    auto: bool = False  # true: link automatically again (by email, then login)
+
+
 class PublishBody(BaseModel):
     source: str
     event: str
@@ -264,6 +303,7 @@ def build_router(hub: Hub) -> APIRouter:
         hub.store.delete("tools", tool_id)
         identity.forget_tool(hub, tool_id)
         flows.forget_tool(hub, tool_id, p.actor)
+        people_app.forget_tool(hub, tool_id)
         await teams.forget_tool(hub, tool_id, p.actor)
         if tool.source_type == "github" and tool.path:
             await asyncio.to_thread(importer.remove_tree, hub.settings.workspace / "tools" / tool_id)
@@ -784,9 +824,33 @@ def build_router(hub: Hub) -> APIRouter:
     async def assets() -> list[dict[str, Any]]:
         return [a.model_dump(mode="json") for a in hub.all("assets", Asset)]
 
+    def person_or_400(person_id: str | None, what: str):
+        if not person_id:
+            return None
+        person = people_app.get(hub, person_id)
+        if person is None:
+            raise HTTPException(400, f"Unknown person for {what}: '{person_id}'")
+        return person
+
+    def link_people(data: dict[str, Any], changes: dict[str, Any]) -> dict[str, Any]:
+        """Validate person links in an asset change; a person picked as owner also fills the free-text owner."""
+        owner = person_or_400(changes.get("owner_person_id"), "the owner")
+        if owner is not None and not changes.get("owner"):
+            data["owner"] = owner.display_name
+        if "assigned_person_id" in changes:
+            person_or_400(changes.get("assigned_person_id"), "the assigned user")
+            data["assigned_source"] = "manual"
+        if changes.get("assigned_source") == "auto":
+            data["assigned_source"] = "auto"
+            data["assigned_person_id"] = people_app.assigned_person(Asset.model_validate(data),
+                                                                    people_app.Index.of(people_app.all_people(hub)))
+        return data
+
     @router.post("/assets", status_code=201)
     async def create_asset(asset: Asset, p: CurrentPrincipal) -> dict[str, Any]:
         asset.id = new_id("a_")
+        given = asset.model_dump(exclude_unset=True)
+        asset = Asset.model_validate(link_people(asset.model_dump(), given))
         hub.save("assets", asset, "asset")
         await hub.bus.tell(p.bus_id, "module:grc", "evaluate")
         return asset.model_dump(mode="json")
@@ -796,9 +860,10 @@ def build_router(hub: Hub) -> APIRouter:
         current = hub.one("assets", asset_id, Asset)
         if current is None:
             raise not_found("Asset")
-        allowed = {"name", "type", "owner", "criticality", "status", "tags", "facts", "scan_scope"}
-        merged = Asset.model_validate({**current.model_dump(), **{k: v for k, v in changes.items() if k in allowed},
-                                       "updated_at": time.time()})
+        allowed = {"name", "type", "owner", "criticality", "status", "tags", "facts", "scan_scope", "owner_person_id",
+                   "assigned_person_id", "assigned_source"}
+        given = {k: v for k, v in changes.items() if k in allowed}
+        merged = Asset.model_validate(link_people({**current.model_dump(), **given, "updated_at": time.time()}, given))
         hub.save("assets", merged, "asset")
         await hub.bus.tell(p.bus_id, "module:grc", "evaluate")
         return merged.model_dump(mode="json")
@@ -823,6 +888,110 @@ def build_router(hub: Hub) -> APIRouter:
             hub.activity(p.actor, "info", f"{len(result['changed'])} asset(s) {'put in' if body.in_scope else 'taken out of'} "
                                           "vulnerability-scan scope")
         return result
+
+    # -- people --------------------------------------------------------------------------
+
+    def person_or_404(person_id: str):
+        person = people_app.get(hub, person_id)
+        if person is None:
+            raise not_found("Person")
+        return person
+
+    async def people_changed(p: Principal) -> None:
+        await hub.bus.tell(p.bus_id, "module:grc", "evaluate")
+
+    @router.get("/people")
+    async def list_people(q: str = "", status: str = "", department: str = "", source: str = "") -> dict[str, Any]:
+        """Filters: q (name, email, login, title, department, groups), status (comma-separated), department, source
+        (a tool id or "manual")."""
+        return people_app.listing(hub, q=q[:200], status=status[:100], department=department[:200], source=source[:64])
+
+    @router.get("/people/leavers")
+    async def list_leavers() -> dict[str, Any]:
+        return {"leavers": people_app.leavers(hub),
+                "actions": [{"id": k, **v} for k, v in people_app.ACTIONS.items()]}
+
+    @router.get("/people/{person_id}")
+    async def get_person(person_id: str) -> dict[str, Any]:
+        return people_app.detail(hub, person_or_404(person_id))
+
+    @router.post("/people", status_code=201)
+    async def create_person(body: PersonBody, p: CurrentPrincipal) -> dict[str, Any]:
+        try:
+            person = people_app.create(hub, body.model_dump(), p.actor)
+        except LookupError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(400, str(exc).removeprefix("Value error, ")) from exc
+        await people_changed(p)
+        return people_app.detail(hub, person)
+
+    @router.patch("/people/{person_id}")
+    async def update_person(person_id: str, body: PersonPatch, p: CurrentPrincipal) -> dict[str, Any]:
+        person = person_or_404(person_id)
+        changes = body.model_dump(exclude_unset=True)
+        if "display_name" in changes and not changes["display_name"]:
+            raise HTTPException(400, "A person needs a name")
+        try:
+            person = people_app.update(hub, person, changes, p.actor)
+        except LookupError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        await people_changed(p)
+        return people_app.detail(hub, person)
+
+    @router.delete("/people/{person_id}")
+    async def delete_person(person_id: str, p: CurrentPrincipal) -> dict[str, Any]:
+        people_app.delete(hub, person_or_404(person_id), p.actor)
+        await people_changed(p)
+        return {"ok": True}
+
+    @router.post("/people/{person_id}/actions/{action}")
+    async def person_action(person_id: str, action: str, p: CurrentPrincipal,
+                            body: PersonAction | None = None) -> dict[str, Any]:
+        """unassign_assets (operator) or disable_atrium_account (admin; the role is checked by the policy)."""
+        person = person_or_404(person_id)
+        if action == "unassign_assets":
+            result = people_app.unassign_assets(hub, person, p.actor, (body or PersonAction()).asset_ids)
+        elif action == "disable_atrium_account":
+            result = people_app.disable_atrium_account(hub, person, p)
+        else:
+            raise HTTPException(404, f"Unknown action '{action}': use {', '.join(people_app.ACTIONS)}")
+        await people_changed(p)
+        return {**result, "person": people_app.detail(hub, person)}
+
+    @router.get("/accounts")
+    async def list_accounts(tool_id: str | None = None, person_id: str | None = None,
+                            unlinked: bool = False) -> list[dict[str, Any]]:
+        """User accounts in the tools (and directory entries), with the person each is linked to."""
+        by_id = {x.id: x for x in people_app.all_people(hub)}
+        names = people_app.source_names(hub)
+        out = []
+        for account in people_app.all_accounts(hub, tool_id):
+            if person_id and account.person_id != person_id or unlinked and account.person_id:
+                continue
+            out.append({**account.model_dump(mode="json"), "tool": names.get(account.tool_id, account.tool_id),
+                        "person": people_app.brief(by_id.get(account.person_id or ""))})
+        return sorted(out, key=lambda a: (a["tool"].lower(), (a["login"] or a["email"] or "").lower()))
+
+    @router.patch("/accounts/{account_id:path}")
+    async def link_account(account_id: str, body: AccountLink, p: CurrentPrincipal) -> dict[str, Any]:
+        account = hub.one(people_app.ACCOUNTS, account_id, people_app.Account)
+        if account is None:
+            raise not_found("Account")
+        if body.auto:
+            account.person_source = "auto"
+            account.person_id = people_app.Index.of(people_app.all_people(hub)).match(account.email, account.login)
+        else:
+            person = person_or_400(body.person_id, "the account") if body.person_id else None
+            account.person_id, account.person_source = (person.id if person else None), "manual"
+        people_app.save_account(hub, account)
+        hub.activity(p.actor, "info", f"Account {account.login or account.external_id} in {account.tool_id}: "
+                                      + (f"linked to {account.person_id}" if account.person_id else "not linked"),
+                     person_id=account.person_id)
+        await people_changed(p)
+        return account.model_dump(mode="json")
 
     # -- vulnerabilities -----------------------------------------------------------------
 
@@ -915,6 +1084,9 @@ def build_router(hub: Hub) -> APIRouter:
 
         @router.post(f"/grc/{collection}", status_code=201, name=f"create_{collection}")
         async def create_item(data: dict[str, Any], p: CurrentPrincipal) -> dict[str, Any]:
+            owner = person_or_400(data.get("owner_person_id"), "the owner")
+            if owner is not None and not data.get("owner"):
+                data = {**data, "owner": owner.display_name}
             item = model.model_validate({**data, "id": new_id(prefix)})
             if isinstance(item, Risk):
                 item.reviewed_at = time.time()
@@ -928,6 +1100,9 @@ def build_router(hub: Hub) -> APIRouter:
             if current is None:
                 raise not_found(event.capitalize())
             data = {**current.model_dump(), **{k: v for k, v in changes.items() if k not in ("id", "score")}}
+            owner = person_or_400(changes.get("owner_person_id"), "the owner")
+            if owner is not None and not changes.get("owner"):
+                data["owner"] = owner.display_name
             if isinstance(current, Risk):
                 data["reviewed_at"] = time.time()
             if isinstance(current, Policy):

@@ -20,6 +20,9 @@ REGISTRY: dict[str, str | type[Connector]] = {
     "snipeit": "hub.connectors.snipeit:SnipeItConnector",
     "ciso_assistant": "hub.connectors.ciso_assistant:CisoAssistantConnector",
     "openvas": "hub.connectors.openvas:OpenVasConnector",
+    "okta": "hub.connectors.okta:OktaConnector",
+    "keycloak": "hub.connectors.keycloak:KeycloakConnector",
+    "scim": "hub.connectors.scim:ScimConnector",
     "generic_rest": "hub.connectors.generic_rest:GenericRestConnector",
 }
 

@@ -15,6 +15,15 @@ normalises them with ``normalize``; unknown keys are dropped, timestamps are POS
                      treatment
 ``controls``         external_id (the hub control id), ref_id, name, description, status (pass|partial|fail|manual|na),
                      evidence (list), refs (dict: framework -> reference)
+``people``           external_id, display_name, email, login, title, department, manager_external_id (the manager's
+                     external_id in the same tool), status (active|suspended|terminated), groups (names), location,
+                     phone - a directory's (Okta, Keycloak, SCIM, HR) people; the hub merges them into persons by
+                     email, then login
+``accounts``         external_id, login, email, display_name, active (bool), last_login, app (the application, for a
+                     directory that lists app assignments) - user accounts in a tool; linked to persons by email/login
+
+An asset record's ``facts`` may carry ``assigned_email`` / ``assigned_username`` (the user the device is checked out
+to): the hub links the asset to that person (``assigned_person_id``).
 
 Records the hub pushes carry ``hub_id`` as well; ``links`` maps hub ids to the external ids of records synced before
 (create when a hub id has no link, update when it has one; ``external_id`` of a pushed record is that link or None,
@@ -52,8 +61,8 @@ from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
 if TYPE_CHECKING:
     from ..models import Tool
 
-Domain = Literal["assets", "vulnerabilities", "risks", "controls"]
-DOMAINS: tuple[str, ...] = ("assets", "vulnerabilities", "risks", "controls")
+Domain = Literal["assets", "vulnerabilities", "risks", "controls", "people", "accounts"]
+DOMAINS: tuple[str, ...] = ("assets", "vulnerabilities", "risks", "controls", "people", "accounts")
 FieldKind = Literal["text", "url", "secret", "select", "number", "bool", "json"]
 FAILED_SCAN_STATES = {"failed", "stopped", "interrupted"}
 EXCERPT = 500
@@ -339,8 +348,92 @@ class ControlRecord(_Record):
     refs: dict[str, str] = {}
 
 
+PERSON_STATES = {
+    "active": "active", "enabled": "active", "true": "active", "provisioned": "active", "staged": "active",
+    "recovery": "active", "password_expired": "active", "locked_out": "active",
+    "suspended": "suspended", "locked": "suspended", "disabled": "suspended", "inactive": "suspended", "false": "suspended",
+    "terminated": "terminated", "deprovisioned": "terminated", "deleted": "terminated", "deactivated": "terminated",
+    "left": "terminated", "leaver": "terminated",
+}
+
+
+def _email(value: Any) -> str | None:
+    text = _text(value)
+    if not text or "@" not in text or any(c.isspace() for c in text) or len(text) > 254:
+        return None
+    return text.lower()
+
+
+class PersonRecord(_Record):
+    display_name: str
+    email: str | None = None
+    login: str | None = None
+    title: str | None = None
+    department: str | None = None
+    manager_external_id: str | None = None
+    status: str = "active"
+    groups: list[str] = []
+    location: str | None = None
+    phone: str | None = None
+
+    @field_validator("display_name", mode="before")
+    @classmethod
+    def _name(cls, value: Any) -> str:
+        return (_text(value) or "Unnamed")[:200]
+
+    _email = field_validator("email", mode="before")(lambda cls, v: _email(v))
+
+    @field_validator("login", "title", "department", "manager_external_id", "location", "phone", mode="before")
+    @classmethod
+    def _short(cls, value: Any) -> str | None:
+        text = _text(value)
+        return text[:200] if text else None
+
+    @field_validator("status", mode="before")
+    @classmethod
+    def _status(cls, value: Any) -> str:
+        if isinstance(value, bool):
+            return "active" if value else "suspended"
+        text = (_text(value) or "active").lower().replace(" ", "_").replace("-", "_")
+        return PERSON_STATES.get(text, "active")
+
+    @field_validator("groups", mode="before")
+    @classmethod
+    def _groups(cls, value: Any) -> list[str]:
+        items = value if isinstance(value, (list, tuple, set)) else [value] if value else []
+        return list(dict.fromkeys(t[:200] for t in (_text(i) for i in items) if t))[:500]
+
+
+class AccountRecord(_Record):
+    login: str | None = None
+    email: str | None = None
+    display_name: str | None = None
+    active: bool = True
+    last_login: float | None = None
+    app: str | None = None
+
+    _email = field_validator("email", mode="before")(lambda cls, v: _email(v))
+    _last = field_validator("last_login", mode="before")(lambda cls, v: to_timestamp(v))
+
+    @field_validator("login", "display_name", "app", mode="before")
+    @classmethod
+    def _short(cls, value: Any) -> str | None:
+        text = _text(value)
+        return text[:200] if text else None
+
+    @field_validator("active", mode="before")
+    @classmethod
+    def _active(cls, value: Any) -> bool:
+        if isinstance(value, bool):
+            return value
+        if value is None or value == "":
+            return True
+        return PERSON_STATES.get(str(value).strip().lower(), "active") == "active" and str(value).strip() not in ("0",)
+
+
 RECORD_MODELS: dict[str, type[_Record]] = {
     "assets": AssetRecord, "vulnerabilities": VulnerabilityRecord, "risks": RiskRecord, "controls": ControlRecord,
+    "people": PersonRecord, "accounts": AccountRecord,
 }
 
 

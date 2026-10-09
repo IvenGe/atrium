@@ -2,10 +2,13 @@ import { get, post } from "../api.js";
 import { DOMAINS, endName, scheduleLabel } from "../flows.js";
 import { loadIdentity, openProviderPicker } from "../sso.js";
 import { actions, badge, diffView, emptyState, html, icon, setHTML, timeAgo, toast } from "../ui.js";
+import { proposedMember } from "./agents.js";
 import { ssoPlan } from "./tools.js";
 
-const KIND_ICON = { command: "terminal", patch: "wrench", process: "play", flow: "flow", scan: "radar", repair: "wrench" };
-const APPROVE_LABEL = { flow: "Enable flow", scan: "Start scan" };
+const KIND_ICON = { command: "terminal", patch: "wrench", process: "play", flow: "flow", scan: "radar", repair: "wrench", agent_team: "users" };
+const KIND_LABEL = { flow: "data flow", agent_team: "agent team" };
+const APPROVE_LABEL = { flow: "Enable flow", scan: "Start scan", agent_team: "Create team" };
+const DESIGNER = { templates: "templates", claude: "designed by Claude", auto: "automatic" };
 const DIAGNOSIS = {
   credentials: "credentials refused", base_path: "API path", validation: "rejected data", unreachable: "unreachable", unknown: "unknown error",
   mapping: "mapping change", config: "settings change", manual: "needs a person", generated: "generated connector",
@@ -53,6 +56,21 @@ function repairDetails(p, names) {
       : html`<p class="faint" style="font-size:12.5px">No settings change: approving runs the flow again once the cause is fixed.</p>`}`;
 }
 
+function teamDetails(p, names) {
+  const members = p.members || [];
+  return html`<dl class="kv" style="margin:10px 0">
+      <dt>Team</dt><dd>${p.tool_id ? toolLink(p.tool_id, names) : p.team}${p.depth > 1 ? html` <span class="faint">(sub-team, depth ${p.depth})</span>` : ""}</dd>
+      <dt>Lead</dt><dd class="mono">${p.parent}</dd>
+      <dt>Designed with</dt><dd>${DESIGNER[p.designer] || p.designer || "-"}${p.category ? ` - ${p.category}` : ""}</dd>
+      ${p.on_behalf_of ? html`<dt>Asked by</dt><dd class="mono">${p.on_behalf_of} <span class="faint">(members get none of the permissions it lacks)</span></dd>` : ""}</dl>
+    ${p.rationale ? html`<p class="muted" style="margin:0 0 10px;white-space:pre-line;overflow-wrap:anywhere">${p.rationale}</p>` : ""}
+    <p style="font-size:12.5px;margin-bottom:6px">Approving creates ${members.length} agent${members.length === 1 ? "" : "s"}, checked again against the guardrails as they are then:</p>
+    <div class="stack" style="gap:8px">${members.map((m) => proposedMember(m, providerNames))}</div>`;
+}
+
+// Local model provider names for team proposals (loaded only while one is waiting).
+let providerNames = {};
+
 function pendingCard(a, names) {
   const p = a.patch;
   return html`<section class="card">
@@ -61,13 +79,14 @@ function pendingCard(a, names) {
         <div class="stat-icon">${icon(KIND_ICON[a.kind] || "checkCircle")}</div>
         <div style="min-width:0"><h3 style="overflow-wrap:anywhere">${a.title}</h3>
           <div class="faint" style="font-size:12px">requested by <b>${a.requested_by}</b> - ${timeAgo(a.created_at)}</div></div></div>
-      ${badge(a.kind === "flow" ? "data flow" : a.kind, "accent")}</div>
-    ${a.detail ? html`<p class="muted" style="margin:10px 0;white-space:pre-line;overflow-wrap:anywhere">${a.detail}</p>` : ""}
+      ${badge(KIND_LABEL[a.kind] || a.kind, "accent")}</div>
+    ${a.detail && a.kind !== "agent_team" ? html`<p class="muted" style="margin:10px 0;white-space:pre-line;overflow-wrap:anywhere">${a.detail}</p>` : ""}
     ${a.kind === "command" ? html`<dl class="kv" style="margin:10px 0"><dt>Target</dt><dd>${a.payload.target}</dd>
         <dt>Command</dt><dd><code>${a.payload.command}</code></dd>${a.payload.cwd ? html`<dt>Directory</dt><dd><code>${a.payload.cwd}</code></dd>` : ""}</dl>` : ""}
     ${a.kind === "flow" ? flowDetails(a.payload, names) : ""}
     ${a.kind === "scan" ? scanDetails(a.payload, names) : ""}
     ${a.kind === "repair" ? repairDetails(a.payload, names) : ""}
+    ${a.kind === "agent_team" ? teamDetails(a.payload, names) : ""}
     ${p ? html`<div class="row" style="margin:6px 0 10px;gap:6px"><span class="badge">${p.target}</span><span class="badge">${p.strategy.replace(/_/g, " ")}</span>
         ${p.target === "repo" ? html`<span class="faint" style="font-size:12px">applied on a new git branch in a separate worktree - your checkout is not touched</span>` : ""}
         ${p.sso ? html`<span class="spacer"></span><button class="btn sm" data-act="sso-change" data-tool="${a.payload.tool_id}" data-provider="${p.sso.provider}"
@@ -85,6 +104,10 @@ function resultText(a) {
   const r = a.result;
   if (!r) return "";
   if (r.error) return r.error;
+  if (r.created) {
+    const skipped = (r.skipped || []).map((s) => `${s.name}: ${s.reason}`).join("; ");
+    return `${r.created.length} agent(s) created${skipped ? `; skipped ${skipped}` : ""}`;
+  }
   if (r.branch) return r.branch;
   if (r.exit_code !== undefined) return `exit ${r.exit_code}`;
   if (r.location) return r.location;
@@ -101,16 +124,19 @@ export async function render(el, ctx) {
     const names = Object.fromEntries(ctx.state.tools.map((t) => [t.id, t.name]));
     const pending = all.filter((a) => a.status === "pending");
     const history = all.filter((a) => a.status !== "pending");
+    if (pending.some((a) => a.kind === "agent_team")) {
+      providerNames = await get("/llm/providers").then((r) => Object.fromEntries(r.choices.map((c) => [c.id, c.label]))).catch(() => ({}));
+    }
     setHTML(el, html`
-      <div class="page-head"><div><h1>Approvals</h1><p class="muted">Agents ask before they change anything: commands, patches, data flows, scans and repairs.
+      <div class="page-head"><div><h1>Approvals</h1><p class="muted">Agents ask before they change anything: commands, patches, data flows, scans, repairs and new agent teams.
         Commands typed by a person in the Operator run directly.</p></div></div>
       <div class="tabs"><button class="${tab === "pending" ? "active" : ""}" data-act="tab" data-tab="pending">Waiting (${pending.length})</button>
         <button class="${tab === "history" ? "active" : ""}" data-act="tab" data-tab="history">History (${history.length})</button></div>
       ${tab === "pending" ? (pending.length ? html`<div class="stack">${pending.map((a) => pendingCard(a, names))}</div>`
-        : html`<section class="card">${emptyState("checkCircle", "Nothing waiting", "When an agent wants to run a state-changing command, apply a patch, start a data flow or a scan, or repair an integration, it shows up here.")}</section>`)
+        : html`<section class="card">${emptyState("checkCircle", "Nothing waiting", "When an agent wants to run a state-changing command, apply a patch, start a data flow or a scan, repair an integration or build an agent team, it shows up here.")}</section>`)
       : html`<section class="card flush">${history.length ? html`<div class="table-wrap"><table class="table"><thead><tr><th>Action</th><th>Kind</th><th>By</th><th>Decision</th><th>Result</th><th>When</th></tr></thead><tbody>
           ${history.map((a) => html`<tr><td style="max-width:420px;overflow-wrap:anywhere">${a.title}${a.note ? html`<div class="faint">Note: ${a.note}</div>` : ""}</td>
-            <td>${badge(a.kind)}</td><td>${a.requested_by}</td><td>${badge(a.status)}${a.decided_by ? html`<div class="faint" style="font-size:12px">by ${a.decided_by}</div>` : ""}</td>
+            <td>${badge(KIND_LABEL[a.kind] || a.kind, "")}</td><td>${a.requested_by}</td><td>${badge(a.status)}${a.decided_by ? html`<div class="faint" style="font-size:12px">by ${a.decided_by}</div>` : ""}</td>
             <td class="faint" style="font-size:12px;max-width:260px;overflow-wrap:anywhere">${resultText(a)}</td>
             <td class="faint">${timeAgo(a.decided_at || a.created_at)}</td></tr>`)}</tbody></table></div>`
         : emptyState("checkCircle", "No decisions yet", "Approved and rejected actions are kept here as an audit trail.")}</section>`}`);
