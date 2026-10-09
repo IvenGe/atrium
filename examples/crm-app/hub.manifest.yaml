@@ -1,0 +1,15 @@
+# Native hub manifest: this tool declares its own integration contract.
+# Everything not listed here is still inferred by the hub's analyzer.
+name: CRM App
+description: Tracks customers, deals and follow-ups. Signs users in through the suite's identity provider.
+ui:
+  icon: C
+  color: "#0d9488"
+auth:
+  sso: oidc
+provides: [api.rest, crm.customers, webhooks]
+consumes: [auth.oidc, db.postgres]
+events:
+  emits: [crm.deal.won, crm.customer.created]
+  listens: [notes-app.*]   # e.g. the "notes-app.changed" events the Patch Agent's adapter emits
+  webhook_url: http://localhost:4000/hub/events

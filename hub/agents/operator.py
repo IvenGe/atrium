@@ -1,0 +1,136 @@
+"""Operator Agent: runs commands on this machine or on remote hosts over SSH."""
+
+from __future__ import annotations
+
+from typing import Any
+
+from ..bus import Message
+from ..execution import policy
+from ..execution.runner import CommandResult, run_local, run_ssh
+from .base import BaseAgent
+
+# Built-in, read-only host discovery script used by the Asset Supervisor.
+DISCOVERY_SCRIPT = (
+    'echo "@@os"; cat /etc/os-release 2>/dev/null; '
+    'echo "@@kernel"; uname -srm; '
+    'echo "@@hostname"; hostname; '
+    'echo "@@cpus"; nproc 2>/dev/null; '
+    "echo \"@@memory_mb\"; free -m 2>/dev/null | awk '/Mem:/{print $2}'; "
+    'echo "@@disk_root"; df -h / 2>/dev/null | tail -1; '
+    'echo "@@uptime"; uptime -p 2>/dev/null || uptime'
+)
+
+
+class OperatorAgent(BaseAgent):
+    role = "operator"
+    title = "Operator Agent"
+    description = ("Runs commands on this machine or on registered hosts over SSH. Enforces the command policy: "
+                   "blocked commands are refused, and state-changing commands wait for approval.")
+
+    def __init__(self, hub):
+        super().__init__(hub, "operator", "Operator Agent")
+
+    # -- requests --------------------------------------------------------------------
+
+    async def on_run(self, body: dict[str, Any], msg: Message) -> dict[str, Any]:
+        """Run a shell command. The sender decides the policy: 'user' means a person typed it."""
+        command = str(body.get("command", "")).strip()
+        target = body.get("target") or "local"
+        trusted = bool(body.get("discovery")) and command == DISCOVERY_SCRIPT
+        decision = policy.decide(command, self.hub.prefs["autonomy"], from_person=msg.sender == "user", trusted=trusted)
+        request = {"command": command, "target": target, "cwd": body.get("cwd"), "timeout": body.get("timeout", 120),
+                   "reason": body.get("reason", ""), "origin": msg.sender}
+        if decision.action == "deny":
+            self.log("warn", f"Refused command from {msg.sender}: {command}", reason=decision.reason)
+            return {"status": "denied", "reason": decision.reason, "risk": decision.risk}
+        if decision.action == "approve":
+            where = "this machine" if target == "local" else self._host_label(target)
+            approval = self.hub.approvals.create(
+                "command", f"Run on {where}: {command}",
+                (request["reason"] + "\n" if request["reason"] else "") + decision.reason,
+                request, requested_by=self.id,
+            )
+            return {"status": "pending_approval", "approval_id": approval.id, "reason": decision.reason, "risk": decision.risk}
+        result = await self.execute(request)
+        return {"status": "done", **result}
+
+    async def on_launch(self, body: dict[str, Any], msg: Message) -> dict[str, Any]:
+        """Start a tool's long-running process."""
+        tool = self.hub.get_tool(str(body.get("tool_id")))
+        if tool is None or tool.manifest is None or not tool.manifest.launch.command:
+            raise ValueError("This tool has no launch command in its manifest")
+        command = tool.manifest.launch.command
+        decision = policy.decide(command, self.hub.prefs["autonomy"], from_person=msg.sender == "user")
+        if decision.action == "deny":
+            return {"status": "denied", "reason": decision.reason}
+        payload = {"tool_id": tool.id, "origin": msg.sender}
+        if decision.action == "approve":
+            approval = self.hub.approvals.create("process", f"Start {tool.name}: {command}", decision.reason, payload, self.id)
+            return {"status": "pending_approval", "approval_id": approval.id}
+        return {"status": "started", **(await self._launch(tool.id))}
+
+    async def on_stop_tool(self, body: dict[str, Any], msg: Message) -> dict[str, Any]:
+        stopped = await self.hub.processes.stop(str(body.get("tool_id")))
+        return {"stopped": stopped}
+
+    async def on_approval_decided(self, body: dict[str, Any], msg: Message) -> None:
+        approval = self.hub.approvals.get(body["approval_id"])
+        if approval is None:
+            return
+        origin = approval.payload.get("origin", "supervisor")
+        if not body.get("approved"):
+            if origin != "user":
+                await self.tell(origin, "command.completed", {"status": "rejected", "command": approval.payload.get("command")})
+            return
+        try:
+            if approval.kind == "process":
+                result = await self._launch(approval.payload["tool_id"])
+                self.hub.approvals.complete(approval.id, True, result)
+                return
+            result = await self.execute(approval.payload)
+            self.hub.approvals.complete(approval.id, result["exit_code"] == 0, result)
+            if origin != "user":
+                await self.tell(origin, "command.completed", {"status": "done", **result})
+        except Exception as exc:
+            self.hub.approvals.complete(approval.id, False, {"error": str(exc)})
+            raise
+
+    # -- execution -------------------------------------------------------------------
+
+    async def execute(self, request: dict[str, Any]) -> dict[str, Any]:
+        target = request.get("target") or "local"
+        command = request["command"]
+        timeout = float(request.get("timeout") or 120)
+        if target == "local":
+            result = await run_local(command, cwd=request.get("cwd"), timeout=timeout)
+        else:
+            host = self.hub.get_host(target)
+            if host is None:
+                raise ValueError(f"Unknown host '{target}'")
+            try:
+                result = await run_ssh(host, command, timeout=timeout)
+            except Exception as exc:  # connection, auth and host-key errors
+                result = CommandResult(-1, f"SSH error: {exc}", 0.0)
+        record = {"target": target, "command": command, "origin": request.get("origin"), **result.as_dict()}
+        entry = self.hub.store.append("commands", {**record, "output": result.output[-4000:]})
+        self.hub.bus.publish("command", entry)
+        level = "info" if result.exit_code == 0 else "warn"
+        self.log(level, f"Ran on {target}: {command} (exit {result.exit_code}, {result.duration:.1f}s)")
+        return record
+
+    async def _launch(self, tool_id: str) -> dict[str, Any]:
+        tool = self.hub.get_tool(tool_id)
+        if tool is None or tool.manifest is None or not tool.manifest.launch.command:
+            raise ValueError("This tool has no launch command")
+        launch = tool.manifest.launch
+        cwd = tool.path
+        if cwd and launch.cwd and launch.cwd != ".":
+            cwd = f"{cwd}/{launch.cwd}"
+        env = dict(launch.env)
+        if launch.port:
+            env.setdefault("PORT", str(launch.port))
+        return await self.hub.processes.start(tool.id, launch.command, cwd=cwd, env=env)
+
+    def _host_label(self, host_id: str) -> str:
+        host = self.hub.get_host(host_id)
+        return f"{host.name} ({host.username}@{host.address})" if host else host_id

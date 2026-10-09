@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Atrium</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%237c3aed'/%3E%3Cpath d='M9 9v14M23 9v14M9 16h14' stroke='white' stroke-width='3' stroke-linecap='round'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/css/app.css">
+  <script>
+    try { const t = localStorage.getItem("hub.theme"); if (t) document.documentElement.dataset.theme = t; } catch {}
+  </script>
+</head>
+<body>
+  <header class="topbar">
+    <button class="icon-btn menu-btn" id="menu-btn" aria-label="Menu"></button>
+    <a class="brand" href="#/"><span class="brand-mark" id="brand-mark"></span><span>Atrium <small>suite</small></span></a>
+    <div class="spacer"></div>
+    <button class="icon-btn" id="bell-btn" aria-label="Notifications"></button>
+    <div class="theme-toggle">
+      <span class="sun" id="sun-icon"></span>
+      <button class="switch" id="theme-switch" role="switch" aria-label="Dark mode"></button>
+      <span class="moon" id="moon-icon"></span>
+    </div>
+    <button class="bar-btn" id="portals-btn" aria-haspopup="true" aria-expanded="false"></button>
+    <button class="bar-btn search-btn" id="search-btn"></button>
+    <button class="get-started" id="start-btn"></button>
+  </header>
+
+  <div class="popover" id="portals" role="menu" aria-label="Portals"></div>
+  <div class="popover" id="notifications" aria-label="Notifications"></div>
+
+  <div class="layout">
+    <aside class="sidebar" id="sidebar"><nav class="nav" id="nav"></nav></aside>
+    <div class="content">
+      <div class="subbar" id="subbar"></div>
+      <main id="main" tabindex="-1"></main>
+    </div>
+  </div>
+
+  <script type="module" src="/js/app.js"></script>
+</body>
+</html>

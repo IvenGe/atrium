@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+build/
+dist/
+
+# Hub runtime data (database, cloned tools, adapters, patch worktrees)
+.hub/
+.hub-*/
+
+# Secrets
+.env
+
+# Editor / local tooling
+.vscode/
+.idea/
+.claude/launch.json
+.DS_Store
+Thumbs.db

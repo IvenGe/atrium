@@ -1,0 +1,10 @@
+# Identity provider for the suite (development mode - not for production).
+services:
+  keycloak:
+    image: quay.io/keycloak/keycloak:25.0
+    command: start-dev
+    environment:
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: change-me
+    ports:
+      - "8080:8080"
