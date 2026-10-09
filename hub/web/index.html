@@ -11,6 +11,11 @@
   </script>
 </head>
 <body>
+  <!-- Sign-in screens. The shell below stays hidden (body.signed-in) until /api/auth/me says who is here. -->
+  <div class="auth-root" id="auth">
+    <div class="auth-loading" role="status" aria-label="Loading"><span class="brand-mark"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg></span></div>
+  </div>
+
   <header class="topbar">
     <button class="icon-btn menu-btn" id="menu-btn" aria-label="Menu"></button>
     <a class="brand" href="#/"><span class="brand-mark" id="brand-mark"></span><span>Atrium <small>suite</small></span></a>
@@ -24,10 +29,12 @@
     <button class="bar-btn" id="portals-btn" aria-haspopup="true" aria-expanded="false"></button>
     <button class="bar-btn search-btn" id="search-btn"></button>
     <button class="get-started" id="start-btn"></button>
+    <button class="user-btn" id="user-btn" aria-haspopup="true" aria-expanded="false" aria-label="Account"></button>
   </header>
 
   <div class="popover" id="portals" role="menu" aria-label="Portals"></div>
   <div class="popover" id="notifications" aria-label="Notifications"></div>
+  <div class="popover user-menu" id="user-menu" aria-label="Account"></div>
 
   <div class="layout">
     <aside class="sidebar" id="sidebar"><nav class="nav" id="nav"></nav></aside>

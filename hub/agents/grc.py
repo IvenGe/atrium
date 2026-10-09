@@ -29,6 +29,7 @@ class GrcSupervisor(BaseAgent):
             tools=hub.tools(), hosts=hub.hosts(), assets=hub.all("assets", Asset), risks=hub.all("risks", Risk),
             policies=hub.all("policies", Policy), patches=hub.all("patches", Patch), autonomy=hub.prefs["autonomy"],
             audit_entries=hub.store.count("activity") + hub.store.count("messages"),
+            users=hub.auth.users(), oidc_enabled=hub.auth.oidc.enabled,
         )
 
     async def on_evaluate(self, body: dict[str, Any], msg: Message) -> dict[str, Any]:

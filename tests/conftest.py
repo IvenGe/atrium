@@ -18,12 +18,52 @@ def no_llm(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("HUB_LLM", "off")
 
 
+ADMIN_PASSWORD = "correct horse battery staple"
+PASSWORD = "plenty of entropy 42"
+
+
+def make_settings(tmp_path: Path, **overrides) -> Settings:
+    return Settings(data_dir=tmp_path / "data", allowed_hosts=["testserver"], start_background_tasks=False, **overrides)
+
+
 @pytest.fixture
 def client(tmp_path: Path):
-    settings = Settings(data_dir=tmp_path / "data", allowed_hosts=["testserver"], start_background_tasks=False)
-    app = create_app(settings)
+    """A browser signed in as the administrator "admin"."""
+    app = create_app(make_settings(tmp_path))
     with TestClient(app, headers={"X-Hub-Request": "1"}) as c:
+        c.app.state.hub.auth.create_user("admin", ADMIN_PASSWORD, role="admin", actor="test")
+        response = c.post("/api/auth/login", json={"username": "admin", "password": ADMIN_PASSWORD})
+        assert response.status_code == 200, response.text
         yield c
+
+
+def new_browser(running: TestClient, /, **kwargs) -> TestClient:
+    """Another browser on the same running hub: its own cookies (and optionally its own `client` address),
+    but the same app and event loop."""
+    kwargs.setdefault("headers", {"X-Hub-Request": "1"})
+    other = TestClient(running.app, **kwargs)
+    other.portal = running.portal  # share the running portal: no second lifespan, agents stay on one loop
+    return other
+
+
+@pytest.fixture
+def browser(client: TestClient) -> Callable[..., TestClient]:
+    return lambda **kwargs: new_browser(client, **kwargs)
+
+
+@pytest.fixture
+def sign_in(client: TestClient) -> Callable[..., TestClient]:
+    """sign_in(role) -> a new browser signed in as a new account with that role."""
+    counter = iter(range(1, 1000))
+
+    def make(role: str, username: str | None = None, **user_fields) -> TestClient:
+        username = username or f"{role}{next(counter)}"
+        client.app.state.hub.auth.create_user(username, PASSWORD, role=role, actor="test", **user_fields)
+        other = new_browser(client)
+        response = other.post("/api/auth/login", json={"username": username, "password": PASSWORD})
+        assert response.status_code == 200, response.text
+        return other
+    return make
 
 
 @pytest.fixture

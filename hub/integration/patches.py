@@ -150,7 +150,10 @@ def plan_patch(tool: Tool, others: list[Tool], strategy: str, hub_url: str) -> P
 
             Polls the tool and publishes a "{tool.id}.changed" event on the hub bus whenever
             the watched resource changes. Point WATCH_URL at the most useful endpoint.
-            Run it with: python adapter.py
+
+            The hub only accepts events from authenticated callers: an admin creates an API token
+            with the "integration" role (Users & access in the hub) and you pass it as HUB_TOKEN.
+            Run it with: HUB_TOKEN=atr_... python adapter.py
             """
             import hashlib
             import json
@@ -159,6 +162,7 @@ def plan_patch(tool: Tool, others: list[Tool], strategy: str, hub_url: str) -> P
             import urllib.request
 
             HUB_URL = os.environ.get("HUB_URL", "{hub_url}")
+            HUB_TOKEN = os.environ.get("HUB_TOKEN", "")
             WATCH_URL = os.environ.get("WATCH_URL", "{base}")
             INTERVAL = int(os.environ.get("POLL_SECONDS", "60"))
 
@@ -170,10 +174,10 @@ def plan_patch(tool: Tool, others: list[Tool], strategy: str, hub_url: str) -> P
 
             def publish(event: str, payload: dict) -> None:
                 body = json.dumps({{"source": "{tool.id}", "event": event, "payload": payload}}).encode()
-                req = urllib.request.Request(
-                    f"{{HUB_URL}}/api/bus/publish", data=body, method="POST",
-                    headers={{"Content-Type": "application/json", "X-Hub-Request": "1"}},
-                )
+                headers = {{"Content-Type": "application/json", "X-Hub-Request": "1"}}
+                if HUB_TOKEN:
+                    headers["Authorization"] = f"Bearer {{HUB_TOKEN}}"
+                req = urllib.request.Request(f"{{HUB_URL}}/api/bus/publish", data=body, method="POST", headers=headers)
                 urllib.request.urlopen(req, timeout=15).close()
 
 

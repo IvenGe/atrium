@@ -10,6 +10,7 @@ flowchart TB
     ui[Web UI - Portals, Apps, Agents, Approvals, Operator, Assets, Compliance]
   end
   subgraph Hub process
+    guard[Host check, X-Hub-Request, sign-in, role policy]
     api[REST API + SSE /api/events]
     bus[Agent bus]
     store[(SQLite: docs + logs)]
@@ -25,7 +26,8 @@ flowchart TB
     proc[Process manager]
     tbus[Tool event bus]
   end
-  ui <--> api
+  ui -- session cookie --> guard
+  guard --> api
   api <--> bus
   bus <--> Agents
   bus --> store
@@ -33,9 +35,78 @@ flowchart TB
   op --> appr
   op --> proc
   tbus -- webhooks --> tools[(Integrated tools)]
-  tools -- POST /api/bus/publish --> tbus
+  tools -- POST /api/bus/publish with an integration token --> guard
+  guard --> tbus
   op -- SSH --> hosts[(Remote hosts)]
 ```
+
+## Authentication and authorization
+
+Every `/api` request passes the same pipeline before a route handler runs:
+
+```mermaid
+flowchart LR
+  req(["/api request"]) --> host{Host header allowed?}
+  host -- no --> h400[400]
+  host -- yes --> xh{"Mutation without a Bearer token: X-Hub-Request: 1?"}
+  xh -- no --> x403[403]
+  xh -- yes --> who["Resolve principal: Bearer atr_ token, else atrium_session cookie"]
+  who --> pol{"policy.py: required_role(method, path)"}
+  pol -- public --> route[Route handler]
+  pol -- no principal --> u401[401 Sign in required]
+  pol -- "role too low, integration token or password change due" --> p403[403]
+  pol -- allowed --> route
+```
+
+1. **Trusted Host** (`TrustedHostMiddleware`, the outermost layer): `127.0.0.1`, `localhost` and
+   `HUB_ALLOWED_HOSTS`.
+2. **X-Hub-Request**: requests other than `GET`, `HEAD` and `OPTIONS` that carry no Bearer token
+   must send `X-Hub-Request: 1`. Cross-site pages cannot add the header without a CORS preflight,
+   which the hub never grants.
+3. **Principal** (`AuthService.resolve`): an `Authorization: Bearer atr_...` header is looked up as
+   an API token (SHA-256 match, not expired); otherwise the `atrium_session` cookie is looked up as
+   a session of an enabled account. The result is put on `request.state.principal`:
+   `{kind: "user" | "token", id, name, role, actor, bus_id}`.
+4. **Policy** (`auth/policy.py`): `required_role(method, path)` returns `None` for the public
+   endpoints (health, `GET /api/auth/me`, login, setup, the two OIDC endpoints), `viewer` for the
+   self-service endpoints (logout, password, sessions), `admin` for `/api/users`, `/api/tokens`
+   (and everything below them, matched on a `/` boundary), `PATCH /api/settings` and
+   `PATCH /api/agents/{id}`, `viewer` for every other `GET`/`HEAD`, and `operator` for everything
+   else. `authorize` then refuses: no principal on a protected path (401), an `integration` token
+   outside `POST /api/bus/publish` and `GET /api/health` (403), an account that must change its
+   password outside me/logout/password (403, `code: password_change_required`), or a role below
+   the required one (403).
+
+Files outside `/api` (the UI) are public; the UI asks `GET /api/auth/me` at start-up and shows the
+setup, sign-in or change-password screen until the person is signed in. It sets `body[data-role]`
+and hides controls marked `data-min-role` that the role cannot use; the server-side policy is what
+actually enforces access.
+
+| Module | Contents |
+| --- | --- |
+| `auth/service.py` | `AuthService` (`hub.auth`): accounts, first-run bootstrap and setup token, sign-in throttling, sessions, API tokens, OIDC account provisioning |
+| `auth/policy.py` | role required per route, access decision |
+| `auth/routes.py` | `/api/auth/*`, `/api/users*`, `/api/tokens*` |
+| `auth/passwords.py` | scrypt hashing, password policy |
+| `auth/oidc.py` | `OidcClient`: OpenID Connect authorization code flow and ID-token checks |
+
+State lives in three collections: `users` (password hashes, never returned by the API), `sessions`
+(keyed by the SHA-256 of the cookie value) and `tokens` (SHA-256 of the secret). Account records
+are written straight to the store rather than through `hub.save`, so they are never broadcast on
+the event stream. The event stream itself re-checks its session or token every 15 seconds and
+closes when it is no longer valid.
+
+**Who did it.** Route handlers take the principal and use it everywhere they act for someone:
+
+- bus messages sent on behalf of a request use `principal.bus_id` as the sender: `user:<username>`
+  for people, `token:<name>` for API tokens;
+- activity log entries use `principal.actor` (the username, or `token:<name>`);
+- approval decisions store `decided_by`.
+
+The Operator Agent treats a command as typed by a person only when its sender starts with `user:`;
+commands from API tokens are automation and follow the autonomy level like agent commands.
+
+Roles, sessions, tokens and single sign-on are described for operators in [AUTH.md](AUTH.md).
 
 ## The agent bus
 
@@ -62,8 +133,8 @@ handler for subject `tool.imported` is the method `on_tool_imported`.
 | Asset Supervisor | `module:assets` | Syncs tools/hosts into the asset register, runs read-only discovery on hosts. |
 | GRC Supervisor | `module:grc` | Evaluates controls (`grc/checks.py`), stores evidence, opens/closes automatic risks. |
 
-Agents can be paused, given a different model or custom instructions from the UI; settings are
-stored in the `agents` collection.
+Admins can pause agents and give them a different model or custom instructions from the UI;
+settings are stored in the `agents` collection.
 
 ## Import flow
 
@@ -110,14 +181,17 @@ was shown.
 - **read-only** commands come from an allowlist (`uname`, `df`, `git status`, `docker ps`,
   `systemctl status`, `kubectl get`, ...).
 
-Agent commands then follow the autonomy level; commands a person types in the Operator console
-run directly.
+Commands from agents and API tokens then follow the autonomy level; commands a signed-in person
+(sender `user:<name>`, role operator or above) types in the Operator console run directly.
 
 ## Compliance
 
-`grc/baseline.py` defines the Hub Security Baseline - 16 controls (asset inventory, ownership,
-SSO, approval of agent actions, SSH hardening, configuration as code, change review, health
+`grc/baseline.py` defines the Hub Security Baseline - 18 controls (asset inventory, ownership,
+SSO, approval of agent actions, SSH hardening, authenticated role-based access to the hub
+(HB-AC-4), dormant hub accounts (HB-AC-5), configuration as code, change review, health
 monitoring, audit logging, software versions, supplier inventory, risk review, and policies).
+The `Snapshot` includes the hub's own accounts and whether OIDC is configured, and the GRC
+Supervisor re-evaluates after account changes.
 Each maps to ISO/IEC 27001:2022, SOC 2 and NIS2 Art. 21 references. Automated checks are pure
 functions over a `Snapshot` of hub state; people can override any control with a justification.
 Controls with a risk template raise a risk when they fail and close it when they pass again.
@@ -128,6 +202,9 @@ Controls with a risk template raise a risk when they fail and close it when they
   `AgentRegistry.start_core`.
 - **New built-in app**: add an agent (like `module:assets`), API routes in `api.py`, and a view
   in `hub/web/js/views/` registered in `APPS` in `app.js` - it appears in the sidebar and Portals.
+  New routes are protected automatically (`GET` needs viewer, anything else operator); add a rule
+  to `auth/policy.py` for a public or admin-only route, mark mutation controls in the view with
+  `data-min-role`, and send bus messages as `principal.bus_id`.
 - **New control**: add a `Control` to `CONTROLS` and, if automated, a check to `CHECKS`.
 - **New patch strategy**: emit it as `Check.fix` in `compatibility.py` and handle it in
   `plan_patch`.

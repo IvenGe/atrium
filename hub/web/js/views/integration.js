@@ -32,7 +32,7 @@ export async function render(el, ctx) {
     const names = Object.fromEntries(data.nodes.map((n) => [n.id, n.name]));
     setHTML(el, html`
       <div class="page-head"><div><h1>Integration hub</h1><p class="muted">How your tools fit together: shared capabilities, single sign-on, events and conflicts.</p></div>
-        <button class="btn" data-act="evaluate">${icon("refresh")}Re-evaluate suite</button></div>
+        <button class="btn" data-act="evaluate" data-min-role="operator">${icon("refresh")}Re-evaluate suite</button></div>
       ${!data.nodes.length ? html`<section class="card">${emptyState("plug", "Nothing to integrate yet", "Import two or more tools and the Hub Supervisor maps how they connect.")}</section>` : html`
       <div class="grid split" style="margin-bottom:16px">
         <section class="card"><header><h2>Suite map</h2><div class="legend"><span><i style="background:${LINK_COLORS.capability}"></i>capability</span>

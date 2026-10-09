@@ -74,7 +74,7 @@ def test_person_runs_commands_directly(client):
     result = client.post("/api/commands", json={"command": f'"{sys.executable}" -c "print(6*7)"'}).json()
     assert result["status"] == "done"
     assert result["exit_code"] == 0 and "42" in result["output"]
-    assert client.get("/api/commands").json()[-1]["origin"] == "user"
+    assert client.get("/api/commands").json()[-1]["origin"] == "user:admin"
 
 
 def test_blocked_command_is_refused_even_for_people(client):

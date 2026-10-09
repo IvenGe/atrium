@@ -124,3 +124,12 @@ def test_adapter_patch_updates_manifest(tmp_path: Path):
     assert "oauth2-proxy" in compose.read_text()
     assert "localhost:8080" in (compose.parent / ".env.example").read_text()
     assert hub.tool.manifest.auth.sso == "oidc"
+
+
+def test_event_adapter_authenticates_with_an_integration_token():
+    patch = plan_patch(make_tool("crm", launch={"port": 4000}), [], "event_adapter", "http://127.0.0.1:8710")
+    script = patch.changes[0].content
+    compile(script, "adapter.py", "exec")
+    assert 'HUB_TOKEN = os.environ.get("HUB_TOKEN", "")' in script
+    assert 'headers["Authorization"] = f"Bearer {HUB_TOKEN}"' in script
+    assert '"integration" role' in script
