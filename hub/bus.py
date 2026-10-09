@@ -2,18 +2,36 @@
 
 Every message is persisted to the ``messages`` stream and fanned out to UI
 subscribers (Server-Sent Events), so the conversation between agents is always
-visible and auditable.
+visible and auditable. Bodies larger than ``LOG_BODY_LIMIT`` (e.g. records a data
+flow pulls from a tool) reach their recipient in full but are logged as a summary.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
 from .store import Store, new_id
+
+LOG_BODY_LIMIT = 32_000
+
+
+def loggable(record: dict[str, Any]) -> dict[str, Any]:
+    """`record` (a dumped Message) with an oversized body replaced by a summary of it."""
+    size = len(json.dumps(record.get("body"), default=str))
+    if size <= LOG_BODY_LIMIT:
+        return record
+    summary: dict[str, Any] = {}
+    for key, value in (record.get("body") or {}).items():
+        if isinstance(value, list):
+            summary[key] = f"<{len(value)} items>"
+        else:
+            summary[key] = value if len(json.dumps(value, default=str)) <= 2000 else "<omitted>"
+    return {**record, "body": {**summary, "_truncated": f"{size} bytes, not logged in full"}}
 
 
 class Message(BaseModel):
@@ -47,7 +65,7 @@ class Bus:
         self._inboxes.pop(agent_id, None)
 
     async def send(self, msg: Message) -> None:
-        record = self.store.append("messages", msg.model_dump(mode="json"))
+        record = self.store.append("messages", loggable(msg.model_dump(mode="json")))
         self.publish("message", record)
         if msg.kind == "reply":
             fut = self._pending.get(msg.reply_to or "")

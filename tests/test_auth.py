@@ -107,6 +107,43 @@ def test_password_policy(password, message):
     ("GET", "/api/overview", "viewer"), ("HEAD", "/api/overview", "viewer"), ("GET", "/api/events", "viewer"),
     ("GET", "/api/docs", "viewer"), ("POST", "/api/commands", "operator"), ("DELETE", "/api/assets/a", "operator"),
     ("POST", "/api/health", "operator"), ("GET", "/api/auth/login", "viewer"), ("PUT", "/api/anything", "operator"),
+    ("GET", "/api/identity-providers", "viewer"), ("PUT", "/api/identity-providers/default", "admin"),
+    ("PATCH", "/api/identity-providers/keycloak", "admin"), ("POST", "/api/identity-providers/keycloak/atrium", "admin"),
+    ("POST", "/api/identity-providers/keycloak", "operator"), ("POST", "/api/tools/crm/sso", "operator"),
+    ("POST", "/api/tools/crm/sso/register", "operator"), ("PATCH", "/api/identity-providers/a/b", "operator"),
+    ("GET", "/api/connectors", "viewer"), ("GET", "/api/tools/crm/connection", "viewer"),
+    ("PUT", "/api/tools/crm/connection", "admin"), ("DELETE", "/api/tools/crm/connection", "admin"),
+    ("PUT", "/api/tools/crm/connection/", "admin"), ("POST", "/api/tools/crm/connection/test", "operator"),
+    ("GET", "/api/tools/crm/connection/options/model_id", "operator"), ("GET", "/api/tools/crm/connection/options", "viewer"),
+    ("POST", "/api/tools/crm/connection/generate", "operator"), ("PUT", "/api/tools/a/b/connection", "operator"),
+    ("GET", "/api/flows", "viewer"), ("PATCH", "/api/flows/fl_1", "operator"), ("POST", "/api/flows/fl_1/run", "operator"),
+    ("GET", "/api/vulnerabilities/summary", "viewer"), ("PATCH", "/api/vulnerabilities/v_1", "operator"),
+    ("POST", "/api/vulnerabilities/scan", "operator"), ("POST", "/api/assets/scan-scope", "operator"),
+    ("POST", "/api/agents", "admin"), ("POST", "/api/agents/", "admin"), ("DELETE", "/api/agents/agent:x", "admin"),
+    ("POST", "/api/agents/agent:x/chat", "operator"), ("POST", "/api/agents/agent:x/run", "operator"),
+    ("POST", "/api/agents/supervisor/chat/reset", "operator"), ("GET", "/api/agents/teams", "viewer"),
+    ("POST", "/api/tools/crm/team", "operator"), ("PATCH", "/api/settings/guardrails", "admin"),
+    ("GET", "/api/llm/providers", "viewer"), ("POST", "/api/llm/providers", "admin"),
+    ("PATCH", "/api/llm/providers/ollama", "admin"), ("DELETE", "/api/llm/providers/ollama", "admin"),
+    ("POST", "/api/llm/providers/ollama/test", "admin"), ("POST", "/api/llm/providers/ollama", "operator"),
+    ("GET", "/api/auth/sso", "admin"), ("PUT", "/api/auth/sso", "admin"), ("DELETE", "/api/auth/sso", "admin"),
+    ("POST", "/api/auth/sso/test", "admin"), ("GET", "/api/auth/sso/test", "viewer"),
+    ("GET", "/api/people", "viewer"), ("GET", "/api/people/p_1", "viewer"), ("GET", "/api/people/leavers", "viewer"),
+    ("POST", "/api/people", "operator"), ("PATCH", "/api/people/p_1", "operator"), ("DELETE", "/api/people/p_1", "operator"),
+    ("POST", "/api/people/p_1/actions/unassign_assets", "operator"),
+    ("POST", "/api/people/p_1/actions/disable_atrium_account", "admin"),
+    ("POST", "/api/people/p_1/actions/disable_atrium_account/", "admin"),
+    ("GET", "/api/accounts", "viewer"), ("PATCH", "/api/accounts/okta|00u1", "operator"),
+    ("GET", "/api/extensions", "viewer"), ("GET", "/api/extensions/wazuh-alerts", "viewer"),
+    ("POST", "/api/extensions", "admin"), ("POST", "/api/extensions/", "admin"),
+    ("PATCH", "/api/extensions/wazuh-alerts", "admin"), ("DELETE", "/api/extensions/wazuh-alerts", "admin"),
+    ("POST", "/api/extensions/wazuh-alerts/rollback", "admin"), ("POST", "/api/extensions/a/b", "operator"),
+    ("POST", "/api/tools/wazuh/extend", "admin"), ("GET", "/api/x", "viewer"), ("GET", "/api/x/alerts", "viewer"),
+    ("GET", "/api/x/alerts/x_1", "viewer"), ("POST", "/api/x/alerts", "operator"),
+    ("PATCH", "/api/x/alerts/x_1", "operator"), ("DELETE", "/api/x/alerts/x_1", "operator"),
+    ("GET", "/api/self-patches", "viewer"), ("GET", "/api/self-patches/sp_1", "viewer"),
+    ("POST", "/api/self-patches", "admin"), ("POST", "/api/self-patches/sp_1/apply", "admin"),
+    ("POST", "/api/self-patches/sp_1", "operator"), ("POST", "/api/approvals/ap_1", "operator"),
 ])
 def test_required_role(method, path, role):
     assert required_role(method, path) == role
@@ -129,6 +166,34 @@ def contract_role(method: str, path: str) -> str | None:
     if path.split("/")[2] in ("users", "tokens"):
         return "admin"
     if method == "PATCH" and path in ("/api/settings", "/api/agents/{agent_id}"):
+        return "admin"
+    # identity providers: choosing the suite default, provider settings and Atrium's own sign-in client
+    if (method, path) in {("PUT", "/api/identity-providers/default"), ("PATCH", "/api/identity-providers/{tool_id}"),
+                          ("POST", "/api/identity-providers/{tool_id}/atrium")}:
+        return "admin"
+    # a tool's connection holds its API credentials; listing a field's choices uses them
+    if (method, path) in {("PUT", "/api/tools/{tool_id}/connection"), ("DELETE", "/api/tools/{tool_id}/connection")}:
+        return "admin"
+    if (method, path) == ("GET", "/api/tools/{tool_id}/connection/options/{field}"):
+        return "operator"
+    # agent definitions, the guardrails and the AI model providers (which may hold API keys)
+    if (method, path) in {("PATCH", "/api/settings/guardrails"), ("POST", "/api/agents"),
+                          ("DELETE", "/api/agents/{agent_id}"), ("POST", "/api/llm/providers"),
+                          ("PATCH", "/api/llm/providers/{provider_id}"), ("DELETE", "/api/llm/providers/{provider_id}"),
+                          ("POST", "/api/llm/providers/{provider_id}/test")}:
+        return "admin"
+    # Atrium's own sign-in settings (they hold its client secret) - reading them too
+    if (method, path) in {("GET", "/api/auth/sso"), ("PUT", "/api/auth/sso"), ("DELETE", "/api/auth/sso"),
+                          ("POST", "/api/auth/sso/test")}:
+        return "admin"
+    # People: operators change people and links; disabling someone's Atrium account is account administration
+    if (method, path) == ("POST", "/api/people/{person_id}/actions/{action}"):
+        return "operator"  # per action: see test_required_role
+    # extensions and self-patches change Atrium itself (reading them and extension records follow the default)
+    if (method, path) in {("POST", "/api/extensions"), ("PATCH", "/api/extensions/{ext_id}"),
+                          ("DELETE", "/api/extensions/{ext_id}"), ("POST", "/api/extensions/{ext_id}/rollback"),
+                          ("POST", "/api/tools/{tool_id}/extend"), ("POST", "/api/self-patches"),
+                          ("POST", "/api/self-patches/{patch_id}/apply")}:
         return "admin"
     return "viewer" if method in ("GET", "HEAD") else "operator"
 

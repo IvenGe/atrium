@@ -4,14 +4,17 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
-from typing import Callable
+from typing import Any, Callable
 
-from ..models import Asset, ControlState, Host, Patch, Policy, Risk, Tool, User
+from .. import guardrails
+from ..models import OPEN_STATES, Account, Asset, ControlState, Host, Patch, Person, Policy, Risk, Tool, User, Vulnerability
+from ..people import find_leavers
 from .baseline import CONTROLS, FRAMEWORKS, Control
 
 SSO_MODES = {"oidc", "saml", "oauth2", "ldap"}
 REVIEW_WINDOW = 90 * 24 * 3600
 DORMANT_AFTER = 90 * 24 * 3600
+SCAN_WINDOW = 30 * 24 * 3600
 
 
 @dataclass
@@ -26,6 +29,12 @@ class Snapshot:
     audit_entries: int
     users: list[User] = field(default_factory=list)
     oidc_enabled: bool = False
+    vulnerabilities: list[Vulnerability] = field(default_factory=list)
+    guardrails: dict[str, Any] = field(default_factory=guardrails.defaults)
+    people: list[Person] = field(default_factory=list)
+    accounts: list[Account] = field(default_factory=list)
+    # results of the active extension packs' control rules (hub/extensions/controls.py), merged into their controls
+    extension_results: list[dict[str, Any]] = field(default_factory=list)
 
 
 Result = tuple[str, str, list[str]]  # status, detail, evidence
@@ -66,10 +75,40 @@ def check_tools_sso(s: Snapshot) -> Result:
     return status, detail, [f"{t.name}: {t.manifest.auth.sso}" for t in analysed if t.manifest and t.manifest.auth.sso in SSO_MODES]
 
 
+def _guardrail_findings(s: Snapshot, control: str) -> tuple[list[str], list[str], list[str]]:
+    """(titles of relaxed guardrails that fail `control`, findings of those that make it partial, evidence)."""
+    g = guardrails.merged(s.guardrails)
+    mapped = [x for x in guardrails.REGISTRY.values() if x.control == control]
+    keys = [x.key for x in mapped] + [x.requires for x in mapped if x.requires]
+    relaxed = guardrails.weakened(g, control)
+    # a switch that lets more happen (off by default) names its bound, e.g. nested teams "up to maximum team depth 2"
+    loose = [(r.finding or r.title) + (f" (up to {guardrails.REGISTRY[r.requires].title.lower()} {g[r.requires]})"
+                                       if r.requires and r.default is False else "")
+             for r in relaxed if r.weakens == "partial"]
+    return [r.title for r in relaxed if r.weakens == "fail"], loose, [f"{k}={g[k]}" for k in keys]
+
+
 def check_agent_approvals(s: Snapshot) -> Result:
     if s.autonomy == "autonomous":
         return "fail", "Agents run in autonomous mode - state-changing actions are not reviewed.", []
-    return "pass", f"Autonomy is '{s.autonomy}': state-changing agent actions wait in the approval queue.", [f"autonomy={s.autonomy}"]
+    off, loose, evidence = _guardrail_findings(s, "HB-AC-2")
+    evidence = [f"autonomy={s.autonomy}", *evidence]
+    if off:
+        return "fail", "Switched off: " + "; ".join(off) + ".", evidence
+    if loose:
+        return "partial", (f"Autonomy is '{s.autonomy}', but " + " and ".join(loose) + " (guardrails relaxed)."), evidence
+    return "pass", f"Autonomy is '{s.autonomy}': state-changing agent actions wait in the approval queue.", evidence
+
+
+def check_agent_guardrails(s: Snapshot) -> Result:
+    g = guardrails.merged(s.guardrails)
+    off, loose, evidence = _guardrail_findings(s, "HB-AC-6")
+    if off:
+        return "fail", "Switched off: " + "; ".join(off) + ".", evidence
+    if loose:
+        return "partial", "Core guardrails are on, but " + " and ".join(loose) + ".", evidence
+    return "pass", (f"Catastrophic commands are blocked, team agents' actions follow the approval policy and never exceed "
+                    f"their parent's permissions; teams have at most {g['max_team_size']} agents and do not nest."), evidence
 
 
 def check_ssh_hardening(s: Snapshot) -> Result:
@@ -108,6 +147,20 @@ def check_dormant_accounts(s: Snapshot) -> Result:
     return status, f"{len(dormant)}/{len(enabled)} enabled accounts have not signed in for 90 days: {shown}", []
 
 
+def check_leavers(s: Snapshot) -> Result:
+    if not s.people:
+        return "na", "No people in the People app yet - connect a directory (Okta, Keycloak, SCIM) or add people.", []
+    left = [p for p in s.people if p.status in ("suspended", "terminated")]
+    findings = find_leavers(s.people, s.assets, s.users, s.accounts, {t.id: t.name for t in s.tools})
+    evidence = [f"{len(s.people)} people, {len(left)} suspended or terminated", f"{len(s.accounts)} tool accounts linked"]
+    if not findings:
+        return "pass", (f"None of the {len(left)} people who left or are suspended still has access or company assets."
+                        if left else f"No leavers among {len(s.people)} people."), evidence
+    shown = "; ".join(f["summary"] for f in findings[:4]) + ("..." if len(findings) > 4 else "")
+    status = "fail" if any(f["severity"] == "fail" for f in findings) else "partial"
+    return status, f"{len(findings)} leaver(s) not cleaned up: {shown}", evidence
+
+
 def check_tools_manifest(s: Snapshot) -> Result:
     analysed = [t for t in s.tools if t.manifest]
     missing = [t.name for t in analysed if t.manifest and not t.manifest.native]
@@ -117,10 +170,16 @@ def check_tools_manifest(s: Snapshot) -> Result:
 
 def check_patch_review(s: Snapshot) -> Result:
     applied = [p for p in s.patches if p.status == "applied"]
+    off, loose, guards = _guardrail_findings(s, "HB-CM-2")  # self-patching and extension guardrails
+    evidence = [p.title for p in applied[:10]] + guards
+    if off:
+        return "fail", "Changes to Atrium's own code are not reviewed - switched off: " + "; ".join(off) + ".", evidence
     if s.autonomy == "autonomous":
-        return "partial", "Patches are reviewed as branches, but autonomous mode applies them without approval.", []
+        return "partial", "Patches are reviewed as branches, but autonomous mode applies them without approval.", evidence
+    if loose:
+        return "partial", "Patches go through the approval queue, but " + " and ".join(loose) + ".", evidence
     return "pass", f"Patches go through the approval queue ({len(applied)} applied, "\
-        f"{sum(1 for p in s.patches if p.status == 'rejected')} rejected).", [p.title for p in applied[:10]]
+        f"{sum(1 for p in s.patches if p.status == 'rejected')} rejected).", evidence
 
 
 def check_tools_health(s: Snapshot) -> Result:
@@ -139,6 +198,34 @@ def check_software_versions(s: Snapshot) -> Result:
     missing = [t.name for t in analysed if t.manifest and not t.manifest.version]
     status, detail, _ = _ratio(len(analysed) - len(missing), len(analysed), "self-hosted tools with a known version", missing)
     return status, detail, [f"{t.name} {t.manifest.version}" for t in analysed if t.manifest and t.manifest.version][:10]
+
+
+def check_scan_coverage(s: Snapshot) -> Result:
+    in_scope = [a for a in s.assets if a.scan_scope and a.status != "retired"]
+    if not in_scope:
+        return "manual", "No assets are in vulnerability-scan scope - put the assets to scan in scope.", []
+    cutoff = time.time() - SCAN_WINDOW
+    missing = [a.name for a in in_scope if not a.last_scanned_at or a.last_scanned_at < cutoff]
+    status, detail, _ = _ratio(len(in_scope) - len(missing), len(in_scope), "in-scope assets scanned within 30 days",
+                               missing)
+    evidence = [f"{a.name}: scanned {time.strftime('%Y-%m-%d', time.gmtime(a.last_scanned_at))}" for a in in_scope
+                if a.last_scanned_at and a.last_scanned_at >= cutoff]
+    return status, detail, evidence[:10]
+
+
+def check_vuln_sla(s: Snapshot) -> Result:
+    if not s.vulnerabilities and not any(a.scan_scope and a.status != "retired" for a in s.assets):
+        return "manual", "No vulnerability data yet - scan in-scope assets or connect a scanner.", []
+    now = time.time()
+    serious = [v for v in s.vulnerabilities if v.status in OPEN_STATES and v.severity in ("critical", "high")]
+    overdue = [v for v in serious if v.due_at is not None and v.due_at < now]
+    fixed = sum(1 for v in s.vulnerabilities if v.status == "fixed")
+    evidence = [f"{len(serious)} open critical/high finding(s)", f"{fixed} finding(s) fixed"]
+    if not overdue:
+        return "pass", f"{len(serious)} critical/high finding(s) open, all within their SLA.", evidence
+    shown = ", ".join(f"{v.title} ({v.host or 'unknown host'})" for v in overdue[:4]) + ("..." if len(overdue) > 4 else "")
+    status = "fail" if any(v.severity == "critical" for v in overdue) else "partial"
+    return status, f"{len(overdue)} critical/high finding(s) past their SLA: {shown}", evidence
 
 
 def check_saas_inventory(s: Snapshot) -> Result:
@@ -180,26 +267,53 @@ CHECKS: dict[str, Callable[[Snapshot], Result]] = {
     "assets_owned": check_assets_owned,
     "tools_sso": check_tools_sso,
     "agent_approvals": check_agent_approvals,
+    "agent_guardrails": check_agent_guardrails,
     "ssh_hardening": check_ssh_hardening,
     "hub_auth": check_hub_auth,
     "dormant_accounts": check_dormant_accounts,
+    "leavers": check_leavers,
     "tools_manifest": check_tools_manifest,
     "patch_review": check_patch_review,
     "tools_health": check_tools_health,
     "audit_log": check_audit_log,
     "software_versions": check_software_versions,
+    "scan_coverage": check_scan_coverage,
+    "vuln_sla": check_vuln_sla,
     "saas_inventory": check_saas_inventory,
     "risk_review": check_risk_review,
 }
 
 
+RATED = {"pass": 0, "partial": 1, "fail": 2}
+
+
+def with_extension_evidence(state: ControlState, results: list[dict[str, Any]]) -> ControlState:
+    """Combine a control's own check with the extension rules that rate it: the worse status counts (a control the
+    hub cannot check itself takes the rules' status only when they find a problem); every rule adds evidence."""
+    rated = [r for r in results if r.get("status") in RATED]
+    if not rated:
+        return state
+    worst = max((r["status"] for r in rated), key=RATED.__getitem__)
+    if state.status in RATED:
+        status = max(state.status, worst, key=RATED.__getitem__)
+    else:
+        status = worst if worst != "pass" else state.status
+    problems = [r["detail"] for r in rated if r["status"] != "pass"]
+    detail = state.detail + (f" Extension evidence: {'; '.join(problems)}." if problems else "")
+    evidence = [*state.evidence, *(f"{r['extension']}: {r['detail']}" for r in rated)]
+    return state.model_copy(update={"status": status, "detail": detail, "evidence": evidence})
+
+
 def run_check(control: Control, snapshot: Snapshot) -> ControlState:
     now = time.time()
+    extra = [r for r in snapshot.extension_results if r.get("control") == control.id]
     if not control.check:
-        return ControlState(id=control.id, status="manual", detail="Assess manually.", evaluated_at=now)
+        state = ControlState(id=control.id, status="manual", detail="Assess manually.", evaluated_at=now)
+        return with_extension_evidence(state, extra)
     fn = check_policy(control.check.split(":", 1)[1]) if control.check.startswith("policy:") else CHECKS[control.check]
     status, detail, evidence = fn(snapshot)
-    return ControlState(id=control.id, status=status, detail=detail, evidence=evidence, evaluated_at=now)  # type: ignore[arg-type]
+    state = ControlState(id=control.id, status=status, detail=detail, evidence=evidence, evaluated_at=now)  # type: ignore[arg-type]
+    return with_extension_evidence(state, extra)
 
 
 def evaluate_controls(snapshot: Snapshot, overrides: dict[str, ControlState]) -> list[ControlState]:

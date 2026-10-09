@@ -238,6 +238,30 @@ class OidcClient:
                             email=_email(claims.get("email")), name=_display_name(claims), role=self.role_for(claims),
                             claims=claims)
 
+    async def check(self) -> dict[str, Any]:
+        """Discovery and the signing keys, with every check sign-in applies to them (for the settings' Test button);
+        nothing is sent but the two public GET requests. Raises OidcError."""
+        if not self.issuer:
+            raise OidcError("Enter the issuer URL.")
+        if not self.client_id:
+            raise OidcError("Enter the client ID.")
+        self._config = None  # always fresh
+        config = await self._discovery()
+        keys = await self._signing_keys(config, refresh=True)
+        usable = [k for k in keys if k.get("use", "sig") == "sig" and k.get("kty") in ("RSA", "EC")]
+        if not usable:
+            raise OidcError("The identity provider publishes no RSA or EC signing key.")
+        claims = config.get("claims_supported") if isinstance(config.get("claims_supported"), list) else None
+        scopes = config.get("scopes_supported") if isinstance(config.get("scopes_supported"), list) else None
+        role_root = self.settings.oidc_role_claim.split(".", 1)[0]
+        return {
+            "issuer": config["issuer"], "authorization_endpoint": config["authorization_endpoint"],
+            "token_endpoint": config["token_endpoint"], "jwks_uri": config["jwks_uri"], "signing_keys": len(usable),
+            "pkce_s256": "S256" in (config.get("code_challenge_methods_supported") or ["S256"]),
+            "scopes_supported": [str(s) for s in scopes][:50] if scopes else None,
+            "role_claim_advertised": (role_root in claims) if claims is not None else None,
+        }
+
     def role_for(self, claims: dict[str, Any]) -> str:
         """The hub role for the claim named by HUB_OIDC_ROLE_CLAIM (a string or a list of strings)."""
         s = self.settings

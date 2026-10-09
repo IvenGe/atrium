@@ -9,39 +9,93 @@ applications and SaaS services - and makes them work together like the apps of a
 suite. A team of agents does the integration work:
 
 - a **Hub Supervisor** that talks to every other agent and keeps the suite integrated,
-- one **Tool Supervisor per imported tool**, responsible for that application,
+- one **Tool Supervisor per imported tool**, responsible for that application and the lead of its **agent team**,
 - a **Patch Agent** that patches tools that don't fit (code patches on a git branch, or adapters
-  for closed-source and SaaS tools),
+  for closed-source and SaaS tools) and, when a new tool needs it, extends Atrium itself,
 - an **Operator Agent** that runs commands on this machine or on servers over SSH,
-- an **Asset Supervisor** and a **GRC Supervisor** for the built-in Assets and Compliance apps.
+- an **Asset**, a **Vulnerability**, a **GRC**, a **People** and an **Extensions Supervisor** for the built-in apps -
+  they also run the **data flows** that let tools exchange data through the hub (for example Snipe-IT assets -> Hub
+  Assets -> OpenVAS scans -> Hub Vulnerabilities -> CISO Assistant, or Okta people -> Hub People -> leavers found),
+- **team agents** that people or supervisors create, on Claude, on a local model or on rules.
 
 Everything the agents say to each other is visible live, and anything that changes state waits
 in an approval queue until a person approves it. People sign in to the hub and get a role -
 viewer, operator or admin - that decides what they may do.
+
+## Screenshots
+
+<!-- screenshots -->
 
 ## What's inside
 
 | App | What it does |
 | --- | --- |
 | **Portals** | App launcher (top bar) for the built-in apps and every imported tool. Tools open inside the hub. |
-| **Apps** | Import from GitHub / local folder / SaaS URL (+ OpenAPI spec). Each tool gets a manifest, an integration score, health checks, start/stop, logs and its own supervisor agent. |
-| **Integration hub** | Map of how tools connect - shared capabilities, single sign-on, event routes - plus port conflicts and missing dependencies. |
-| **Agents** | Manage the agents (pause/resume, model, instructions), chat with the Hub Supervisor, and watch agent-to-agent messages live. |
-| **Approvals** | Review and approve or reject agent commands and patches, with diffs. Full audit history. |
+| **Apps** | Import from GitHub / local folder / SaaS URL (+ OpenAPI spec). Each tool gets a manifest, an integration score, health checks, start/stop, logs, its own supervisor agent and a **Connection** to its API. |
+| **Integration hub** | Map of how tools connect - shared capabilities, single sign-on, event routes, data flows - plus port conflicts and missing dependencies. The **Identity** card lists the suite's identity providers (Keycloak, authentik, Zitadel, Authelia, ...) and each tool's single sign-on: the Patch Agent connects tools to the chosen provider natively (Grafana, Gitea, Forgejo, MinIO, BookStack, Outline, Nextcloud, Wazuh, CISO Assistant, Snipe-IT, Zammad, ...) and registers them there. **Data flows** move assets, vulnerabilities, controls and evidence, risks, people and accounts between tools and the hub's apps through built-in connectors (Snipe-IT, CISO Assistant, OpenVAS / Greenbone, Okta, Keycloak, SCIM 2.0) or a generic REST mapping, on a schedule, with a repair proposal after three failures. |
+| **Agents** | Manage the agents, chat with the Hub Supervisor or any team agent, and watch agent-to-agent messages live. Each tool's supervisor can lead an **agent team** - proposed from templates for what the tool is (SIEM, GRC, asset inventory, vulnerability scanner, plus a maintainer) or designed by Claude - and admins create, edit and remove team agents running on Claude, on a **local model** (Ollama, LM Studio, vLLM, llama.cpp - any OpenAI-compatible server) or on rules, with permissions, a schedule and a standing task. |
+| **Approvals** | Review and approve or reject agent commands, patches, data flows, scans, repairs, agent teams, extension packs and changes to Atrium itself, with diffs and test results. Full audit history. |
 | **Operator** | Run commands locally or over SSH, manage hosts, discover host facts. |
-| **Assets** | Asset register kept in sync automatically (tools, SaaS services, hosts) plus manual assets, owners and criticality. |
-| **Compliance hub** | GRC: a control baseline evaluated against live hub state, mapped to ISO/IEC 27001:2022, SOC 2 and NIS2; risk register with heatmap (risks open and close automatically); policies with templates. |
-| **Users & access** | Admins only. Accounts (local passwords or single sign-on through the suite's OIDC identity provider), roles, password resets, and API tokens for scripts and tools. Everyone can change their password and sign out other sessions from the user menu. |
+| **Assets** | Asset register kept in sync automatically (tools, SaaS services, hosts, inventories such as Snipe-IT - merged by address, hostname or serial) plus manual assets, owner and user (people), criticality and vulnerability-scan scope. |
+| **People** | The workforce directory merged from Okta, Keycloak and SCIM (by email, then login), the accounts people hold in the tools, the assets they own or use, and a person page with a relationship map. **Leavers** who still have access or devices are flagged, with one-click actions. |
+| **Vulnerabilities** | Findings from scanners and other tools: scans of in-scope assets (with approval), severity, CVEs, remediation deadlines per severity (SLA), automatic "fixed" when a rescan no longer finds them, and risks for critical findings past their deadline. |
+| **Compliance hub** | GRC: 22 controls evaluated against live hub state, mapped to ISO/IEC 27001:2022, SOC 2 and NIS2; risk register with heatmap (risks open and close automatically); policies with templates. |
+| **Extensions** | Packs that add data types (alerts, tickets, incidents, ...) with their own apps, connector mappings, SSO recipes, compliance rules and team templates - data only, versioned, enabled without a restart. Generated after an import from templates or by Claude, and approved by an admin. When only code can help, a **self-patch** of Atrium is tested on its own branch and opened as a pull request after approval. |
+| **Settings** | Autonomy level, default model, vulnerability deadlines, **Agent guardrails**, **AI providers** (local models) and **Sign-in & SSO** (presets for Okta, Microsoft Entra ID, Google, Keycloak, authentik). |
+| **Users & access** | Admins only. Accounts (local passwords or single sign-on), roles, password resets, API tokens for scripts and tools, and the person each account belongs to. Everyone can change their password and sign out other sessions from the user menu. |
 
 ## Quick start
 
 Requires Python 3.11+ and git.
+
+### With the installer
+
+Linux and macOS (also Git Bash on Windows), from a clone of the repository:
+
+```bash
+bash install.sh                # options: --install-dir DIR  --port PORT  --dev  --service
+./start-atrium.sh
+```
+
+Windows (PowerShell 5.1 or later):
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1     # options: -InstallDir DIR -Port PORT -NoShortcut -Dev
+.\start-atrium.cmd             # or the "Atrium" shortcut on the desktop
+```
+
+The installers find Python 3.11 or newer (set `ATRIUM_PYTHON` to choose one), check for git, create `.venv`, install
+Atrium with the `ai` and `ssh` extras, copy `.env.example` to `.env` when there is none, and write the start scripts.
+They are safe to run again (after `git pull`, say): an existing `.env` and the hub's data are never touched.
+`--install-dir` / `-InstallDir` copies the program to another folder first (without local state such as `.venv`,
+`.env` and `.hub`). `--service` writes a systemd user unit on Linux (`~/.config/systemd/user/atrium.service`) but does
+not enable it; enable it with `systemctl --user daemon-reload && systemctl --user enable --now atrium.service`, and
+read the setup link with `systemctl --user status atrium.service`.
+
+### With Docker
+
+```bash
+docker compose up -d --build
+docker compose logs atrium     # shows the first-run setup link
+```
+
+The image (Python 3.13 slim, git and the SSH client, a non-root user) keeps the hub's data in the `atrium-data`
+volume at `/data` and is published on `127.0.0.1:8710` only. Settings come from `.env` when it exists (Docker Compose
+2.24 or newer); add other host names people use to `HUB_ALLOWED_HOSTS` there. To run commands over SSH, mount your
+keys into the container (see the comment in `docker-compose.yml`). Account commands run inside the container:
+`docker compose exec atrium atrium user list`. Tools that Atrium would start
+itself (for example `npm start`) need their runtime in the image too; SaaS tools and tools on other hosts work as usual.
+Self-patching needs a git checkout, so it is not available in the container.
+
+### By hand
 
 ```bash
 python -m venv .venv
 .venv/bin/pip install -e ".[ai,ssh,dev]"    # Windows: .venv\Scripts\pip install -e ".[ai,ssh,dev]"
 .venv/bin/atrium                            # Windows: .venv\Scripts\atrium
 ```
+
+### First run
 
 On the first start there are no accounts yet, so the hub prints a one-time setup link:
 
@@ -67,17 +121,24 @@ Roles, sessions, API tokens and single sign-on are described in [docs/AUTH.md](d
 ### Turn on Claude (optional)
 
 Without credentials the agents run in **rules mode**: imports, analysis, scoring, template
-patches, adapters, commands, assets and compliance all work deterministically. With Claude:
+patches, adapters, commands, assets, data flows, people, template extensions and compliance all work
+deterministically. With Claude:
 
 - the Hub Supervisor understands plain language and plans multi-step work using the other agents,
 - the Patch Agent writes real source-code patches (e.g. adds a `/healthz` endpoint in the
-  project's own framework),
-- Tool Supervisors refine descriptions and capabilities from the README.
+  project's own framework), generic REST connectors from OpenAPI specs, extension packs and self-patches,
+- Tool Supervisors refine descriptions and capabilities from the README and can design agent teams.
 
 Set `ANTHROPIC_API_KEY` (or run `ant auth login`) before starting the hub, or put it in a `.env`
 file - see [`.env.example`](.env.example). The default model is `claude-opus-5-5`; change it in
 **Settings** or per agent. Requests opt into server-side refusal fallbacks
 (`server-side-fallback-2026-07-01`, `fallbacks: "default"`).
+
+Team agents can also run on a **local model**: add a provider under **Settings > AI providers** (any server with an
+OpenAI-compatible API; the default base URL `http://localhost:11434/v1` is Ollama's), test it to list its models, and
+pick it for the agent. Tool calling needs a model and server that support it (vLLM: `--enable-auto-tool-choice` with a
+`--tool-call-parser`; llama.cpp: `--jinja`); otherwise switch the provider's tools off and its agents answer in plain
+text. See [docs/AGENTS.md](docs/AGENTS.md#local-models).
 
 ## How it works
 
@@ -86,14 +147,16 @@ flowchart LR
   user([You]) -- chat / UI --> sup[Hub Supervisor]
   sup <--> ts1[Tool Supervisor: app A]
   sup <--> ts2[Tool Supervisor: app B]
+  ts1 <--> team[Team agents]
   sup <--> pa[Patch Agent]
   sup <--> op[Operator Agent]
-  sup <--> as[Asset Supervisor]
-  sup <--> grc[GRC Supervisor]
-  pa -- patches --> q{{Approval queue}}
+  sup <--> mods[Asset, Vulnerability, GRC, People, Extensions Supervisors]
+  pa -- patches, extensions, self-patches --> q{{Approval queue}}
   op -- commands --> q
-  q -- approved --> pa & op
+  mods -- flows, scans --> q
+  q -- approved --> pa & op & mods
   op -- local shell / SSH --> hosts[(Machines)]
+  ts1 -- connector --> api1[(App A's API)]
 ```
 
 1. **Import** - the Hub Supervisor clones the repo (or points at the folder / SaaS URL) and
@@ -105,11 +168,18 @@ flowchart LR
    launchable, health, API, SSO, events, port conflicts, dependencies).
 4. **Patch** - each gap goes to the Patch Agent, which proposes a patch: a commit on a new branch
    in a separate git worktree (your checkout is never touched), an adapter kept by the hub
-   (health probe, oauth2-proxy SSO, event poller, API wrapper), or a manifest override (new port).
-5. **Approve** - patches and state-changing commands wait for you. Approved patches are applied
+   (health probe, native SSO configuration plus the client registration at the identity provider, oauth2-proxy, event
+   poller, API wrapper), or a manifest override (new port).
+5. **Extend** - when Atrium itself lacks something for the tool (a place for a SIEM's alerts or a service desk's
+   tickets, a connector, an SSO recipe), the Patch Agent proposes an extension pack; when only code can help, a
+   tested change to Atrium on its own branch.
+6. **Approve** - patches, extensions and state-changing commands wait for you. Approved patches are applied
    and the suite is re-scored.
-6. **Govern** - the Asset Supervisor registers everything as assets; the GRC Supervisor
-   re-evaluates controls, collects evidence and opens/closes risks.
+7. **Exchange data** - once a tool has a connection, the Hub Supervisor proposes data flows
+   between it and the hub's apps; the module supervisors run them through the tool's supervisor
+   (the only agent that decrypts its credentials), and failing flows get a repair proposal.
+8. **Govern** - the Asset Supervisor registers everything as assets, the People Supervisor links people to their
+   accounts and devices, and the GRC Supervisor re-evaluates controls, collects evidence and opens/closes risks.
 
 More detail in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
@@ -117,19 +187,37 @@ More detail in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 - **Sign-in and roles**: every API call needs a signed-in person or an API token, checked on the
   server. `viewer` reads everything, `operator` may also change things (import, approve, run
-  commands, ...), `admin` also manages accounts, tokens, settings and agents. Tokens with the
-  `integration` role can only publish events. Sign in with a local password (scrypt-hashed,
-  12+ characters, throttled after repeated failures) or through single sign-on (OIDC) against the
-  suite's identity provider, which is where MFA belongs. By default sessions expire after 12 hours
-  idle and 7 days at most. Details in [docs/AUTH.md](docs/AUTH.md).
+  commands, edit people, ...), `admin` also manages accounts, tokens, settings, agents, credentials, extensions and
+  self-patches. Tokens with the `integration` role can only publish events. Sign in with a local password
+  (scrypt-hashed, 12+ characters, throttled after repeated failures) or through single sign-on (OIDC) - configured in
+  **Settings > Sign-in & SSO** or with `HUB_OIDC_*` variables, which win - against the identity provider, which is
+  where MFA belongs. By default sessions expire after 12 hours idle and 7 days at most. Details in
+  [docs/AUTH.md](docs/AUTH.md).
 - **Autonomy levels** (Settings): `manual` - every agent command and patch needs approval;
   `assisted` (default) - agents may run known read-only commands, everything else needs approval;
   `autonomous` - agents act alone (the GRC Supervisor flags this as a failing control).
 - **People and automation**: commands an operator types run directly; commands from agents and
   API tokens follow the autonomy level. Approvals record who decided them.
 - **Blocked commands** (wiping disks, `rm -rf /`, shutdown, piping downloads into a shell, ...)
-  are refused for everyone, people included.
+  are refused for everyone, people included (guardrail `block_catastrophic_commands`).
+- **Agent guardrails** (Settings > Agent guardrails, admins): team agents never get more permissions than the agent
+  that created them, teams are limited in size (5) and do not nest, team agents' actions follow the autonomy level,
+  new teams and scheduled scans wait for approval, generated extensions wait for approval, and self-patches must pass
+  the tests, be approved and go through a pull request. Relaxing one asks for confirmation, is logged as a warning,
+  and makes control HB-AC-6, HB-AC-2 or HB-CM-2 fail or go partial ([docs/AGENTS.md](docs/AGENTS.md#guardrails)).
+- **Extensions are data**: packs are validated strictly and nothing in them is executed; packs an agent generates and
+  changes to Atrium's code are decided by admins only. A self-patch is committed on its own branch in a separate
+  worktree and tested there. Its tests run before anyone approves it, without credentials in their environment but
+  not sandboxed: switch `allow_self_patching` off if that is too much.
 - **SSH** uses keys only - the hub never stores passwords - and verifies host keys by default.
+- **Credentials** (API tokens and passwords of tool connections, local model API keys, the SSO client secret) are
+  encrypted with `HUB_SECRET_KEY` (or a generated `secret.key` in the data folder - back it up separately), never
+  returned by the API or logged, and only sent to the address they were entered for: a changed address, or a repair,
+  cannot redirect them. Only admins edit them.
+- **Scans** only ever target assets in scan scope; scheduled and agent-initiated scans wait for
+  approval (guardrail `scans_need_approval`, on by default) unless the hub runs autonomously.
+- **Leavers**: Atrium flags people who left but still have access or devices; it never changes accounts in the tools
+  itself, and disabling a leaver's Atrium account is an admin action.
 - **Patches** to source code land on a new branch in a separate worktree.
 - **Web hardening**: binds to `127.0.0.1` by default, rejects unknown `Host` headers
   (DNS rebinding), uses `HttpOnly`, `SameSite=Lax` session cookies, and requires an
@@ -137,22 +225,47 @@ More detail in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
   other people reach the hub over a network, put a TLS reverse proxy in front and set
   `HUB_PUBLIC_URL`, `HUB_ALLOWED_HOSTS` and `HUB_COOKIE_SECURE=1`.
 
+## Documentation
+
+| Page | Covers |
+| --- | --- |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | components, request pipeline, agents, approvals, compliance, state and files, extending |
+| [docs/AUTH.md](docs/AUTH.md) | sign-in, roles, sessions, API tokens, single sign-on for Atrium and the Sign-in & SSO settings |
+| [docs/INTEGRATIONS.md](docs/INTEGRATIONS.md) | connections and connectors, credentials and the secret key, data flows, repairs, vulnerabilities and scans, single sign-on for tools |
+| [docs/AGENTS.md](docs/AGENTS.md) | agents, team agents and teams, local models, guardrails, extensions, self-patching |
+| [docs/PEOPLE.md](docs/PEOPLE.md) | the People app, directories, accounts, person-asset links, leavers |
+| [docs/MANIFEST.md](docs/MANIFEST.md) | the hub manifest of a tool, capabilities, events |
+
 ## Project layout
 
 ```
 hub/
-  agents/          Hub Supervisor, Tool Supervisor, Patch Agent, Operator, Asset & GRC Supervisors
-  auth/            accounts, passwords, sessions, API tokens, role policy, single sign-on (OIDC)
-  integration/     analyzer, compatibility scoring, importer, patch planner, tool event bus
+  agents/          Hub Supervisor, Tool Supervisor, Patch Agent, Operator, Asset, Vulnerability, GRC, People and
+                   Extensions Supervisors, agent teams and team agents, the shared agent toolkit
+  auth/            accounts, passwords, sessions, API tokens, role policy, single sign-on (OIDC), Sign-in & SSO settings
+  connectors/      connector SDK and connectors to tools' own APIs (Snipe-IT, CISO Assistant, OpenVAS, Okta,
+                   Keycloak admin, SCIM 2.0, generic REST)
+  extensions/      extension packs, their registry and records, compliance rules, gap detection and templates,
+                   packs written by Claude, self-patching
+  integration/     analyzer, compatibility scoring, importer, patch planner, identity providers and the SSO catalog,
+                   tool event bus, connections, data flows, strategy planner
   execution/       command policy, local/SSH runners, tool process manager
   grc/             control baseline (ISO 27001 / SOC 2 / NIS2 mapping) and automated checks
   web/             the UI (vanilla JS modules, no build step)
   api.py           REST + Server-Sent Events API (docs at /api/docs)
   bus.py           agent message bus
-  core.py          the Hub runtime
-docs/              architecture, sign-in and access control, manifest specification
+  core.py          the Hub runtime (and the scheduler for data flows and agents)
+  people.py        the People app: merging, accounts, links, leavers
+  secrets.py       encryption of stored credentials
+  guardrails.py    the agent guardrails admins can relax
+  llm_providers.py local models with an OpenAI-compatible API (Ollama, LM Studio, vLLM, llama.cpp)
+docs/              architecture, sign-in and access control, integrations, agents and extensions, people, manifest
 examples/          sample tools to import
+scripts/           install_copy.py (used by the installers)
 tests/             pytest suite
+install.sh         installer for Linux and macOS (and Git Bash)
+install.ps1        installer for Windows
+Dockerfile, docker-compose.yml   the container image and its Compose file
 ```
 
 ## Development
@@ -164,12 +277,20 @@ tests/             pytest suite
 
 A fresh data directory prints its own setup link; set `HUB_ADMIN_USERNAME` and
 `HUB_ADMIN_PASSWORD` to get an administrator without it. The UI is plain ES modules served by the
-API - edit `hub/web/` and reload.
+API - edit `hub/web/` and reload. The tests use mocked HTTP transports, fake models and temporary git
+repositories, and `tests/conftest.py` sets `HUB_LLM=off` and `HUB_SELF_PATCH=off`, so no test calls a model or
+patches the real checkout.
 
 ## Roadmap
 
-- More built-in apps: service desk / ticketing, vulnerability management (match tool versions
-  against advisories), backup orchestration
-- Pull requests for patches on GitHub-hosted tools
+- Compliance frameworks: CyFun 2025 and 2023 built in, an audit-pack export, and framework sync with CISO Assistant
+- Network and devices, read-only first (OPNsense, pfSense, MikroTik, FortiGate, PAN-OS, Cisco IOS-XE, host
+  firewalls), with drift detection and compliance evidence; changes later, behind a guardrail that is off by default
+- A visual management panel: an integration canvas (drag to connect proposes a data flow) and a network segmentation
+  view
+- Two-person approval, and approvals bound to the exact revision they approved
+- Sandboxed test runs for self-patches (a container or a separate user)
+- Pull requests for patches to GitHub-hosted tools (self-patches of Atrium already use them)
+- Matching tool versions against security advisories, and backup orchestration
 - Container-based tool runtime and secrets vault integration
 - Connector catalogue for popular SaaS services

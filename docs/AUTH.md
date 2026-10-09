@@ -16,8 +16,8 @@ can. `integration` is a separate role that exists only for API tokens.
 | Role | May do |
 | --- | --- |
 | `viewer` | Read everything: every page, every `GET /api` endpoint, the live event stream (`/api/events`) and the API docs (`/api/docs`). Changes nothing. |
-| `operator` | Everything a viewer can, plus every state-changing call: import and remove tools, analyse, start/stop, propose patches, approve or reject, run commands, add/remove/discover hosts, add and edit assets, sync, edit compliance controls, risks and policies, chat with the Hub Supervisor. |
-| `admin` | Everything an operator can, plus accounts (`/api/users`), API tokens (`/api/tokens`), hub settings (`PATCH /api/settings`: autonomy level, default model) and agent configuration (`PATCH /api/agents/{id}`: pause/resume, model, instructions). |
+| `operator` | Everything a viewer can, plus every state-changing call: import and remove tools, analyse, start/stop, propose patches, approve or reject (except extensions, self-patches and agent teams), run commands, add/remove/discover hosts, add and edit assets, sync, edit compliance controls, risks and policies, chat with the Hub Supervisor and any team agent (`POST /api/agents/{id}/chat`), run a team agent's task (`POST /api/agents/{id}/run`), ask a tool's supervisor for an agent team (`POST /api/tools/{id}/team`; an administrator decides the proposal), choose a tool's identity provider (`POST /api/tools/{id}/sso`) and run provider registrations (`POST /api/tools/{id}/sso/register`), test connections and list a connection field's choices (`GET /api/tools/{id}/connection/options/{field}`, which uses the stored credentials), run, schedule and repair data flows, request scans and triage vulnerabilities, add, edit and remove people, link accounts, unassign a leaver's assets (`POST /api/people/{id}/actions/unassign_assets`), and add, edit and remove records of extension apps (`/api/x/{key}`). |
+| `admin` | Everything an operator can, plus accounts (`/api/users`), API tokens (`/api/tokens`), hub settings (`PATCH /api/settings`: autonomy level, default model, vulnerability SLA days, guardrails), the agent guardrails (`PATCH /api/settings/guardrails`), agent definitions (`POST /api/agents`, `PATCH` / `DELETE /api/agents/{id}`: create, configure and remove agents; core agents can only be paused and reconfigured), the AI model providers, which may hold API keys (`POST /api/llm/providers`, `PATCH` / `DELETE /api/llm/providers/{id}`, `POST /api/llm/providers/{id}/test`), the suite's identity providers (`PUT /api/identity-providers/default`, `PATCH /api/identity-providers/{id}`, `POST /api/identity-providers/{id}/atrium`), tool connections, which hold the tools' API credentials (`PUT` / `DELETE /api/tools/{id}/connection`), the [Sign-in & SSO settings](#sign-in--sso-settings) (`GET` / `PUT` / `DELETE /api/auth/sso`, `POST /api/auth/sso/test`), disabling a leaver's Atrium account (`POST /api/people/{id}/actions/disable_atrium_account`), extension packs (`POST /api/extensions`, `PATCH` / `DELETE /api/extensions/{id}`, `POST /api/extensions/{id}/rollback`, `POST /api/tools/{id}/extend`), self-patches (`POST /api/self-patches`, `POST /api/self-patches/{id}/apply`), and deciding approvals of kind `extension` and `self_patch` (changes to Atrium itself) and `agent_team` (they create agent definitions) - checked by `POST /api/approvals/{id}`, 403 for others. |
 | `integration` | API tokens only. Exactly two calls: `POST /api/bus/publish` and `GET /api/health`. |
 
 Endpoints outside the role ladder:
@@ -204,6 +204,9 @@ Admins manage accounts under **Users & access** (`#/users`; also in Portals and 
 - **Reset password**: see above.
 - **Delete**: removes the account and its sessions.
 
+The table also shows the person (People app) with the same email address, and warns when that person has left but the
+account is still enabled ([PEOPLE.md](PEOPLE.md#leavers)).
+
 Guards (`400` with an explanation):
 
 - you cannot disable, demote or delete your own account;
@@ -305,8 +308,9 @@ The hub can sign people in through the suite's identity provider (Keycloak, Micr
 Okta, Authentik, ...) with the OpenID Connect authorization code flow. MFA, password rules and
 joiner/mover/leaver processes then live in the identity provider.
 
-When SSO is configured, the sign-in screen shows a button (`HUB_OIDC_LABEL`, default "Sign in with
-SSO"). It goes to `/api/auth/oidc/login`, which redirects to the identity provider; the provider
+When SSO is configured, the sign-in screen shows a button ("Sign in with <provider>" when it is set
+up in the [Sign-in & SSO settings](#sign-in--sso-settings), else `HUB_OIDC_LABEL`, default "Sign in
+with SSO"). It goes to `/api/auth/oidc/login`, which redirects to the identity provider; the provider
 sends the browser back to `/api/auth/oidc/callback`, where the hub checks the response, verifies
 the ID token's signature, creates the session and returns to the hub. A short-lived cookie,
 `atrium_oidc_state` (`HttpOnly`, `SameSite=Lax`, 10 minutes, `Path=/api/auth/oidc`), ties the
@@ -315,8 +319,10 @@ the browser lands on the sign-in screen with the reason, and the failure is logg
 
 ### Configuration
 
-SSO is enabled when `HUB_OIDC_ISSUER` and `HUB_OIDC_CLIENT_ID` are both set. Restart the hub after
-changing these.
+SSO is enabled when an issuer and a client id are both set: in **Settings > Sign-in & SSO** (stored in
+the database, effective at once; see [below](#sign-in--sso-settings)) or with these environment variables
+(read at start-up: restart the hub after changing them). A variable that is set wins over the stored value
+for that field.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
@@ -328,7 +334,7 @@ changing these.
 | `HUB_OIDC_ADMIN_VALUES` | `atrium-admins` | Comma-separated claim values that grant `admin`. |
 | `HUB_OIDC_OPERATOR_VALUES` | `atrium-operators` | Comma-separated claim values that grant `operator`. |
 | `HUB_OIDC_DEFAULT_ROLE` | `viewer` | Role for everyone else (`viewer`, `operator` or `admin`). |
-| `HUB_OIDC_LABEL` | `Sign in with SSO` | Text of the sign-in button. |
+| `HUB_OIDC_LABEL` | `Sign in with SSO` | Text of the sign-in button. Without it, Sign-in & SSO settings that name a provider make it "Sign in with <provider>". |
 | `HUB_OIDC_ALLOW_HTTP` | off | Allow a plain-`http` issuer that is not on `localhost` / `127.0.0.1`. Leave it off outside a lab. |
 
 Register this **redirect URI** with the provider:
@@ -340,6 +346,60 @@ Register this **redirect URI** with the provider:
 Open the hub at exactly the `HUB_PUBLIC_URL` address. The state cookie is set for the host you
 started the sign-in on; if the provider then returns to a different host (`localhost` versus
 `127.0.0.1`, say), the cookie is missing and the sign-in fails.
+
+### Sign-in & SSO settings
+
+Administrators manage the OIDC sign-in from the UI: **Settings > Sign-in & SSO** (`#/settings/sso`, also linked from
+the Users & access card). The settings are stored in the database (`settings` collection, document `sso`) with the
+client secret encrypted with the hub's secret key ([INTEGRATIONS.md](INTEGRATIONS.md#credentials-and-the-secret-key)).
+Saving rebuilds the hub's OIDC client at once, with every check described above; sign-ins already started at that
+moment are dropped and have to start again.
+
+**Presets** fill in the issuer pattern, scopes, role claim and role values, and show setup notes:
+
+| Preset | Issuer | Roles from |
+| --- | --- | --- |
+| Okta | `https://<your-domain>/oauth2/default` (the default custom authorization server) or `https://<your-domain>` (the org server) | `groups`; Okta does not add a groups claim by itself: add one (custom server: Security > API > Authorization Servers > Claims; org server: the app's Sign On tab), filtered e.g. to groups starting with `atrium-`, and request the `groups` scope |
+| Microsoft Entra ID | `https://login.microsoftonline.com/<tenant-id>/v2.0` (the tenant id, not `common`) | app roles `atrium-admins` / `atrium-operators` in the `roles` claim, or a `groups` claim, which carries group object IDs: enter those IDs as the values |
+| Google | `https://accounts.google.com` | none: Google ID tokens carry no groups, so everyone gets the default role. Keep a local administrator |
+| Keycloak | `https://<host>/realms/<realm>` | `groups` (a group membership mapper without the full path; Atrium's generated client sets this up) |
+| authentik | `https://<host>/application/o/<slug>/` | `groups` (sent by default) |
+| Other | any provider with OpenID Connect discovery | `groups` |
+
+The Okta, Entra ID and Google notes were checked against the vendors' documentation in October 2026.
+
+Identity providers already **imported into the suite** (Keycloak, authentik) appear as prefilled choices. When Atrium's
+own client was generated there (Integration hub > Identity > **Atrium sign-in**, see
+[below](#generating-atriums-client-from-the-integration-hub)), **Use the client secret Atrium generated at
+<provider>** takes that secret without showing it.
+
+Rules:
+
+- **Environment variables win.** Every field set by a `HUB_OIDC_*` variable (one with a value; `.env` counts) is
+  shown read-only with the variable's name, and saving leaves it alone. Remove the variable or leave it empty (and
+  restart) to manage the field from the UI. A `.env` copied from an older `.env.example` sets `HUB_OIDC_SCOPES`,
+  `HUB_OIDC_ROLE_CLAIM`, `HUB_OIDC_ADMIN_VALUES`, `HUB_OIDC_OPERATOR_VALUES`, `HUB_OIDC_DEFAULT_ROLE` and
+  `HUB_OIDC_LABEL` to their defaults, which locks those fields: empty those lines.
+- **The secret is write-only.** The field never shows the stored value: leave it empty to keep it, enter a new one, or
+  clear it. A stored secret is only sent to the issuer it was entered for: changing the issuer means entering the
+  secret again.
+- **The label** becomes "Sign in with <provider name>" (unless `HUB_OIDC_LABEL` is set).
+- **Validation**: the issuer must be `https` (plain `http` only on `localhost` / `127.0.0.1`, or with **Allow a
+  plain-http issuer**, which asks for confirmation and is logged as a warning); `<placeholders>` left in the issuer
+  are refused.
+- **Test** runs OpenID Connect discovery and fetches the signing keys for the values in the form, without saving
+  anything or sending the secret. It applies the same discovery checks as sign-in and reports the endpoints, the number
+  of signing keys, PKCE support, and whether the provider advertises the role claim.
+- **Remove** deletes the stored settings; environment variables still apply.
+- Every change is written to the activity log with the admin's name, and the compliance controls are re-evaluated
+  (HB-AC-4 passes once SSO is configured).
+
+| Endpoint | Role | Purpose |
+| --- | --- | --- |
+| `GET /api/auth/sso` | admin | the effective values and where each comes from (`environment`, `database` or `default`), whether a secret is set, the redirect URI, presets and imported providers; never the secret |
+| `PUT /api/auth/sso` | admin | change the fields sent (`preset`, `provider_name`, `issuer`, `client_id`, `client_secret`, `clear_client_secret`, `generated_secret_from`, `scopes`, `role_claim`, `admin_values`, `operator_values`, `default_role`, `allow_http`) |
+| `POST /api/auth/sso/test` | admin | the same body: discovery and signing keys, nothing saved |
+| `DELETE /api/auth/sso` | admin | remove the stored settings |
 
 ### Role mapping
 
@@ -362,6 +422,23 @@ At every SSO sign-in the hub reads the claim named by `HUB_OIDC_ROLE_CLAIM`. A v
   way in when the identity provider is down. HB-AC-5 (dormant accounts) flags it once it has not
   signed in for 90 days: sign in with it now and then, or record an override with a justification
   in the Compliance hub.
+
+### Generating Atrium's client from the Integration hub
+
+When the suite contains an identity provider (Keycloak, authentik, or any OIDC provider), an administrator can let
+the hub prepare Atrium's own client: **Integration hub > Identity > Atrium sign-in** (`POST
+/api/identity-providers/{id}/atrium`). The hub writes into `HUB_DATA_DIR/workspace/identity/atrium/<provider>/`:
+
+- the client registration (`keycloak-client.json` with a kcadm.sh script, or an authentik blueprint), with redirect
+  URI `{HUB_PUBLIC_URL}/api/auth/oidc/callback`, a `groups` claim and the groups `atrium-admins` and `atrium-operators`;
+- `atrium-oidc.env` with the `HUB_OIDC_*` settings, including a client secret generated once by the hub.
+
+The secret is never shown in the UI or returned by the API. Then either choose the provider under **Settings > Sign-in &
+SSO** (it is listed as imported, and the generated secret can be used without being shown; no restart), or copy the
+lines from `atrium-oidc.env` into Atrium's `.env` and restart Atrium. **Register at <provider>** has the Operator
+Agent run the registration script (docker compose exec
+into the provider when the hub knows its compose file; otherwise set `KEYCLOAK_ADMIN_USER` and
+`KEYCLOAK_ADMIN_PASSWORD` for `register-keycloak.sh`). The walkthrough below does the same by hand.
 
 ### Keycloak walkthrough
 
@@ -415,11 +492,16 @@ Two controls of the Hub Security Baseline check the hub's own access control:
 
 | Control | Passes when | Otherwise |
 | --- | --- | --- |
-| HB-AC-4 Authenticated, role-based access to the hub | SSO (OIDC) is configured. | `partial` with local passwords only ("connect the suite's identity provider (OIDC) to enforce MFA"); `fail` when there is no enabled admin. |
+| HB-AC-4 Authenticated, role-based access to the hub | SSO (OIDC) is configured, with environment variables or the Sign-in & SSO settings. | `partial` with local passwords only ("connect the suite's identity provider (OIDC) to enforce MFA"); `fail` when there is no enabled admin. |
 | HB-AC-5 Dormant hub accounts are disabled | No enabled account has gone 90 days without signing in (accounts that never signed in count from their creation). | `partial` when some enabled accounts are dormant, `fail` when all are; `manual` when there are no accounts. |
 
 Both are re-evaluated after account changes. Failing controls open the risks "Hub accounts are
 protected by passwords only" and "Dormant accounts could be misused".
+
+A third, HB-AC-7 "Leavers lose access and return assets", fails while a person the People app knows as suspended or
+terminated still has an enabled Atrium account with their email address (or an active account in a tool). The
+**Disable Atrium account** action on the leaver (admin) disables it through the normal account update. See
+[PEOPLE.md](PEOPLE.md#leavers).
 
 ## Security notes
 
@@ -442,8 +524,11 @@ protected by passwords only" and "Dormant accounts could be misused".
 - **Host checking.** Requests whose `Host` header is not `127.0.0.1`, `localhost` or listed in
   `HUB_ALLOWED_HOSTS` are rejected before anything else runs, which defeats DNS rebinding.
 - **Secrets at rest.** Passwords are stored as scrypt hashes, session cookies and API tokens as
-  SHA-256 hashes, and the API never returns any of them. The database (`HUB_DATA_DIR/hub.db`) still
-  holds everything else the hub knows; protect it with file permissions and include it in backups.
+  SHA-256 hashes, and the API never returns any of them. Credentials the hub must use itself (tool
+  connections, local model API keys, the stored SSO client secret) are encrypted with `HUB_SECRET_KEY` or
+  `HUB_DATA_DIR/secret.key`. The database (`HUB_DATA_DIR/hub.db`) still holds everything else the hub knows;
+  protect it with file permissions and include it in backups, and back up the key separately
+  ([INTEGRATIONS.md](INTEGRATIONS.md#credentials-and-the-secret-key)).
 - **Least privilege.** Give people the lowest role that fits, give event publishers
   `integration` tokens, set expiry dates on tokens, and revoke tokens and disable accounts that are
   no longer used.

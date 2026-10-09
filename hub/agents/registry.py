@@ -8,7 +8,7 @@ from .base import BaseAgent
 
 if TYPE_CHECKING:
     from ..core import Hub
-    from ..models import Tool
+    from ..models import AgentDef, Tool
 
 
 class AgentRegistry:
@@ -18,21 +18,43 @@ class AgentRegistry:
 
     def start_core(self) -> None:
         from .assets import AssetSupervisor
+        from .extensions import ExtensionSupervisor
         from .grc import GrcSupervisor
         from .operator import OperatorAgent
         from .patcher import PatchAgent
+        from .people import PeopleSupervisor
         from .supervisor import HubSupervisor
+        from .vulns import VulnerabilitySupervisor
 
         for agent in (HubSupervisor(self.hub), PatchAgent(self.hub), OperatorAgent(self.hub),
-                      AssetSupervisor(self.hub), GrcSupervisor(self.hub)):
+                      AssetSupervisor(self.hub), GrcSupervisor(self.hub), VulnerabilitySupervisor(self.hub),
+                      PeopleSupervisor(self.hub), ExtensionSupervisor(self.hub)):
             self.add(agent)
 
+    def start_custom(self) -> None:
+        """Start every custom (team) agent people or agents defined (collection "agent_defs")."""
+        from . import teams
+
+        for defn in teams.defs(self.hub):
+            if defn.id not in self._agents:
+                self.add_custom(defn)
+
+    def add_custom(self, defn: "AgentDef") -> BaseAgent:
+        from .custom import CustomAgent
+
+        return self.add(CustomAgent(self.hub, defn))
+
     def add(self, agent: BaseAgent) -> BaseAgent:
-        saved = self.hub.store.get("agents", agent.id) or {}
-        agent.model_override = saved.get("model")
-        agent.instructions_override = saved.get("instructions")
-        agent.paused = bool(saved.get("paused"))
-        if agent.paused:
+        defn = getattr(agent, "defn", None)
+        if defn is not None:  # a custom agent: its definition holds everything; disabled = paused
+            paused = not defn.enabled
+        else:
+            saved = self.hub.store.get("agents", agent.id) or {}
+            agent.model_override = saved.get("model")
+            agent.instructions_override = saved.get("instructions")
+            paused = bool(saved.get("paused"))
+        agent.paused = paused
+        if paused:
             agent.set_paused(True)
         self._agents[agent.id] = agent
         agent.start()
@@ -61,6 +83,12 @@ class AgentRegistry:
         agent = self._agents.get(agent_id)
         if agent is None:
             raise KeyError(agent_id)
+        if getattr(agent, "defn", None) is not None:  # custom agents keep their settings in their definition
+            from . import teams
+
+            changes = {"enabled": None if paused is None else not paused, "model": model, "instructions": instructions}
+            teams.update(self.hub, agent_id, changes, "system")
+            return agent.record()
         if paused is not None:
             agent.set_paused(paused)
         if model is not None:

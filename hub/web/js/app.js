@@ -1,6 +1,7 @@
 // App shell: sign-in, top bar, Portals launcher, notifications, account menu, command palette, router.
 import { connectEvents, disconnectEvents, get, onEvent, post } from "./api.js";
 import { avatar, openChangePassword, openSessions, roleBadge, session, showAuth, showUnreachable } from "./auth.js";
+import { xColor, xDomains, xHref } from "./extensions.js";
 import { actions, appIcon, builtinIcon, can, debounce, emptyState, html, icon, modal, setHTML, timeAgo, toggleTheme } from "./ui.js";
 import * as home from "./views/home.js";
 import * as tools from "./views/tools.js";
@@ -9,10 +10,14 @@ import * as agents from "./views/agents.js";
 import * as approvals from "./views/approvals.js";
 import * as operator from "./views/operator.js";
 import * as assets from "./views/assets.js";
+import * as people from "./views/people.js";
+import * as vulnerabilities from "./views/vulnerabilities.js";
 import * as compliance from "./views/compliance.js";
 import * as settings from "./views/settings.js";
 import * as users from "./views/users.js";
 import * as portal from "./views/portal.js";
+import * as extensions from "./views/extensions.js";
+import * as xdomain from "./views/xdomain.js";
 
 // Built-in apps of the suite (shown in the sidebar and the Portals launcher). minRole hides an app from lower roles.
 export const APPS = [
@@ -23,16 +28,21 @@ export const APPS = [
   { route: "approvals", name: "Approvals", icon: "checkCircle", color: "#ca8a04", view: approvals },
   { route: "operator", name: "Operator", icon: "terminal", color: "#334155", view: operator },
   { route: "assets", name: "Assets", icon: "box", color: "#0d9488", view: assets },
+  { route: "people", name: "People", icon: "contact", color: "#e11d48", view: people },
+  { route: "vulnerabilities", name: "Vulnerabilities", icon: "bug", color: "#dc2626", view: vulnerabilities },
   { route: "compliance", name: "Compliance hub", short: "Compliance", icon: "shield", color: "#16a34a", view: compliance },
+  { route: "extensions", name: "Extensions", icon: "puzzle", color: "#c026d3", view: extensions },
   { route: "settings", name: "Settings", icon: "sliders", color: "#64748b", view: settings },
   { route: "users", name: "Users & access", short: "Users", icon: "users", color: "#db2777", view: users, minRole: "admin" },
 ];
 const ROUTES = Object.fromEntries(APPS.map((a) => [a.route, a]));
 ROUTES.portal = { route: "portal", name: "Portal", view: portal };
+ROUTES.x = { route: "x", name: "Extension app", view: xdomain }; // #/x/<domain key>[/<record id>]
 
-const state = { overview: null, tools: [], activity: [] };
+const state = { overview: null, tools: [], activity: [], restart: null };
 const $ = (id) => document.getElementById(id);
 let signedIn = false;
+let restartHidden = null; // the merge commit whose "restart required" banner was hidden on this page load
 
 // ---------- static chrome ----------
 function chrome() {
@@ -44,16 +54,13 @@ function chrome() {
   setHTML($("search-btn"), html`${icon("search")}<span class="label">Search...</span><kbd>Ctrl K</kbd>`);
   setHTML($("start-btn"), html`${icon("rocket")}<span class="txt">Get Started</span>`);
 
-  const nav = [
-    ...APPS.slice(0, 2),
-    { section: "Run the suite" }, ...APPS.slice(2, 6),
-    { section: "Govern" }, ...APPS.slice(6, 8),
-    { section: "" }, ...APPS.slice(8),
-  ];
-  setHTML($("nav"), nav.map((a) => a.section !== undefined
-    ? html`<div class="section">${a.section}</div>`
-    : html`<a href="#/${a.route}" data-route="${a.route}" ${a.minRole ? html`data-min-role="${a.minRole}"` : ""}>${icon(a.icon)}<span>${a.name}</span>${a.route === "approvals" ? html`<span class="count" id="nav-approvals" hidden></span>` : ""}</a>`));
+  renderNav();
 
+  $("restart-banner").addEventListener("click", (e) => {
+    if (!e.target.closest("[data-dismiss]")) return;
+    restartHidden = state.restart?.commit || null;
+    renderRestart();
+  });
   $("theme-switch").addEventListener("click", toggleTheme);
   $("menu-btn").addEventListener("click", () => $("sidebar").classList.toggle("open"));
   $("portals-btn").addEventListener("click", (e) => { e.stopPropagation(); togglePopover("portals", $("portals-btn")); });
@@ -74,6 +81,53 @@ function chrome() {
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k" && signedIn) { e.preventDefault(); openPalette(); }
     if (e.key === "Escape") closePopovers();
   });
+}
+
+// ---------- sidebar, extension apps, restart banner ----------
+const xApp = (d) => ({ route: `x/${d.key}`, name: d.title, icon: d.icon, color: xColor(d.key), href: xHref(d.key) });
+
+/** The sidebar: built-in apps, then one app per enabled extension domain (group "Extensions"). */
+function renderNav() {
+  const nav = [
+    ...APPS.slice(0, 2),
+    { section: "Run the suite" }, ...APPS.slice(2, 6),
+    { section: "Govern" }, ...APPS.slice(6, 10),
+    ...(xDomains.length ? [{ section: "Extensions" }, ...xDomains.map(xApp)] : []),
+    { section: "" }, ...APPS.slice(10),
+  ];
+  setHTML($("nav"), nav.map((a) => a.section !== undefined
+    ? html`<div class="section">${a.section}</div>`
+    : html`<a href="${a.href || `#/${a.route}`}" data-route="${a.route}" ${a.minRole ? html`data-min-role="${a.minRole}"` : ""}>${icon(a.icon)}<span>${a.name}</span>${a.route === "approvals" ? html`<span class="count" id="nav-approvals" hidden></span>` : ""}</a>`));
+  markActive();
+}
+
+let activeRoute = "";
+function markActive() {
+  document.querySelectorAll("#nav a").forEach((a) => a.classList.toggle("active", a.dataset.route === activeRoute));
+}
+
+/** Adopt a fresh list of extension domains; the sidebar is rebuilt only when the apps changed. */
+function setXDomains(list) {
+  const sig = (l) => JSON.stringify(l.map((d) => [d.key, d.title, d.icon]));
+  if (sig(list) === sig(xDomains)) return;
+  xDomains.splice(0, xDomains.length, ...list);
+  renderNav();
+  updateBadges();
+}
+
+function renderRestart() {
+  const r = state.restart;
+  const el = $("restart-banner");
+  if (!r || !signedIn || restartHidden === r.commit) {
+    el.hidden = true;
+    return;
+  }
+  el.hidden = false;
+  setHTML(el, html`${icon("refresh")}<div style="flex:1;min-width:0"><b>Restart required.</b>
+      <span class="muted">The self-patch "${r.title}" was merged into ${r.branch || "the current branch"}${r.commit ? ` (${String(r.commit).slice(0, 10)})` : ""}${r.by ? ` by ${r.by}` : ""}.
+      Restart Atrium to load the new code - changed web pages are served already.</span></div>
+    <a class="btn sm" href="#/extensions/self-patches">Self-patches</a>
+    <button type="button" class="icon-btn sm" data-dismiss title="Hide until the next page load" aria-label="Hide">${icon("x")}</button>`);
 }
 
 // ---------- popovers ----------
@@ -102,6 +156,8 @@ function renderPortals() {
   setHTML($("portals"), html`
     <h4>Hub apps</h4>
     <div class="portal-grid">${builtins.map((a) => html`<a class="portal-tile" href="#/${a.route}">${builtinIcon(a.icon, a.color)}<span>${a.short || a.name}</span></a>`)}</div>
+    ${xDomains.length ? html`<h4>Extensions</h4>
+      <div class="portal-grid">${xDomains.map(xApp).map((a) => html`<a class="portal-tile" href="${a.href}" title="${a.name}">${builtinIcon(a.icon, a.color)}<span>${a.name}</span></a>`)}</div>` : ""}
     <h4>Your tools</h4>
     <div class="portal-grid">
       ${state.tools.map((t) => html`<a class="portal-tile" href="#/portal/${t.id}" title="${t.name}">${appIcon(t)}<span>${t.name}</span></a>`)}
@@ -155,21 +211,35 @@ async function signOut() {
 async function openPalette() {
   if (!signedIn) return;
   closePopovers();
-  const [agentList, assetList] = await Promise.all([get("/agents").catch(() => []), get("/assets").catch(() => [])]);
+  const [agentList, assetList, peopleList] = await Promise.all([get("/agents").catch(() => []), get("/assets").catch(() => []),
+    get("/people?brief=1").then((r) => r.people).catch(() => [])]);
   const operatorActions = can("operator") ? [
     { label: "Import a tool", kind: "Action", icon: "plus", run: () => tools.openImport() },
+    { label: "Add a person", kind: "Action", icon: "contact", run: () => people.openAddPerson() },
     { label: "Run a command", kind: "Action", icon: "terminal", go: "#/operator" },
+    { label: "Scan for vulnerabilities", kind: "Action", icon: "radar", go: "#/vulnerabilities" },
     { label: "Ask the Hub Supervisor", kind: "Action", icon: "chat", go: "#/agents" },
   ] : [];
   const entries = [
     ...APPS.filter((a) => can(a.minRole)).map((a) => ({ label: a.name, kind: "Page", icon: a.icon, go: `#/${a.route}` })),
+    { label: "Data flows", kind: "Page", icon: "flow", go: "#/integration", sub: "Integration hub" },
+    { label: "Scan scope", kind: "Page", icon: "radar", go: "#/vulnerabilities/scope", sub: "Vulnerabilities" },
+    { label: "Leavers", kind: "Page", icon: "alert", go: "#/people/leavers", sub: "People" },
+    { label: "Accounts in tools", kind: "Page", icon: "key", go: "#/people/accounts", sub: "People" },
+    ...(can("admin") ? [{ label: "Sign-in & SSO", kind: "Page", icon: "shield", go: "#/settings/sso", sub: "Settings" }] : []),
+    ...xDomains.map(xApp).map((a) => ({ label: a.name, kind: "App", icon: a.icon, go: a.href, sub: "Extension" })),
+    { label: "Gaps in Atrium", kind: "Page", icon: "alert", go: "#/extensions/gaps", sub: "Extensions" },
+    { label: "Self-patches", kind: "Page", icon: "branch", go: "#/extensions/self-patches", sub: "Extensions" },
+    ...(can("admin") ? [{ label: "Upload an extension pack", kind: "Action", icon: "upload", run: () => { location.hash = "#/extensions"; setTimeout(() => extensions.openUpload(), 50); } }] : []),
     ...operatorActions,
     ...(session.user?.has_password ? [{ label: "Change password", kind: "Account", icon: "key", run: openChangePassword }] : []),
     { label: "Sessions", kind: "Account", icon: "monitor", run: openSessions },
     { label: "Sign out", kind: "Account", icon: "logout", run: signOut },
     ...state.tools.map((t) => ({ label: t.name, kind: "Tool", icon: "grid", go: `#/tools/${t.id}`, sub: t.source })),
     ...agentList.map((a) => ({ label: a.name, kind: "Agent", icon: "bot", go: "#/agents", sub: a.title })),
-    ...assetList.filter((a) => a.status !== "retired").map((a) => ({ label: a.name, kind: "Asset", icon: "box", go: "#/assets", sub: a.type })),
+    ...assetList.filter((a) => a.status !== "retired").map((a) => ({ label: a.name, kind: "Asset", icon: "box", go: `#/assets/${encodeURIComponent(a.id)}`, sub: a.type })),
+    ...peopleList.map((p) => ({ label: p.display_name, kind: "Person", icon: "user", go: `#/people/${encodeURIComponent(p.id)}`,
+      sub: [p.title, p.email, p.status !== "active" ? p.status : ""].filter(Boolean).join(" - ") })),
   ];
   if (!signedIn) return; // signed out while loading
   const backdrop = document.createElement("div");
@@ -215,15 +285,17 @@ function getStarted() {
       A Hub Supervisor agent coordinates one supervisor agent per tool, a Patch Agent that makes tools fit, and an Operator Agent that runs commands.</p>
       ${step(1, "Import your first tool", "From GitHub, a folder on this machine, or a SaaS URL with its OpenAPI spec.", "import", "Import", "operator")}
       ${step(2, "Connect a server", "Register an SSH host so the Operator can run commands and the Asset Supervisor can inventory it.", "host", "Add host", "operator")}
-      ${step(3, "Review approvals", "Agents ask before they change anything. Approve or reject their patches and commands.", "approvals", "Open")}
-      ${step(4, "Check compliance", "The GRC Supervisor maps live evidence to ISO 27001, SOC 2 and NIS2 controls.", "compliance", "Open")}
-      ${can("admin") ? step(5, "Invite your team", "Give people their own accounts as viewer, operator or admin, and create API tokens for integrations.", "users", "Open") : ""}
+      ${step(3, "Let tools exchange data", "Set up a tool's API in its Connection tab (Snipe-IT, OpenVAS, CISO Assistant or any REST API); the hub proposes data flows into Assets, Vulnerabilities and Compliance.", "flows", "Open")}
+      ${step(4, "Review approvals", "Agents ask before they change anything. Approve or reject their patches, data flows, scans and repairs.", "approvals", "Open")}
+      ${step(5, "Check compliance", "The GRC Supervisor maps live evidence to ISO 27001, SOC 2 and NIS2 controls.", "compliance", "Open")}
+      ${can("admin") ? step(6, "Invite your team", "Give people their own accounts as viewer, operator or admin, and create API tokens for integrations.", "users", "Open") : ""}
       ${llm && !llm.available ? html`<div class="notice" style="margin-top:14px">${icon("bot")}<div><b>Agents are in rules mode.</b>
         <span class="muted">Set <code>ANTHROPIC_API_KEY</code> before starting the hub to let them plan in plain language and write code patches with Claude.</span></div></div>` : ""}`,
   });
   actions(m.el, {
     import: () => { m.close(); tools.openImport(); },
     host: () => { m.close(); location.hash = "#/operator"; setTimeout(() => operator.openAddHost(), 50); },
+    flows: () => { m.close(); location.hash = "#/integration"; },
     approvals: () => { m.close(); location.hash = "#/approvals"; },
     compliance: () => { m.close(); location.hash = "#/compliance"; },
     users: () => { m.close(); location.hash = "#/users"; },
@@ -253,9 +325,14 @@ function updateBadges() {
 
 async function refreshState() {
   if (!signedIn) return;
-  const [overview, toolList, activity] = await Promise.all([get("/overview"), get("/tools"), get("/activity?limit=120")]);
+  const [overview, toolList, activity, xList] = await Promise.all([get("/overview"), get("/tools"), get("/activity?limit=120"),
+    get("/x").catch(() => null)]);
   if (!signedIn) return;
   Object.assign(state, { overview, tools: toolList, activity });
+  if (xList) setXDomains(xList);
+  if (!overview.restart_required) state.restart = null;
+  else if (!state.restart) state.restart = await get("/self-patches").then((r) => r.restart_required).catch(() => null);
+  renderRestart();
   updateBadges();
   if (currentApp) renderSubbar(currentApp, currentCrumb);
 }
@@ -272,7 +349,8 @@ async function route() {
   const app = ROUTES[name] || ROUTES[""];
   currentApp = app;
   currentCrumb = null;
-  document.querySelectorAll("#nav a").forEach((a) => a.classList.toggle("active", a.dataset.route === (app.route === "portal" ? "tools" : app.route)));
+  activeRoute = app.route === "portal" ? "tools" : app.route === "x" ? `x/${params[0] || ""}` : app.route;
+  markActive();
   $("sidebar").classList.remove("open");
   closePopovers();
   renderSubbar(app);
@@ -339,7 +417,9 @@ function leaveApp() {
   document.querySelectorAll(".backdrop").forEach((b) => b.remove());
   document.body.classList.remove("signed-in");
   delete document.body.dataset.role;
-  Object.assign(state, { overview: null, tools: [], activity: [] });
+  Object.assign(state, { overview: null, tools: [], activity: [], restart: null });
+  renderRestart();
+  setXDomains([]);
   agents.resetChat();
   setHTML($("main"), "");
   setHTML($("user-menu"), "");
@@ -381,5 +461,11 @@ window.addEventListener("atrium:user-updated", async () => {
 // ---------- boot ----------
 chrome();
 window.addEventListener("hashchange", route);
-onEvent(["approval", "tool", "tool_removed", "activity", "asset", "grc", "risk"], debounce(() => refreshState().catch(() => {}), 500));
+onEvent(["approval", "tool", "tool_removed", "activity", "asset", "grc", "risk", "extension", "extension_removed"],
+  debounce(() => refreshState().catch(() => {}), 500));
+onEvent("restart_required", (e) => {
+  if (!signedIn || !e.data) return;
+  state.restart = e.data;
+  renderRestart();
+});
 boot();

@@ -10,7 +10,8 @@ from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
 
 from ..models import TokenRole, UserRole, public_token, public_user
-from .oidc import OidcError
+from . import sso_settings
+from .oidc import OidcClient, OidcError
 from .service import STATE_COOKIE, AuthError, CurrentPrincipal, Principal, client_ip
 
 if TYPE_CHECKING:
@@ -62,6 +63,24 @@ class NewToken(BaseModel):
     name: str = Field(max_length=64)
     role: TokenRole
     expires_days: int | None = Field(None, ge=1, le=3650)
+
+
+class SsoBody(BaseModel):
+    """Sign-in & SSO settings; only the fields sent change (fields set by HUB_OIDC_* variables are left alone)."""
+
+    preset: str | None = Field(None, max_length=20)  # okta | entra | google | keycloak | authentik | generic
+    provider_name: str | None = Field(None, max_length=40)  # the sign-in button says "Sign in with <name>"
+    issuer: str | None = Field(None, max_length=500)
+    client_id: str | None = Field(None, max_length=255)
+    client_secret: str | None = Field(None, max_length=4096)  # empty or absent: keep the stored one
+    clear_client_secret: bool = False
+    generated_secret_from: str | None = Field(None, max_length=64)  # use Atrium's generated client at this provider
+    scopes: str | None = Field(None, max_length=500)
+    role_claim: str | None = Field(None, max_length=100)
+    admin_values: list[str] | None = Field(None, max_length=50)
+    operator_values: list[str] | None = Field(None, max_length=50)
+    default_role: UserRole | None = None
+    allow_http: bool | None = None
 
 
 def build_auth_router(hub: "Hub") -> APIRouter:
@@ -177,11 +196,62 @@ def build_auth_router(hub: "Hub") -> APIRouter:
                                httponly=True, samesite="lax")
         return response
 
+    # -- Sign-in & SSO settings (admin) --------------------------------------------------
+
+    def sso_fields(body: SsoBody) -> dict[str, Any]:
+        return body.model_dump(exclude_unset=True, exclude={"generated_secret_from"})
+
+    @router.get("/auth/sso")
+    async def get_sso() -> dict[str, Any]:
+        return sso_settings.view(hub)
+
+    @router.put("/auth/sso")
+    async def put_sso(body: SsoBody, principal: CurrentPrincipal) -> dict[str, Any]:
+        try:
+            secret = sso_settings.generated_secret(hub, body.generated_secret_from) if body.generated_secret_from else None
+            sso_settings.save(hub, sso_fields(body), principal.actor, generated_secret=secret)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        await evaluate_grc(principal)
+        return sso_settings.view(hub)
+
+    @router.post("/auth/sso/test")
+    async def test_sso(principal: CurrentPrincipal, body: SsoBody | None = None) -> dict[str, Any]:
+        """Run discovery (and fetch the signing keys) for the settings as they would be saved - nothing is stored."""
+        try:
+            settings = sso_settings.candidate(hub, sso_fields(body or SsoBody()))
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        client = OidcClient(settings, transport=hub.auth.oidc_transport)
+        try:
+            found = await client.check()
+        except OidcError as exc:
+            return {"ok": False, "detail": str(exc), "issuer": settings.oidc_issuer}
+        notes = []
+        if found["role_claim_advertised"] is False:
+            notes.append(f"The provider does not list the '{settings.oidc_role_claim}' claim - add it at the provider, "
+                         f"or everyone signs in as {settings.oidc_default_role}.")
+        if not found["pkce_s256"]:
+            notes.append("The provider does not advertise PKCE (S256); sign-in uses it anyway.")
+        hub.activity(principal.actor, "info", f"Tested the single sign-on settings against {found['issuer']}")
+        return {"ok": True, "detail": f"Discovery and {found['signing_keys']} signing key(s) found at {found['issuer']}",
+                "notes": notes, **found}
+
+    @router.delete("/auth/sso")
+    async def delete_sso(principal: CurrentPrincipal) -> dict[str, Any]:
+        sso_settings.remove(hub, principal.actor)
+        await evaluate_grc(principal)
+        return sso_settings.view(hub)
+
     # -- users (admin) -------------------------------------------------------------------
 
     @router.get("/users")
     async def list_users() -> list[dict[str, Any]]:
-        return [public_user(u) for u in auth.users()]
+        """Accounts, each with the person (People app) who has the same email, if any."""
+        from ..people import all_people, brief, person_for_user
+
+        everyone = all_people(hub)
+        return [{**public_user(u), "person": brief(person_for_user(u, everyone))} for u in auth.users()]
 
     @router.post("/users", status_code=201)
     async def create_user(body: NewUser, principal: CurrentPrincipal) -> dict[str, Any]:

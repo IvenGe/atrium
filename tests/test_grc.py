@@ -2,7 +2,7 @@ import time
 
 from hub.grc.baseline import CONTROLS, CONTROLS_BY_ID, FRAMEWORKS
 from hub.grc.checks import Snapshot, evaluate_controls, framework_scores
-from hub.models import Asset, ControlState, Host, Manifest, Policy, Tool, User
+from hub.models import Asset, ControlState, Host, Manifest, Policy, Tool, User, Vulnerability
 
 
 def snapshot(**overrides) -> Snapshot:
@@ -98,3 +98,45 @@ def test_dormant_accounts_control():
     control = CONTROLS_BY_ID["HB-AC-5"]
     assert control.refs == {"ISO27001": "A.5.18", "SOC2": "CC6.2", "NIS2": "21(2)(i)"}
     assert control.risk == ("Dormant accounts could be misused", 2, 3)
+
+
+def test_scan_coverage_control():
+    now = time.time()
+    scanned = Asset(id="1", name="web", scan_scope=True, last_scanned_at=now - 3 * 86400)
+    stale = Asset(id="2", name="db", scan_scope=True, last_scanned_at=now - 45 * 86400)
+    never = Asset(id="3", name="nas", scan_scope=True)
+    outside = Asset(id="4", name="printer")
+    retired = Asset(id="5", name="old", scan_scope=True, status="retired")
+
+    def state(*assets):
+        return by_id(evaluate_controls(snapshot(assets=list(assets)), {}))["HB-VM-2"]
+
+    assert state(outside).status == "manual"  # nothing in scope: assess by hand
+    assert state(scanned, outside, retired).status == "pass" and state(scanned).evidence[0].startswith("web: scanned")
+    partial = state(scanned, stale, never)
+    assert partial.status == "partial" and "db" in partial.detail and "nas" in partial.detail
+    assert state(stale, never).status == "fail"
+    control = CONTROLS_BY_ID["HB-VM-2"]
+    assert control.refs == {"ISO27001": "A.8.8", "SOC2": "CC7.1", "NIS2": "21(2)(e)"}
+    assert control.risk == ("Vulnerabilities on unscanned assets go unnoticed", 3, 4)
+
+
+def test_vulnerability_sla_control():
+    now = time.time()
+    in_scope = Asset(id="1", name="web", scan_scope=True)
+
+    def vuln(severity, due, status="open"):
+        return Vulnerability(id=f"v{severity}{due}", title=f"{severity} issue", severity=severity, status=status,
+                             host="10.0.0.5", due_at=now + due * 86400)
+
+    def state(assets=(), vulns=()):
+        return by_id(evaluate_controls(snapshot(assets=list(assets), vulnerabilities=list(vulns)), {}))["HB-VM-3"]
+
+    assert state().status == "manual"
+    assert state([in_scope]).status == "pass"  # scanned scope without findings
+    assert state(vulns=[vuln("critical", 3), vuln("medium", -10)]).status == "pass"  # only critical/high count
+    assert state(vulns=[vuln("high", -1)]).status == "partial"
+    failing = state(vulns=[vuln("critical", -1), vuln("critical", -5, "accepted"), vuln("high", -2, "fixed")])
+    assert failing.status == "fail" and "1 critical/high finding(s) past their SLA" in failing.detail
+    assert vuln("critical", -1).overdue and not vuln("critical", -1, "accepted").overdue and not vuln("low", 1).overdue
+    assert CONTROLS_BY_ID["HB-VM-3"].risk == ("Known critical vulnerabilities remain exploitable", 4, 5)

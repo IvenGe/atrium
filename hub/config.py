@@ -11,6 +11,14 @@ USER_ROLES = ("viewer", "operator", "admin")
 DEFAULT_MODEL = "claude-opus-5-5"
 
 
+OIDC_ENV = {
+    "oidc_issuer": "HUB_OIDC_ISSUER", "oidc_client_id": "HUB_OIDC_CLIENT_ID", "oidc_client_secret": "HUB_OIDC_CLIENT_SECRET",
+    "oidc_scopes": "HUB_OIDC_SCOPES", "oidc_role_claim": "HUB_OIDC_ROLE_CLAIM", "oidc_admin_values": "HUB_OIDC_ADMIN_VALUES",
+    "oidc_operator_values": "HUB_OIDC_OPERATOR_VALUES", "oidc_default_role": "HUB_OIDC_DEFAULT_ROLE",
+    "oidc_label": "HUB_OIDC_LABEL", "oidc_allow_http": "HUB_OIDC_ALLOW_HTTP",
+}
+
+
 def _csv(value: str | None) -> list[str]:
     return [v.strip() for v in (value or "").split(",") if v.strip()]
 
@@ -47,6 +55,10 @@ class Settings:
     health_interval: float = 60.0
     allowed_hosts: list[str] = field(default_factory=lambda: ["127.0.0.1", "localhost"])
     start_background_tasks: bool = True
+    flow_interval: float = 30.0  # seconds between checks for due data flows and running scans
+
+    # encryption key(s) for stored connector secrets; default: {data_dir}/secret.key, created on first use
+    secret_key: str | None = None
 
     # sign-in and sessions
     session_idle_minutes: int = 720
@@ -68,6 +80,9 @@ class Settings:
     oidc_default_role: str = "viewer"
     oidc_label: str = "Sign in with SSO"
     oidc_allow_http: bool = False  # plain-http issuers are otherwise only allowed on localhost
+    # names of the oidc_* fields set by HUB_OIDC_* variables (they win over the Sign-in & SSO settings stored in the
+    # database); None: settings made in code, where every field that differs from its default counts as set
+    oidc_env: tuple[str, ...] | None = None
 
     def __post_init__(self) -> None:
         self.public_url = (self.public_url or default_public_url(self.host, self.port)).rstrip("/")
@@ -91,6 +106,8 @@ class Settings:
             model=env.get("HUB_MODEL", DEFAULT_MODEL),
             autonomy=env.get("HUB_AUTONOMY", "assisted"),
             health_interval=float(env.get("HUB_HEALTH_INTERVAL", "60")),
+            flow_interval=float(env.get("HUB_FLOW_INTERVAL") or 30),
+            secret_key=env.get("HUB_SECRET_KEY") or None,
             session_idle_minutes=int(env.get("HUB_SESSION_IDLE_MINUTES") or 720),
             session_days=int(env.get("HUB_SESSION_DAYS") or 7),
             cookie_secure=_flag(env.get("HUB_COOKIE_SECURE")),
@@ -110,6 +127,7 @@ class Settings:
             oidc_allow_http=_flag(env.get("HUB_OIDC_ALLOW_HTTP")),
         )
         settings.allowed_hosts += _csv(env.get("HUB_ALLOWED_HOSTS"))
+        settings.oidc_env = tuple(name for name, var in OIDC_ENV.items() if (env.get(var) or "").strip())
         if settings.autonomy not in AUTONOMY_LEVELS:
             raise ValueError(f"HUB_AUTONOMY must be one of {', '.join(AUTONOMY_LEVELS)}")
         if settings.oidc_default_role not in USER_ROLES:

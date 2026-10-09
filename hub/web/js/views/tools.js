@@ -1,4 +1,8 @@
 import { del, get, post } from "../api.js";
+import { mountConnection } from "../connection.js";
+import { openExtend } from "../extensions.js";
+import { loadIdentity, openProviderPicker, runRegistration, statusBadge } from "../sso.js";
+import { strategyCards, wireStrategies } from "../strategies.js";
 import {
   actions, appIcon, badge, confirmDialog, diffView, emptyState, field, html, icon, modal, ring, setHTML, timeAgo, toast,
 } from "../ui.js";
@@ -81,12 +85,36 @@ async function renderList(el, ctx) {
 // ---------- detail ----------
 const CHECK_ICON = { pass: "check", warn: "minus", fail: "x" };
 
-function checksPanel(tool) {
+/** Single sign-on controls under the SSO check: connect to the selected provider, or pick another one. */
+function ssoControls(tool, idp) {
+  const row = idp?.providers.length ? idp.tools.find((t) => t.tool_id === tool.id) : null;
+  if (!row) return ""; // no provider in the suite, or the tool is one
+  const name = (pid) => idp.providers.find((p) => p.tool_id === pid)?.name || pid;
+  const pick = row.status === "needs_choice" ? "Choose provider" : row.status === "not_connected" ? "Other provider" : "Change provider";
+  return html`<div class="row" style="gap:6px;margin-top:8px">${statusBadge(row.status)}
+    ${row.status === "connected" ? html`<span class="faint" style="font-size:12.5px">through ${name(row.connected_to)}</span>` : ""}
+    ${row.pending ? html`<a style="font-size:12.5px" href="#/approvals">${row.pending.title}</a>` : ""}
+    <span class="spacer"></span>
+    <span class="row" style="gap:6px" data-min-role="operator">
+      ${row.status === "not_connected" && row.selected ? html`<button class="btn sm primary" data-act="sso-connect" data-provider="${row.selected}">${icon("link")}Connect to ${name(row.selected)}</button>` : ""}
+      <button class="btn sm" data-act="sso-pick">${icon("link")}${pick}</button></span></div>`;
+}
+
+function checksPanel(tool, idp) {
   if (!tool.report) return html`<p class="muted">Not analysed yet.</p>`;
   return html`${tool.report.checks.map((c) => html`<div class="check-row">
       <div class="ico ${c.status}">${icon(CHECK_ICON[c.status])}</div>
       <div style="flex:1;min-width:0"><div class="row" style="gap:8px"><b>${c.title}</b>${c.fix ? html`<span class="badge accent">${icon("wrench")}${c.fix.replace(/_/g, " ")}</span>` : ""}</div>
-      <div class="muted" style="overflow-wrap:anywhere">${c.detail}</div></div></div>`)}`;
+      <div class="muted" style="overflow-wrap:anywhere">${c.detail}</div>${c.id === "sso" ? ssoControls(tool, idp) : ""}</div></div>`)}`;
+}
+
+/** What an SSO patch connects to, and what a person still has to do. */
+export function ssoPlan(sso) {
+  if (!sso) return "";
+  return html`<div class="sso-plan"><div class="row" style="gap:6px">${icon("shield")}<span>Signs in through <b>${sso.provider_name}</b>
+      (${sso.protocol.toUpperCase()}) as client <code>${sso.client_id}</code></span></div>
+    ${sso.redirect_uris.length ? html`<div class="faint" style="margin-top:4px;overflow-wrap:anywhere">Redirect: ${sso.redirect_uris.join(", ")}</div>` : ""}
+    ${sso.steps.length ? html`<ol>${sso.steps.map((s) => html`<li>${s}</li>`)}</ol>` : ""}</div>`;
 }
 
 function manifestPanel(tool) {
@@ -112,7 +140,8 @@ function patchesPanel(tool) {
   return html`${tool.patches.map((p) => html`<div class="check-row" style="display:block">
       <div class="row" style="justify-content:space-between"><div class="row" style="gap:8px">${icon("wrench")}<b>${p.title}</b>${badge(p.status)}<span class="badge">${p.target}</span></div>
         <span class="faint" style="font-size:12px">${timeAgo(p.created_at)}</span></div>
-      <p class="muted" style="margin:6px 0">${p.rationale}</p>
+      <p class="muted" style="margin:6px 0;white-space:pre-line">${p.rationale}</p>
+      ${ssoPlan(p.sso)}
       ${p.branch ? html`<p style="font-size:12.5px">Branch <code>${p.branch}</code> in worktree <code>${p.location}</code></p>`
         : p.location ? html`<p style="font-size:12.5px">Written to <code>${p.location}</code></p>` : ""}
       ${p.error ? html`<p style="color:var(--bad)">${p.error}</p>` : ""}
@@ -120,14 +149,24 @@ function patchesPanel(tool) {
     </div>`)}`;
 }
 
-async function renderDetail(el, ctx, id) {
-  let tab = "integration";
+const TABS = ["integration", "connection", "manifest", "patches", "process", "supervisor"];
+
+async function renderDetail(el, ctx, id, initialTab) {
+  let tab = TABS.includes(initialTab) ? initialTab : "integration";
   let logs = [];
   let messages = [];
+  let strategies = [];
+  let idp = null;
+  let toolName = id;
+  let connection = null; // the Connection tab's panel: kept across redraws so unsaved settings survive live updates
   const draw = async () => {
-    const tool = await get(`/tools/${id}`);
+    const [tool, identity] = await Promise.all([get(`/tools/${id}`), loadIdentity().catch(() => null)]);
+    idp = identity;
+    toolName = tool.name;
+    const ssoRow = idp?.tools.find((t) => t.tool_id === id);
     if (tab === "process") logs = (await get(`/tools/${id}/logs`)).lines;
     if (tab === "supervisor") messages = await get(`/agents/${encodeURIComponent(`tool:${id}`)}/messages?limit=80`);
+    if (tab === "integration") strategies = tool.manifest ? await get(`/tools/${id}/strategies`).catch(() => []) : [];
     ctx.crumb(`Apps / ${tool.name}`);
     const m = tool.manifest;
     const busy = ["importing", "analyzing"].includes(tool.status);
@@ -153,14 +192,20 @@ async function renderDetail(el, ctx, id) {
           <button class="btn" data-act="health" data-min-role="operator" ${!m?.health?.url ? "disabled" : ""}>${icon("activity")}Check health</button>
           <button class="btn" data-act="analyze" data-min-role="operator" ${busy ? "disabled" : ""}>${icon("refresh")}Re-analyse</button>
           <button class="btn" data-act="patch" data-min-role="operator" ${!tool.report ? "disabled" : ""}>${icon("wrench")}Propose patches</button>
+          <button class="btn" data-act="extend" data-min-role="admin" ${!m ? "disabled" : ""} title="Close what Atrium itself lacks for ${tool.name} with an extension pack">${icon("puzzle")}Extend Atrium</button>
+          ${ssoRow?.applied?.can_register ? html`<button class="btn" data-act="sso-register" data-min-role="operator"
+            title="Register ${tool.name} as a client at its identity provider">${icon("shield")}Run provider registration</button>` : ""}
           <span class="spacer"></span>
           <button class="btn danger" data-act="remove" data-min-role="operator">${icon("trash")}Remove</button>
         </div>
       </section>
-      <div class="tabs">${[["integration", "Integration"], ["manifest", "Manifest"], ["patches", `Patches (${tool.patches.length})`], ["process", "Process"], ["supervisor", "Supervisor"]]
+      <div class="tabs">${[["integration", "Integration"], ["connection", "Connection"], ["manifest", "Manifest"], ["patches", `Patches (${tool.patches.length})`], ["process", "Process"], ["supervisor", "Supervisor"]]
         .map(([k, label]) => html`<button class="${tab === k ? "active" : ""}" data-act="tab" data-tab="${k}">${label}</button>`)}</div>
       <section class="card">
-        ${tab === "integration" ? checksPanel(tool) : ""}
+        ${tab === "integration" && strategies.length ? html`<h3 style="margin-bottom:10px">Integration strategies</h3>${strategyCards(id, strategies)}
+          <h3 style="margin:18px 0 2px">Checks</h3>` : ""}
+        ${tab === "integration" ? checksPanel(tool, idp) : ""}
+        ${tab === "connection" ? html`<div data-slot="connection"></div>` : ""}
         ${tab === "manifest" ? manifestPanel(tool) : ""}
         ${tab === "patches" ? patchesPanel(tool) : ""}
         ${tab === "process" ? html`<header><h3>${running ? `Running (pid ${tool.process.pid})` : "Not running"}</h3>
@@ -171,14 +216,28 @@ async function renderDetail(el, ctx, id) {
               <span><span class="subj">${msg.subject}</span> <span class="faint">${msg.kind}</span></span><span class="faint">${timeAgo(msg.ts)}</span></div>`)
             : html`<p class="faint">No messages yet.</p>`}` : ""}
       </section>`);
+    const slot = el.querySelector('[data-slot="connection"]');
+    if (slot) {
+      connection ||= mountConnection({ toolId: id, toolName: tool.name });
+      slot.replaceWith(connection.el);
+    } else {
+      connection = null;
+    }
+  };
+  const pickProvider = () => {
+    const row = idp?.tools.find((t) => t.tool_id === id);
+    if (idp?.providers.length) openProviderPicker({ toolId: id, toolName, data: idp, current: row?.choice || row?.pending?.provider || row?.connected_to || row?.selected, done: draw });
   };
   actions(el, {
-    tab: (d) => { tab = d.tab; draw(); },
+    tab: (d) => { tab = d.tab; history.replaceState(null, "", `#/tools/${encodeURIComponent(id)}/${tab}`); draw(); },
     async start() {
       const r = await post(`/tools/${id}/start`).catch((e) => toast(e.message, "bad"));
       if (r) toast(r.status === "pending_approval" ? "Waiting for approval" : r.status === "denied" ? r.reason : "Started", r.status === "denied" ? "bad" : "ok");
     },
-    async stop() { await post(`/tools/${id}/stop`).catch((e) => toast(e.message, "bad")); },
+    async stop() {
+      const r = await post(`/tools/${id}/stop`).catch((e) => toast(e.message, "bad"));
+      if (r?.status === "pending_approval") toast("Waiting for approval", "ok");
+    },
     async health() {
       const r = await post(`/tools/${id}/health`).catch((e) => toast(e.message, "bad"));
       if (r) toast(`${r.ok ? "Healthy" : "Unhealthy"}: ${r.detail}`, r.ok ? "ok" : "bad");
@@ -188,6 +247,18 @@ async function renderDetail(el, ctx, id) {
       const r = await post(`/tools/${id}/patches`).catch((e) => toast(e.message, "bad"));
       if (r) toast(r.patches.length ? `${r.patches.length} patch(es) proposed - see Approvals` : "No new patches needed", "ok");
     },
+    extend: () => openExtend({ id, name: toolName }, { claude: ctx.state.overview?.llm?.available !== false }),
+    async "sso-connect"(d) {
+      const r = await post(`/tools/${id}/sso`, { provider: d.provider }).catch((e) => toast(e.message, "bad"));
+      if (r) toast(r.patches.length ? "Single sign-on patch proposed - see Approvals" : r.pending ? "A patch is already waiting for approval" : "Nothing to do", "ok");
+      draw();
+    },
+    "sso-pick": () => pickProvider(),
+    "sso-register": () => {
+      const row = idp?.tools.find((t) => t.tool_id === id);
+      const provider = idp?.providers.find((p) => p.tool_id === row?.applied?.provider)?.name;
+      runRegistration(id, toolName, provider).then(draw);
+    },
     async remove() {
       if (!(await confirmDialog("Remove tool", "Remove this tool from the hub? Its supervisor is retired and cloned files are deleted. Your own folders are not touched.", "Remove"))) return;
       await del(`/tools/${id}`);
@@ -195,13 +266,19 @@ async function renderDetail(el, ctx, id) {
       location.hash = "#/tools";
     },
   });
+  wireStrategies(el, {
+    refresh: () => draw().catch(() => {}),
+    handlers: { choose_provider: pickProvider, connect_sso: pickProvider, import_provider: () => openImport() },
+  });
   await draw();
-  ctx.live(["tool", "patch"], draw, 500);
+  ctx.live(["tool", "patch", "approval"], draw, 500);
   ctx.live(["message"], () => (tab === "supervisor" ? draw() : null), 800);
+  ctx.live(["connection", "flow", "flow_removed"], () => connection?.refresh(), 500);
+  ctx.live(["connection", "flow", "flow_removed"], () => (tab === "integration" ? draw() : null), 800);
 }
 
 export async function render(el, ctx) {
-  const [id] = ctx.params;
-  if (id) return renderDetail(el, ctx, id);
+  const [id, tab] = ctx.params;
+  if (id) return renderDetail(el, ctx, id, tab);
   return renderList(el, ctx);
 }

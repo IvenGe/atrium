@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import pytest
 import yaml
 
 from hub.integration.analyzer import analyze_repo, list_files
@@ -65,6 +66,21 @@ def test_identity_provider_is_recognised(tmp_path: Path):
     assert m.auth.sso == "oidc"
     assert m.launch.port == 8080
     assert m.launch.command == "docker compose up"
+
+
+@pytest.mark.parametrize("folder,service,image,capabilities", [
+    ("greenbone-community", "gvmd", "registry.community.greenbone.net/community/gvmd:stable", {"vuln.scanner"}),
+    ("openvas", "openvas", "immauss/openvas", {"vuln.scanner"}),
+    ("ciso-assistant-community", "backend", "ghcr.io/intuitem/ciso-assistant-community/backend", {"grc.compliance", "grc.risks"}),
+    ("snipe-it", "app", "snipe/snipe-it", {"assets.inventory"}),
+    ("keycloak", "keycloak", "quay.io/keycloak/keycloak", {"auth.oidc", "identity.source"}),
+])
+def test_fabric_tools_are_recognised(tmp_path: Path, folder, service, image, capabilities):
+    root = tmp_path / folder
+    root.mkdir()
+    (root / "docker-compose.yml").write_text(yaml.safe_dump({"services": {service: {"image": image}}}))
+    m, _ = analyze_repo(root, folder, folder)
+    assert capabilities <= set(m.provides)
 
 
 def test_list_files_skips_vendored_directories(node_repo: Path):

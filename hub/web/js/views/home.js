@@ -36,6 +36,8 @@ export async function render(el, ctx) {
         ${stat("Agents", ov.agents, `${ov.agents_working} working now`, "bot", "#/agents")}
         ${stat("Awaiting approval", ov.approvals_pending, "agent commands & patches", "checkCircle", "#/approvals")}
         ${stat("Assets", ov.assets, "in the register", "box", "#/assets")}
+        ${stat("People", ov.people, ov.leavers ? `${ov.leavers} leaver${ov.leavers === 1 ? "" : "s"} still holding something` : "in the directory", "contact", ov.leavers ? "#/people/leavers" : "#/people")}
+        ${stat("Vulnerabilities", ov.vulnerabilities_open, ov.vulnerabilities_overdue ? `${ov.vulnerabilities_overdue} past their deadline` : "open findings", "bug", "#/vulnerabilities")}
         ${stat("Compliance", ov.compliance_score != null ? `${ov.compliance_score}%` : "-", `${ov.risks_open} open risks`, "shield", "#/compliance")}
       </div>
       ${!ov.llm.available ? html`<div class="notice" style="margin-bottom:16px">${icon("bot")}<div><b>Agents run in rules mode.</b>
@@ -53,5 +55,5 @@ export async function render(el, ctx) {
   };
   actions(el, { import: () => openImport() });
   await draw();
-  ctx.live(["tool", "tool_removed", "activity", "approval", "asset", "grc"], draw, 600);
+  ctx.live(["tool", "tool_removed", "activity", "approval", "asset", "grc", "vulnerability", "person", "person_removed"], draw, 600);
 }

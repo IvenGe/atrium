@@ -1,4 +1,5 @@
 import { del, get, patch, post } from "../api.js";
+import { followPicker, loadPeople, personChip, personOptions } from "../people.js";
 import {
   actions, badge, can, confirmDialog, emptyState, field, html, icon, md, modal, options, setHTML, timeAgo, toast,
 } from "../ui.js";
@@ -48,13 +49,24 @@ function controlRow(c) {
     <div data-min-role="operator"><button class="btn sm" data-act="override" data-id="${c.id}">${icon("edit")}Set</button></div></div>`;
 }
 
-function riskForm(r = {}) {
+/** Owner picker (a person in the People app) next to the free-text owner that is shown. */
+const ownerFields = (item, people) => html`
+  ${field("Owner", html`<select name="owner_person_id">${personOptions(people, item.owner_person_id, { none: "No person" })}</select>`,
+    people.length ? "The accountable person (People app)." : "No people yet - add them in the People app.")}
+  ${field("Owner as shown", html`<input name="owner" value="${item.owner || ""}" placeholder="person or team">`, "Free text; picking a person fills it.")}`;
+
+const ownerData = (d) => ({ owner: String(d.get("owner") || "").trim() || null, owner_person_id: d.get("owner_person_id") || null });
+
+/** An owner cell: the linked person, else the free text. */
+const ownerCell = (item, byId) => (byId[item.owner_person_id] ? personChip(byId[item.owner_person_id], { link: false }) : item.owner || html`<span class="faint">-</span>`);
+
+function riskForm(r = {}, people = []) {
   return html`${field("Title", html`<input name="title" value="${r.title || ""}" required>`)}
     ${field("Description", html`<textarea name="description" rows="3">${r.description || ""}</textarea>`)}
     <div class="form-grid">
       ${field("Likelihood (1-5)", html`<select name="likelihood">${options([1, 2, 3, 4, 5].map((n) => [String(n), String(n)]), String(r.likelihood || 3))}</select>`)}
       ${field("Impact (1-5)", html`<select name="impact">${options([1, 2, 3, 4, 5].map((n) => [String(n), String(n)]), String(r.impact || 3))}</select>`)}
-      ${field("Owner", html`<input name="owner" value="${r.owner || ""}">`)}
+      ${ownerFields(r, people)}
       ${field("Category", html`<input name="category" value="${r.category || "security"}">`)}
       ${field("Treatment", html`<select name="treatment">${options(["mitigate", "accept", "transfer", "avoid"], r.treatment || "mitigate")}</select>`)}
       ${field("Status", html`<select name="status">${options(["open", "in_treatment", "closed"], r.status || "open")}</select>`)}</div>
@@ -63,14 +75,14 @@ function riskForm(r = {}) {
 
 const riskData = (d) => ({
   title: d.get("title"), description: d.get("description"), likelihood: Number(d.get("likelihood")), impact: Number(d.get("impact")),
-  owner: d.get("owner") || null, category: d.get("category") || "security", treatment: d.get("treatment"), status: d.get("status"),
+  ...ownerData(d), category: d.get("category") || "security", treatment: d.get("treatment"), status: d.get("status"),
 });
 
-function policyForm(p = {}) {
+function policyForm(p = {}, people = []) {
   return html`<div class="form-grid">
       ${field("Title", html`<input name="title" value="${p.title || ""}" required>`)}
       ${field("Category", html`<select name="category">${options(POLICY_CATEGORIES, p.category || "security")}</select>`)}
-      ${field("Owner", html`<input name="owner" value="${p.owner || ""}">`)}
+      ${ownerFields(p, people)}
       ${field("Version", html`<input name="version" value="${p.version || "0.1"}">`)}
       ${field("Status", html`<select name="status">${options(["draft", "approved", "retired"], p.status || "draft")}</select>`)}
       ${field("Review due", html`<input name="review_due" type="date" value="${p.review_due || ""}">`)}</div>
@@ -78,15 +90,18 @@ function policyForm(p = {}) {
 }
 
 const policyData = (d) => ({
-  title: d.get("title"), category: d.get("category"), owner: d.get("owner") || null, version: d.get("version") || "0.1",
+  title: d.get("title"), category: d.get("category"), ...ownerData(d), version: d.get("version") || "0.1",
   status: d.get("status"), review_due: d.get("review_due") || null, body: d.get("body") || "",
 });
 
 export async function render(el, ctx) {
   let tab = ctx.params[0] || "overview";
   let data, risks, policies;
+  let people = [];
+  let byId = {};
   const draw = async () => {
-    [data, risks, policies] = await Promise.all([get("/grc"), get("/grc/risks"), get("/grc/policies")]);
+    [data, risks, policies, people] = await Promise.all([get("/grc"), get("/grc/risks"), get("/grc/policies"), loadPeople()]);
+    byId = Object.fromEntries(people.map((p) => [p.id, p]));
     const failing = data.controls.filter((c) => c.status === "fail" || c.status === "partial");
     const openRisks = risks.filter((r) => r.status !== "closed").sort((a, b) => b.score - a.score);
     const families = [...new Set(data.controls.map((c) => c.family))];
@@ -115,7 +130,7 @@ export async function render(el, ctx) {
               ${risks.slice().sort((a, b) => (a.status === "closed") - (b.status === "closed") || b.score - a.score).map((r) => html`<tr class="clickable" data-act="edit-risk" data-id="${r.id}">
                 <td><span class="badge" style="background:${riskColor(r.score)};color:#fff;border:0">${r.score}</span></td>
                 <td><b>${r.title}</b>${r.source !== "manual" ? html` <span class="badge accent">auto</span>` : ""}<div class="faint" style="font-size:12px">${r.category}</div></td>
-                <td>${r.owner || html`<span class="faint">-</span>`}</td><td>${r.treatment}</td><td>${badge(r.status)}</td><td class="faint">${timeAgo(r.reviewed_at || r.created_at)}</td></tr>`)}
+                <td>${ownerCell(r, byId)}</td><td>${r.treatment}</td><td>${badge(r.status)}</td><td class="faint">${timeAgo(r.reviewed_at || r.created_at)}</td></tr>`)}
               </tbody></table></div>` : emptyState("alert", "No risks recorded", "Add risks by hand; the GRC Supervisor also raises them when controls fail.")}</section>
           <section class="card"><header><h2>Heatmap</h2></header>${heatmap(risks)}</section></div>` : ""}
 
@@ -124,7 +139,8 @@ export async function render(el, ctx) {
             <button class="btn sm primary" data-act="add-policy">${icon("plus")}Blank policy</button></div></header>
           ${policies.length ? policies.map((p) => html`<div class="check-row"><div class="stat-icon">${icon("file")}</div>
             <div style="flex:1;min-width:0"><div class="row" style="gap:8px"><b>${p.title}</b>${badge(p.status)}<span class="badge">${p.category}</span><span class="faint">v${p.version}</span></div>
-              <div class="faint" style="font-size:12px">${p.owner ? `Owner ${p.owner}` : "No owner"}${p.review_due ? ` - review due ${p.review_due}` : ""} - updated ${timeAgo(p.updated_at)}</div></div>
+              <div class="faint row" style="font-size:12px;gap:4px">${byId[p.owner_person_id] ? html`Owner ${personChip(byId[p.owner_person_id])}` : p.owner ? `Owner ${p.owner}` : "No owner"}
+                <span>${p.review_due ? ` - review due ${p.review_due}` : ""} - updated ${timeAgo(p.updated_at)}</span></div></div>
             <div class="row" style="gap:6px">${p.status !== "approved" ? html`<button class="btn sm ok" data-act="approve-policy" data-id="${p.id}" data-min-role="operator">${icon("check")}Approve</button>` : ""}
               <button class="btn sm" data-act="edit-policy" data-id="${p.id}">${can("operator") ? html`${icon("edit")}Edit` : html`${icon("file")}View`}</button></div></div>`)
           : emptyState("file", "No policies yet", "Start from a template - the GRC Supervisor counts approved policies as evidence.")}</section>` : ""}`);
@@ -138,7 +154,7 @@ export async function render(el, ctx) {
 
   const openPolicy = (p, existing = false) => {
     const m = modal({
-      title: existing ? p.title : "New policy", body: policyForm(p), wide: true, submit: "Save", minRole: "operator",
+      title: existing ? p.title : "New policy", body: policyForm(p, people), wide: true, submit: "Save", minRole: "operator",
       footer: html`${existing ? html`<button type="button" class="btn danger" data-del style="margin-right:auto" data-min-role="operator">${icon("trash")}Delete</button>` : ""}
         <button type="button" class="btn" data-preview>Preview</button><button type="button" class="btn" data-close>${can("operator") ? "Cancel" : "Close"}</button>
         <button type="submit" class="btn primary" data-min-role="operator">Save</button>`,
@@ -148,6 +164,7 @@ export async function render(el, ctx) {
         draw();
       },
     });
+    followPicker(m.el.querySelector("[name=owner_person_id]"), m.el.querySelector("[name=owner]"), people);
     m.el.querySelector("[data-preview]").addEventListener("click", () => {
       modal({ title: "Preview", body: html`<div class="policy-body">${md(m.el.querySelector("[name=body]").value)}</div>`, submit: null, cancel: "Close", wide: true });
     });
@@ -176,16 +193,19 @@ export async function render(el, ctx) {
       m.el.querySelector("[data-auto]")?.addEventListener("click", async () => { m.close(); await patch(`/grc/controls/${c.id}`, { clear: true }); draw(); });
     },
     "add-risk"() {
-      modal({ title: "Add risk", body: riskForm(), submit: "Add", minRole: "operator", async onSubmit(d) { await post("/grc/risks", riskData(d)); toast("Risk added", "ok"); draw(); } });
+      const m = modal({ title: "Add risk", body: riskForm({}, people), submit: "Add", wide: true, minRole: "operator",
+        async onSubmit(d) { await post("/grc/risks", riskData(d)); toast("Risk added", "ok"); draw(); } });
+      followPicker(m.el.querySelector("[name=owner_person_id]"), m.el.querySelector("[name=owner]"), people);
     },
     "edit-risk"(d) {
       const r = risks.find((x) => x.id === d.id);
       const m = modal({
-        title: r.title, body: riskForm(r), wide: true, minRole: "operator",
+        title: r.title, body: riskForm(r, people), wide: true, minRole: "operator",
         footer: html`<button type="button" class="btn danger" data-del style="margin-right:auto" data-min-role="operator">${icon("trash")}Delete</button>
           <button type="button" class="btn" data-close>${can("operator") ? "Cancel" : "Close"}</button><button type="submit" class="btn primary" data-min-role="operator">Save &amp; mark reviewed</button>`,
         async onSubmit(f) { await patch(`/grc/risks/${r.id}`, riskData(f)); toast("Risk updated", "ok"); draw(); },
       });
+      followPicker(m.el.querySelector("[name=owner_person_id]"), m.el.querySelector("[name=owner]"), people);
       m.el.querySelector("[data-del]").addEventListener("click", async () => {
         m.close();
         if (await confirmDialog("Delete risk", `Delete "${r.title}"?`, "Delete")) { await del(`/grc/risks/${r.id}`); draw(); }
@@ -200,5 +220,5 @@ export async function render(el, ctx) {
     },
   });
   await draw();
-  ctx.live(["grc", "risk", "risk_removed", "policy", "policy_removed"], draw, 600);
+  ctx.live(["grc", "risk", "risk_removed", "policy", "policy_removed", "person_removed"], draw, 600);
 }

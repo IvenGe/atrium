@@ -31,6 +31,7 @@ api:
 
 auth:
   sso: oidc               # oidc | saml | oauth2 | ldap | none | unknown
+  provider: keycloak      # tool id of the suite's identity provider this tool signs in through (optional)
 
 provides: [api.rest, crm.customers, webhooks]
 consumes: [auth.oidc, db.postgres]
@@ -61,10 +62,37 @@ Common names the analyzer understands:
 | `cache.redis`, `queue.amqp`, `search.index` | Infrastructure services |
 | `storage.s3`, `storage.files` | Object / file storage |
 | `notify.email` | Outgoing mail |
-| `git.hosting`, `ci`, `chat`, `docs.wiki`, `ticketing`, `assets.inventory` | Application domains |
-| `monitoring.metrics`, `monitoring.dashboards`, `monitoring.uptime` | Observability |
+| `git.hosting`, `ci`, `chat`, `docs.wiki`, `ticketing`, `helpdesk`, `assets.inventory` | Application domains |
+| `vuln.scanner`, `grc.compliance`, `grc.risks`, `identity.source`, `directory.users` | Security domains: vulnerability scanners (OpenVAS / Greenbone), GRC tools (CISO Assistant), directories people come from (Keycloak, Okta) |
+| `siem`, `monitoring.alerts`, `logs.search`, `security.events` | Security monitoring (Wazuh, Graylog, ...) |
+| `monitoring.metrics`, `monitoring.dashboards`, `monitoring.uptime`, `monitoring.incidents` | Observability |
 
 The hub itself provides `events.bus` and `notify.webhook` to every tool.
+
+Some capabilities also decide what the hub offers a tool (besides its name):
+
+| Capability | Effect |
+| --- | --- |
+| `assets.inventory`, `vuln.scanner`, `grc.compliance` / `grc.risks`, `directory.users`, `scim` | the built-in connector detected for the tool (Snipe-IT, OpenVAS, CISO Assistant, Okta, SCIM), see [INTEGRATIONS.md](INTEGRATIONS.md#connectors) |
+| `siem`, `monitoring.alerts`, `monitoring.metrics`, `monitoring.uptime`, `monitoring.dashboards`, `logs.search`, `assets.inventory`, `vuln.scanner`, `grc.compliance`, `grc.risks` | the agent-team template proposed for the tool, see [AGENTS.md](AGENTS.md#proposals) |
+| `siem`, `monitoring.alerts`, `logs.search`, `security.events`; `ticketing`, `helpdesk`; `monitoring.uptime`, `monitoring.metrics`, `monitoring.incidents` | the hub-side gap (alerts, tickets, incidents) an extension pack can close, see [AGENTS.md](AGENTS.md#generated-packs) |
+
+## Single sign-on
+
+A tool whose manifest provides `auth.oidc` or `auth.saml` is an **identity provider** of the suite (Keycloak,
+authentik, Zitadel and Authelia are recognised by name; any other tool can declare it). Every other tool should sign
+in through one of them:
+
+- `auth.provider` names the provider the tool signs in through. A tool can declare it; the Patch Agent sets it (with
+  `auth.sso`) when an SSO patch is applied. The **Single sign-on** check passes once `auth.provider` is the provider
+  selected for the tool.
+- `auth.env_keys` is filled by the analyzer: the `OIDC_*`, `OPENID_*`, `OAUTH_*` and `OAUTH2_*` keys of the tool's
+  `.env` example. For a tool the hub does not know, the Patch Agent fills exactly these keys.
+
+The provider for a tool is chosen in this order: the choice made for that tool (Integration hub > Identity, or
+`POST /api/tools/{id}/sso`), the tool's `auth.provider`, the suite default, the only provider in the suite. With two or
+more providers and none of these, someone has to choose. See
+[INTEGRATIONS.md](INTEGRATIONS.md#single-sign-on-to-the-suites-identity-provider).
 
 ## Events
 

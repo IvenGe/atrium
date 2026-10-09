@@ -6,6 +6,8 @@ from fnmatch import fnmatch
 from typing import Any
 
 from ..models import Check, CompatibilityReport, Tool
+from . import identity, sso_catalog
+from .identity import IdentityPrefs
 
 # Capabilities the hub itself offers to every tool.
 BUILTIN_PROVIDES = {"events.bus", "notify.webhook"}
@@ -13,7 +15,66 @@ SSO_MODES = {"oidc", "saml", "oauth2", "ldap"}
 STATUS_POINTS = {"pass": 1.0, "warn": 0.5, "fail": 0.0}
 
 
-def evaluate_tool(tool: Tool, others: list[Tool]) -> CompatibilityReport:
+def sso_check(tool: Tool, others: list[Tool], idp: IdentityPrefs | None = None) -> Check:
+    """Single sign-on, and the strategy that closes the gap:
+
+    - no identity provider in the suite: pass when the tool supports SSO, else fail with "sso_proxy";
+    - the selected provider and the tool's native OIDC/SAML support (catalog, .env keys, manifest): "sso_connect";
+    - source code, no native SSO, Claude available: "sso_code";
+    - otherwise "sso_proxy" (SaaS: configure SSO in the vendor's console; no fix)."""
+    m = tool.manifest
+    assert m is not None
+    idp = idp or IdentityPrefs()
+
+    def check(status: str, detail: str, fix: str | None = None) -> Check:
+        return Check(id="sso", title="Single sign-on", status=status, weight=2, detail=detail, fix=fix)  # type: ignore[arg-type]
+
+    if identity.is_provider(tool):
+        protocols = " and ".join(p.split(".")[1].upper() for p in m.provides if p in ("auth.oidc", "auth.saml"))
+        return check("pass", f"Identity provider of the suite ({protocols}).")
+    providers = identity.list_providers(others, idp.settings)
+    if not providers:
+        if m.auth.sso in SSO_MODES:
+            return check("pass", f"Supports {m.auth.sso.upper()}.")
+        return check("fail", "No SSO support detected - users would need separate accounts. Import an identity provider "
+                             "(Keycloak, Authentik, Zitadel or Authelia) and the Patch Agent connects the tool to it natively.",
+                     "sso_proxy" if m.kind != "saas" else None)
+    if m.auth.sso == "ldap" and not m.auth.provider:
+        return check("pass", "Signs in against the directory (LDAP).")
+    selected = identity.select(tool, providers, idp)
+    provider = selected.provider
+    if provider is None:
+        names = ", ".join(p.name for p in selected.candidates)
+        return check("warn" if m.auth.sso in SSO_MODES else "fail",
+                     f"{len(selected.candidates)} identity providers in the suite ({names}). Choose the one {tool.name} "
+                     "should use, or a suite default, in Integration hub > Identity.")
+    if m.auth.provider == provider.tool_id and m.auth.sso in SSO_MODES:
+        return check("pass", f"Signs in through {provider.name} ({m.auth.sso.upper()}).")
+    previous = next((p.name for p in providers if p.tool_id == m.auth.provider), None)
+    prefix = f"Connected to {previous}, but {provider.name} is selected. " if previous else ""
+    how = sso_catalog.native(tool, provider, idp.catalog)
+    entry = sso_catalog.match(tool, idp.catalog)
+    proxied = "oauth2-proxy" in (m.auth.notes or "")
+    capable = how is not None or (m.auth.sso in SSO_MODES and not proxied)
+    status = "warn" if capable else "fail"
+    if how is not None:
+        name = entry.name if entry else tool.name
+        return check(status, f"{prefix}{name} supports {how[1].upper()} natively - the Patch Agent configures it and "
+                             f"registers it as a client at {provider.name}.", "sso_connect")
+    reason = entry.note if entry and entry.note else "No native single sign-on the hub can configure"
+    if entry and entry.protocols:
+        reason = f"{entry.name} supports {'/'.join(p.upper() for p in entry.protocols)} only, which {provider.name} does not offer"
+    if m.kind == "oss" and tool.path and idp.llm and not entry:
+        return check(status, f"{prefix}{reason}. The Patch Agent can add OpenID Connect sign-in through {provider.name} "
+                             "to the code (with Claude).", "sso_code")
+    if m.kind != "saas":
+        return check(status, f"{prefix}{reason}. An SSO proxy in front of it signs people in through {provider.name}.",
+                     "sso_proxy")
+    return check(status, f"{prefix}Configure single sign-on in the service's admin console (if your plan includes it), "
+                         f"with {provider.name} as the identity provider.")
+
+
+def evaluate_tool(tool: Tool, others: list[Tool], idp: IdentityPrefs | None = None) -> CompatibilityReport:
     m = tool.manifest
     if m is None:
         return CompatibilityReport(score=0, level="incompatible", checks=[
@@ -58,12 +119,7 @@ def evaluate_tool(tool: Tool, others: list[Tool]) -> CompatibilityReport:
                             detail="No API detected - other tools cannot automate it.",
                             fix="api_adapter" if adapter_side else None))
 
-    if m.auth.sso in SSO_MODES:
-        checks.append(Check(id="sso", title="Single sign-on", status="pass", weight=2, detail=f"Supports {m.auth.sso.upper()}."))
-    else:
-        checks.append(Check(id="sso", title="Single sign-on", status="fail", weight=2,
-                            detail="No SSO support detected - users would need separate accounts.",
-                            fix="sso_proxy" if m.kind != "saas" else None))
+    checks.append(sso_check(tool, others, idp))
 
     if "webhooks" in m.provides or m.events.emits:
         checks.append(Check(id="events", title="Emits events", status="pass",
@@ -108,8 +164,8 @@ def evaluate_tool(tool: Tool, others: list[Tool]) -> CompatibilityReport:
     return CompatibilityReport(score=score, level=level, checks=checks)
 
 
-def evaluate_suite(tools: list[Tool]) -> dict[str, CompatibilityReport]:
-    return {t.id: evaluate_tool(t, [o for o in tools if o.id != t.id]) for t in tools}
+def evaluate_suite(tools: list[Tool], idp: IdentityPrefs | None = None) -> dict[str, CompatibilityReport]:
+    return {t.id: evaluate_tool(t, [o for o in tools if o.id != t.id], idp) for t in tools}
 
 
 def suite_matrix(tools: list[Tool]) -> dict[str, Any]:
@@ -128,7 +184,7 @@ def suite_matrix(tools: list[Tool]) -> dict[str, Any]:
             assert ma and mb
             for capability in sorted(set(ma.provides) & set(mb.consumes)):
                 links.append({"source": a.id, "target": b.id, "type": "capability", "via": capability})
-            if ("auth.oidc" in ma.provides or "auth.saml" in ma.provides) and mb.auth.sso in SSO_MODES and "auth.oidc" not in mb.provides:
+            if mb.auth.provider == a.id and identity.is_provider(a):  # b signs in through a
                 links.append({"source": a.id, "target": b.id, "type": "identity", "via": f"SSO ({mb.auth.sso})"})
             for emitted in ma.events.emits:
                 for pattern in mb.events.listens:

@@ -3,14 +3,18 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import re
 from pathlib import Path
 from typing import Any
 
 from ..bus import Message
-from ..integration import importer
+from ..extensions import gaps as extension_gaps
+from ..extensions import registry as extension_registry
+from ..integration import connections, flows, identity, importer, strategies
 from ..integration.compatibility import evaluate_suite, suite_matrix
+from ..integration.identity import SSO_STRATEGIES
+from ..models import AGENT_PERMISSIONS
+from . import teams, toolkit
 from .base import BaseAgent
 
 HELP = (
@@ -28,9 +32,15 @@ open-source projects, closed-source applications and SaaS services together and 
 
 Your team:
 - One Tool Supervisor per imported tool (agent id "tool:<tool id>") - responsible for that application.
-- Patch Agent - fixes integration gaps with code patches on git branches, or adapters for closed/SaaS tools.
+- Patch Agent - fixes integration gaps with code patches on git branches, or adapters for closed/SaaS tools, and
+  repairs failing data flows.
 - Operator Agent - runs commands on this machine or on registered SSH hosts, under a command policy.
 - Asset Supervisor - the asset register. GRC Supervisor - controls, evidence, risks and policies.
+  Vulnerability Supervisor - scans of in-scope assets, findings and their remediation deadlines.
+- Data flows move assets, vulnerabilities, controls and risks between tools (through their connectors) and the
+  hub's apps; you propose them, the module supervisors run them.
+- Agent teams: a Tool Supervisor can lead a team of custom agents for its tool (propose_team); team agents act
+  through the same policies and approvals, within the guardrails an administrator sets.
 
 How to work:
 - Use the tools to look at real state before answering; do not guess tool ids, host ids or scores.
@@ -40,43 +50,12 @@ How to work:
 - Answer concisely in plain language, with short lists where they help."""
 
 
-def _tool(name: str, description: str, properties: dict[str, Any] | None = None) -> dict[str, Any]:
-    properties = properties or {}
-    return {
-        "name": name,
-        "description": description,
-        "strict": True,
-        "input_schema": {"type": "object", "properties": properties, "required": list(properties),
-                         "additionalProperties": False},
-    }
-
-
-STR = {"type": "string"}
-CHAT_TOOLS = [
-    _tool("list_tools", "List imported tools with kind, status, integration score and level."),
-    _tool("get_tool", "Full manifest, compatibility checks and patches of one tool.", {"tool_id": STR}),
-    _tool("integration_overview", "How tools connect: capability, identity and event links, port conflicts, unmet dependencies."),
-    _tool("import_tool", "Import a tool. source_type is github (URL or owner/repo), local (folder path) or saas (https URL).",
-          {"source_type": {"type": "string", "enum": ["github", "local", "saas"]}, "source": STR}),
-    _tool("reanalyze_tool", "Ask a tool's supervisor to re-analyse it and re-score the suite.", {"tool_id": STR}),
-    _tool("propose_patches", "Ask the Patch Agent to propose patches for every open integration gap of a tool.", {"tool_id": STR}),
-    _tool("request_code_patch", "Ask the Patch Agent for a custom source-code patch to a tool with source code.",
-          {"tool_id": STR, "goal": STR}),
-    _tool("run_command", "Run a shell command through the Operator Agent. target is 'local' or a host id from list_hosts.",
-          {"target": STR, "command": STR, "reason": STR}),
-    _tool("list_hosts", "List registered SSH hosts."),
-    _tool("tool_health", "Check the health of one tool now.", {"tool_id": STR}),
-    _tool("asset_summary", "Summary of the asset register."),
-    _tool("compliance_summary", "Framework scores, failing controls and top risks."),
-    _tool("list_approvals", "Actions waiting for human approval."),
-]
-
-
 class HubSupervisor(BaseAgent):
     role = "supervisor"
     title = "Hub Supervisor"
     uses_llm = True
     max_concurrency = 16  # imports can take minutes; chat must stay responsive
+    permissions = AGENT_PERMISSIONS  # its chat gets every tool of the shared toolkit
     description = ("Orchestrates the hub. Imports tools, assigns a supervisor to each, scores how well the suite "
                    "fits together, sends gaps to the Patch Agent, and plans multi-step work from chat.")
     default_instructions = SYSTEM
@@ -120,9 +99,26 @@ class HubSupervisor(BaseAgent):
             await self.tell("patcher", "propose", {"tool_id": tool_id, "fixes": [c.fix for c in gaps]})
         self.log("info", f"{tool.name} is in the suite: score {tool.report.score} ({tool.report.level}), "
                          f"{len(gaps)} gap(s) sent to the Patch Agent")
+        if identity.is_provider(tool):  # every other tool can now sign in through it
+            await self._sso_sweep(exclude=tool_id)
+        if teams.classify(self.hub, tool):  # a known complex tool (SIEM, GRC, inventory, scanner) gets a team proposal
+            await self.tell(f"tool:{tool_id}", "team.propose", {"auto": True})
+        await self.extend_for(tool)
         await self.tell("module:assets", "sync")
         await self.tell("module:grc", "evaluate")
         return {"tool_id": tool_id, "score": tool.report.score, "level": tool.report.level, "gaps": len(gaps)}
+
+    async def extend_for(self, tool) -> list[dict[str, Any]]:
+        """Hub-side gaps (a data domain Atrium does not model, no connector, unknown SSO) go to the Patch Agent, which
+        extends Atrium - once per tool (see PatchAgent.on_extension_propose)."""
+        if not extension_registry.allowed(self.hub) or extension_registry.covers_tool(self.hub, tool.id):
+            return []
+        gaps = [g.as_dict() for g in extension_gaps.detect(self.hub, tool)]
+        if gaps:
+            self.log("info", f"Atrium lacks {len(gaps)} thing(s) for {tool.name}: " + "; ".join(g["title"] for g in gaps)
+                     + " - asking the Patch Agent to extend Atrium", tool_id=tool.id)
+            await self.tell("patcher", "extension.propose", {"tool_id": tool.id, "auto": True})
+        return gaps
 
     async def on_tool_patched(self, body: dict[str, Any], msg: Message) -> dict[str, Any]:
         self.reevaluate()
@@ -139,6 +135,8 @@ class HubSupervisor(BaseAgent):
 
     async def on_tool_removed(self, body: dict[str, Any], msg: Message) -> dict[str, Any]:
         self.reevaluate()
+        if body.get("was_provider"):
+            await self._sso_sweep()
         await self.tell("module:assets", "sync")
         await self.tell("module:grc", "evaluate")
         return {}
@@ -147,6 +145,75 @@ class HubSupervisor(BaseAgent):
         self.reevaluate()
         await self.tell("module:grc", "evaluate")
         return suite_matrix(self.hub.tools())
+
+    async def on_identity_changed(self, body: dict[str, Any], msg: Message) -> dict[str, Any]:
+        """The suite default, a provider's settings or the providers changed: re-score and re-plan single sign-on."""
+        planned = await self._sso_sweep()
+        await self.tell("module:grc", "evaluate")
+        return {"replanned": planned}
+
+    async def _sso_sweep(self, exclude: str | None = None) -> list[str]:
+        """Ask the Patch Agent to (re)plan SSO for every tool whose single sign-on is not settled."""
+        self.reevaluate()
+        planned = []
+        for tool in self.hub.tools():
+            check = next((c for c in (tool.report.checks if tool.report else []) if c.id == "sso"), None)
+            stale = any(p.strategy in SSO_STRATEGIES and p.status == "proposed" for p in self.hub.patches(tool.id))
+            if tool.id != exclude and check and check.status != "pass" and (check.fix in SSO_STRATEGIES or stale):
+                await self.tell("patcher", "sso.plan", {"tool_id": tool.id, "rescore": False})
+                planned.append(tool.id)
+        return planned
+
+    # -- data flows --------------------------------------------------------------------
+
+    async def on_flows_plan(self, body: dict[str, Any], msg: Message) -> dict[str, Any]:
+        """Propose the data flows the connections make possible (see integration/strategies.py)."""
+        created = strategies.propose(self.hub, self.id)
+        if created:
+            verb = "Enabled" if self.hub.prefs["autonomy"] == "autonomous" else "Proposed"
+            self.log("info", f"{verb} {len(created)} data flow(s): " + "; ".join(f.title for f in created))
+        await self.propose_teams()
+        return {"proposed": [flows.public(self.hub, f) for f in created]}
+
+    async def propose_teams(self) -> list[str]:
+        """Tools with a connection get an agent team proposal - once (see ToolSupervisor.on_team_propose)."""
+        asked = []
+        for conn in connections.all_connections(self.hub):
+            if self.hub.get_tool(conn.id) and not teams.has_team_or_proposal(self.hub, conn.id):
+                await self.tell(f"tool:{conn.id}", "team.propose", {"auto": True})
+                asked.append(conn.id)
+        return asked
+
+    async def on_approval_decided(self, body: dict[str, Any], msg: Message) -> None:
+        approval = self.hub.approvals.get(body["approval_id"])
+        if approval is not None and approval.kind == "agent_team":  # members it proposed from chat
+            teams.settle(self.hub, approval.id, bool(body.get("approved")))
+            return
+        if approval is None or approval.kind != "flow":
+            return
+        flow = flows.get(self.hub, approval.payload.get("flow_id", ""))
+        if flow is not None and flow.status == "proposed":
+            flow.status = "enabled" if body.get("approved") else "disabled"
+            flow.approval_id = None
+            flows.save(self.hub, flow)
+            self.log("info", f"Data flow {flow.status}: {flow.title}", flow_id=flow.id)
+        if body.get("approved"):  # a rejected proposal stays "rejected"; the flow stays as a disabled record
+            self.hub.approvals.complete(approval.id, flow is not None, {"status": flow.status if flow else "removed"})
+
+    async def on_flow_failed(self, body: dict[str, Any], msg: Message) -> dict[str, Any]:
+        """A flow failed again: after REPAIR_AFTER consecutive failures, ask the Patch Agent for a repair (once - until
+        the repair is decided)."""
+        flow = flows.get(self.hub, str(body.get("flow_id")))
+        if flow is None or flow.failures < flows.REPAIR_AFTER or flow.repair:
+            return {"repair": False}
+        flow.repair = "requested"
+        flows.save(self.hub, flow)
+        self.log("warn", f"Data flow failed {flow.failures} times in a row, asking the Patch Agent for a repair: {flow.title}",
+                 flow_id=flow.id)
+        await self.tell("patcher", "integration.repair", {
+            "flow_id": flow.id, "tool_id": flow.tool_id, "error": body.get("error") or (flow.last_result or {}).get("error"),
+            "sample": flows.sanitize(body.get("sample")), "failures": flow.failures})
+        return {"repair": True}
 
     async def on_health_sweep(self, body: dict[str, Any], msg: Message) -> dict[str, Any]:
         tools = [t for t in self.hub.tools() if t.manifest and t.manifest.health.url and (t.running or t.manifest.kind == "saas")]
@@ -162,7 +229,7 @@ class HubSupervisor(BaseAgent):
 
     def reevaluate(self) -> None:
         tools = self.hub.tools()
-        for tool_id, report in evaluate_suite(tools).items():
+        for tool_id, report in evaluate_suite(tools, identity.load_prefs(self.hub)).items():
             tool = self.hub.get_tool(tool_id)
             if tool and tool.manifest:
                 tool.report = report
@@ -190,71 +257,13 @@ class HubSupervisor(BaseAgent):
             if len(self._history) > 80:  # start a fresh conversation instead of editing history
                 self._history = []
             self._history.append({"role": "user", "content": text})
-            response = None
-            for _ in range(12):
-                response = await self.hub.llm.create(system=self.instructions, messages=self._history,
-                                                     tools=CHAT_TOOLS, model=self.model, effort="medium")
-                self._history.append({"role": "assistant", "content": response.content})
-                if response.stop_reason == "refusal":
-                    return "I can't help with that request."
-                if response.stop_reason == "pause_turn":
-                    continue
-                if response.stop_reason != "tool_use":
-                    break
-                calls = [b for b in response.content if b.type == "tool_use"]
-                results = await asyncio.gather(*(self._run_chat_tool(b) for b in calls))
-                self._history.append({"role": "user", "content": list(results)})
-            reply = "\n".join(b.text for b in (response.content if response else []) if b.type == "text").strip()
-            if response is not None and response.stop_reason == "max_tokens":
-                reply += "\n\n(Reply cut off - ask me to continue.)"
-            return reply or "Done."
+            ctx = toolkit.ToolContext(self.hub, self, frozenset(self.permissions))
 
-    async def _run_chat_tool(self, block: Any) -> dict[str, Any]:
-        try:
-            result = await self._chat_tool(block.name, dict(block.input or {}))
-            content = json.dumps(result, default=str)[:20000]
-            return {"type": "tool_result", "tool_use_id": block.id, "content": content}
-        except Exception as exc:
-            return {"type": "tool_result", "tool_use_id": block.id, "content": f"Error: {exc}", "is_error": True}
+            async def run(name: str, args: dict[str, Any]) -> Any:
+                return await toolkit.execute(ctx, name, args)
 
-    async def _chat_tool(self, name: str, args: dict[str, Any]) -> Any:
-        hub = self.hub
-        if name == "list_tools":
-            return [{"id": t.id, "name": t.name, "kind": t.manifest.kind if t.manifest else None, "status": t.status,
-                     "score": t.report.score if t.report else None, "level": t.report.level if t.report else None,
-                     "running": t.running} for t in hub.tools()]
-        if name == "get_tool":
-            tool = hub.get_tool(args["tool_id"])
-            if tool is None:
-                raise ValueError("Unknown tool id")
-            return {"tool": tool.model_dump(mode="json"),
-                    "patches": [{"id": p.id, "title": p.title, "status": p.status} for p in hub.patches(tool.id)]}
-        if name == "integration_overview":
-            return suite_matrix(hub.tools())
-        if name == "import_tool":
-            tool = importer.create_tool(hub, importer.ImportRequest(source_type=args["source_type"], source=args["source"]))
-            await self.tell("supervisor", "tool.import", {"tool_id": tool.id})
-            return {"tool_id": tool.id, "status": "importing in the background"}
-        if name == "reanalyze_tool":
-            return await self.on_tool_imported({"tool_id": args["tool_id"]}, Message(sender="supervisor", recipient="supervisor", subject="reanalyze"))
-        if name == "propose_patches":
-            return await self.ask("patcher", "propose", {"tool_id": args["tool_id"]}, timeout=600)
-        if name == "request_code_patch":
-            return await self.ask("patcher", "custom", {"tool_id": args["tool_id"], "goal": args["goal"]}, timeout=900)
-        if name == "run_command":
-            return await self.ask("operator", "run", {"target": args["target"], "command": args["command"],
-                                                      "reason": args["reason"]}, timeout=900)
-        if name == "list_hosts":
-            return [{"id": h.id, "name": h.name, "address": h.address, "user": h.username} for h in hub.hosts()]
-        if name == "tool_health":
-            return await self.ask(f"tool:{args['tool_id']}", "health", timeout=30)
-        if name == "asset_summary":
-            return await self.ask("module:assets", "summary")
-        if name == "compliance_summary":
-            return await self.ask("module:grc", "summary")
-        if name == "list_approvals":
-            return [{"id": a.id, "title": a.title, "kind": a.kind} for a in hub.approvals.list("pending")]
-        raise ValueError(f"Unknown tool {name}")
+            return await toolkit.claude_loop(self.hub, self._history, system=self.instructions,
+                                             tools=toolkit.definitions(ctx.permissions), model=self.model, run=run)
 
     async def _rules_chat(self, text: str) -> str:
         low = text.lower().strip()

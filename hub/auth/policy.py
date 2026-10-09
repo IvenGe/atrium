@@ -26,7 +26,49 @@ SELF_SERVICE = {
     ("DELETE", "/api/auth/sessions"),
 }
 ADMIN_TREES = ("/api/users", "/api/tokens")
-AGENT_CONFIG = re.compile(r"/api/agents/[^/]+")
+# Single routes that need admin: settings (SLA, guardrails), agent definitions (create, configure, remove), the AI
+# model providers (they may hold API keys), the identity providers (credentials for sign-in), tool connections
+# (they hold the tools' API credentials), the Sign-in & SSO settings, disabling a person's Atrium account, extensions
+# and self-patches.
+# Everything else in the People app follows the default: viewers read, operators change people and links.
+ADMIN_ROUTES = (
+    ("PATCH", re.compile(r"/api/settings")),
+    ("PATCH", re.compile(r"/api/settings/guardrails")),
+    ("POST", re.compile(r"/api/agents")),
+    ("PATCH", re.compile(r"/api/agents/[^/]+")),
+    ("DELETE", re.compile(r"/api/agents/[^/]+")),
+    ("POST", re.compile(r"/api/llm/providers")),
+    ("PATCH", re.compile(r"/api/llm/providers/[^/]+")),
+    ("DELETE", re.compile(r"/api/llm/providers/[^/]+")),
+    ("POST", re.compile(r"/api/llm/providers/[^/]+/test")),
+    ("PUT", re.compile(r"/api/identity-providers/default")),
+    ("PATCH", re.compile(r"/api/identity-providers/[^/]+")),
+    ("POST", re.compile(r"/api/identity-providers/[^/]+/atrium")),
+    ("PUT", re.compile(r"/api/tools/[^/]+/connection")),
+    ("DELETE", re.compile(r"/api/tools/[^/]+/connection")),
+    # Sign-in & SSO settings (the client secret of Atrium's own sign-in)
+    ("GET", re.compile(r"/api/auth/sso")),
+    ("PUT", re.compile(r"/api/auth/sso")),
+    ("DELETE", re.compile(r"/api/auth/sso")),
+    ("POST", re.compile(r"/api/auth/sso/test")),
+    # People: disabling someone's Atrium account is account administration
+    ("POST", re.compile(r"/api/people/[^/]+/actions/disable_atrium_account")),
+    # Extensions and self-patches change Atrium itself: uploading, enabling, rolling back and removing packs, asking
+    # the Patch Agent to extend Atrium for a tool, and asking for or applying a change to Atrium's own code. (Deciding
+    # their approvals needs admin too - checked by the approvals route, per kind.) Reading them, and the records of
+    # extension domains (viewer reads, operator changes), follow the default.
+    ("POST", re.compile(r"/api/extensions")),
+    ("PATCH", re.compile(r"/api/extensions/[^/]+")),
+    ("DELETE", re.compile(r"/api/extensions/[^/]+")),
+    ("POST", re.compile(r"/api/extensions/[^/]+/rollback")),
+    ("POST", re.compile(r"/api/tools/[^/]+/extend")),
+    ("POST", re.compile(r"/api/self-patches")),
+    ("POST", re.compile(r"/api/self-patches/[^/]+/apply")),
+)
+# Reads that act on a tool with its stored credentials, so they need operator.
+OPERATOR_READS = (
+    ("GET", re.compile(r"/api/tools/[^/]+/connection/options/[^/]+")),
+)
 INTEGRATION = {("POST", "/api/bus/publish"), ("GET", "/api/health")}
 PASSWORD_CHANGE = {("GET", "/api/auth/me"), ("POST", "/api/auth/logout"), ("POST", "/api/auth/password")}
 
@@ -53,8 +95,10 @@ def required_role(method: str, path: str) -> str | None:
         return "viewer"
     if any(_under(path, root) for root in ADMIN_TREES):
         return "admin"
-    if method == "PATCH" and (path == "/api/settings" or AGENT_CONFIG.fullmatch(path)):
+    if any(method == m and rx.fullmatch(path) for m, rx in ADMIN_ROUTES):
         return "admin"
+    if any(method == m and rx.fullmatch(path) for m, rx in OPERATOR_READS):
+        return "operator"
     if method == "GET":
         return "viewer"
     return "operator"
