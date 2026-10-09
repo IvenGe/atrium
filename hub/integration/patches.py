@@ -10,6 +10,10 @@ patch. Patches land in one of three places:
 * ``manifest`` - a hub-side override of the tool's manifest (e.g. a new port).
 
 Every patch goes through the approval queue unless the hub runs autonomously.
+
+Single sign-on patches (``sso_connect``, ``sso_code``, ``sso_proxy``) also register the tool as a client at the
+suite's identity provider. Their client secret only exists as a placeholder until the patch is applied; then the
+hub generates it (once per tool and provider) and writes it into the adapter folder - never into a repository.
 """
 
 from __future__ import annotations
@@ -23,9 +27,12 @@ from typing import TYPE_CHECKING, Any
 import yaml
 
 from ..execution.runner import run_exec
-from ..models import FileChange, Manifest, Patch, Tool
+from ..models import FileChange, Manifest, Patch, SsoPlan, Tool
 from ..store import new_id
+from . import identity, sso_catalog
 from .analyzer import deep_merge
+from .identity import CLIENT_SECRET, COOKIE_SECRET, ClientSpec, IdentityPrefs, IdentityProvider
+from .sso_catalog import client_id_for, env_text, tool_url
 
 if TYPE_CHECKING:
     from ..core import Hub
@@ -34,11 +41,89 @@ STRATEGY_TITLES = {
     "add_manifest": "Adopt a hub manifest",
     "health_endpoint": "Add a health endpoint",
     "health_probe": "Add a health probe adapter",
+    "sso_connect": "Connect single sign-on to the identity provider",
+    "sso_code": "Add OpenID Connect sign-in to the code",
     "sso_proxy": "Put an SSO proxy in front of the tool",
     "event_adapter": "Add an event adapter",
     "api_adapter": "Add an API adapter skeleton",
     "reassign_port": "Move the tool to a free port",
 }
+OIDC_CALLBACK = "/auth/oidc/callback"  # where code patches put the OIDC callback
+
+
+def sso_code_goal(tool: Tool, provider: IdentityProvider) -> str:
+    url = tool_url(tool.manifest) if tool.manifest else ""
+    return (
+        f"Add OpenID Connect single sign-on (sign-in through {provider.name}) using the framework and libraries the "
+        "project already uses; add one well-maintained OIDC client library if it has none. Read the configuration only "
+        "from the environment variables OIDC_ISSUER (issuer URL; use its /.well-known/openid-configuration for discovery), "
+        f"OIDC_CLIENT_ID, OIDC_CLIENT_SECRET and OIDC_REDIRECT_URI (default {url}{OIDC_CALLBACK}). Use the authorization "
+        f"code flow with state, nonce and PKCE, validate the ID token, start the sign-in at GET /auth/oidc/login and handle "
+        f"the callback at GET {OIDC_CALLBACK}, then sign the person in with the application's existing session mechanism. "
+        "Keep the existing login working when OIDC_ISSUER is not set. Never hard-code or commit secrets. "
+        "Set health_path to an empty string."
+    )
+
+
+def selected_provider(tool: Tool, others: list[Tool], idp: IdentityPrefs | None = None) -> IdentityProvider | None:
+    idp = idp or IdentityPrefs()
+    return identity.select(tool, identity.list_providers(others, idp.settings), idp).provider
+
+
+def _sso_manifest(protocol: str, provider: IdentityProvider, how: str) -> dict[str, Any]:
+    return {"auth": {"sso": protocol, "provider": provider.tool_id, "notes": f"{how} ({provider.name})"}}
+
+
+def plan_sso_connect(tool: Tool, provider: IdentityProvider) -> Patch | None:
+    """Configure the tool's own OIDC/SAML support for `provider` and register it there as a client."""
+    config = sso_catalog.generate(tool, provider)
+    if config is None or tool.manifest is None:
+        return None
+    url, cid = tool_url(tool.manifest), client_id_for(tool)
+    spec = ClientSpec(client_id=config.entity_id or cid, name=tool.name, protocol=config.protocol,
+                      redirect_uris=config.redirect_uris, root_url=url, public=config.public_client, app_slug=cid,
+                      acs_url=config.acs_url, slo_url=config.slo_url)
+    reg = identity.registration(provider, spec, f"idp/{provider.tool_id}")
+    proto = config.protocol.upper()
+    secret_note = (" No client secret is involved." if config.protocol == "saml" or config.public_client else
+                   f" The client secret is generated when the patch is applied and written only to the hub's adapter "
+                   f"folder for {tool.name}.")
+    return Patch(
+        id=new_id("p_"), tool_id=tool.id, title=f"Connect to {provider.name} ({proto})", strategy="sso_connect",
+        target="adapter",
+        rationale=f"{tool.name} supports {proto} natively. This patch configures it to sign people in through "
+                  f"{provider.name} and registers it there as client {spec.client_id}.{secret_note}",
+        changes=[*config.files, *reg.files],
+        sso=SsoPlan(provider=provider.tool_id, provider_name=provider.name, protocol=config.protocol,
+                    client_id=spec.client_id, issuer=provider.client_issuer(cid), redirect_uris=config.redirect_uris,
+                    steps=[*reg.steps, *config.steps], register_script=reg.script),
+        manifest_update=_sso_manifest(config.protocol, provider, "connected by the Patch Agent"),
+    )
+
+
+def attach_sso(tool: Tool, provider: IdentityProvider, patch: Patch) -> Patch:
+    """Complete a code patch that adds OIDC sign-in: the client registration and the environment, kept by the hub."""
+    assert tool.manifest is not None
+    if any(identity.has_secret(c) for c in patch.changes):
+        raise ValueError("A code patch must not contain client secrets")
+    url, cid = tool_url(tool.manifest), client_id_for(tool)
+    redirect = f"{url}{OIDC_CALLBACK}"
+    spec = ClientSpec(client_id=cid, name=tool.name, redirect_uris=[redirect], root_url=url, app_slug=cid)
+    reg = identity.registration(provider, spec, f"idp/{provider.tool_id}")
+    issuer = provider.client_issuer(cid)
+    env = FileChange(path="sso/oidc.env", content=env_text(
+        f"Environment for {tool.name}'s OpenID Connect sign-in through {provider.name}",
+        {"OIDC_ISSUER": issuer, "OIDC_CLIENT_ID": cid, "OIDC_CLIENT_SECRET": CLIENT_SECRET, "OIDC_REDIRECT_URI": redirect}))
+    patch.adapter_changes = [env, *reg.files]
+    patch.sso = SsoPlan(provider=provider.tool_id, provider_name=provider.name, protocol="oidc", client_id=cid,
+                        issuer=issuer, redirect_uris=[redirect], register_script=reg.script,
+                        steps=[*reg.steps, f"Start {tool.name} with the variables from sso/oidc.env in the hub's adapter "
+                                           "folder (not committed to the repository)."])
+    patch.manifest_update = {**patch.manifest_update, **_sso_manifest("oidc", provider, "OIDC login added by a code patch")}
+    patch.rationale = (f"{patch.rationale}\n\nThe code reads OIDC_ISSUER, OIDC_CLIENT_ID and OIDC_CLIENT_SECRET from the "
+                       f"environment. The hub registers {tool.name} at {provider.name} as client {cid}; the values, with a "
+                       "secret generated when the patch is applied, stay in the hub's adapter folder.")
+    return patch
 
 
 def manifest_yaml(manifest: Manifest) -> str:
@@ -53,11 +138,7 @@ def _free_port(start: int, used: set[int]) -> int:
     return port
 
 
-def _oidc_provider(others: list[Tool]) -> Tool | None:
-    return next((o for o in others if o.manifest and "auth.oidc" in o.manifest.provides), None)
-
-
-def plan_patch(tool: Tool, others: list[Tool], strategy: str, hub_url: str) -> Patch | None:
+def plan_patch(tool: Tool, others: list[Tool], strategy: str, hub_url: str, idp: IdentityPrefs | None = None) -> Patch | None:
     """Deterministic, template-based patch for one integration gap (no LLM needed)."""
     m = tool.manifest
     if m is None:
@@ -65,6 +146,10 @@ def plan_patch(tool: Tool, others: list[Tool], strategy: str, hub_url: str) -> P
     pid = new_id("p_")
     title = STRATEGY_TITLES.get(strategy, strategy)
     port = m.launch.port
+
+    if strategy == "sso_connect":
+        provider = selected_provider(tool, others, idp)
+        return plan_sso_connect(tool, provider) if provider else None
 
     if strategy == "add_manifest":
         target = "repo" if (m.kind == "oss" and tool.path) else "adapter"
@@ -98,9 +183,11 @@ def plan_patch(tool: Tool, others: list[Tool], strategy: str, hub_url: str) -> P
     if strategy == "sso_proxy":
         if not port:
             return None
-        provider = _oidc_provider(others)
-        issuer = f"http://localhost:{provider.manifest.launch.port}/realms/hub" if provider and provider.manifest and provider.manifest.launch.port else "https://idp.example.com/realms/hub"
+        provider = selected_provider(tool, others, idp)
+        cid = client_id_for(tool)
+        issuer = provider.client_issuer(cid) if provider else "https://idp.example.com/realms/hub"
         proxy_port = 4180 + zlib.crc32(tool.id.encode()) % 400
+        proxy_url = f"http://localhost:{proxy_port}"
         compose = textwrap.dedent(f"""\
             # SSO proxy for {tool.name}, generated by the Hub Patch Agent.
             # Users sign in once with the suite's identity provider; the proxy forwards to {tool.name}.
@@ -127,20 +214,39 @@ def plan_patch(tool: Tool, others: list[Tool], strategy: str, hub_url: str) -> P
         env = textwrap.dedent(f"""\
             # Fill these in, then rename to .env (never commit real secrets)
             OIDC_ISSUER_URL={issuer}
-            OIDC_CLIENT_ID=hub-{tool.id}
+            OIDC_CLIENT_ID={cid}
             OIDC_CLIENT_SECRET=change-me
             # 32 random bytes, base64: python -c "import os,base64;print(base64.urlsafe_b64encode(os.urandom(32)).decode())"
             COOKIE_SECRET=change-me
             """)
-        via = f" using {provider.name} as identity provider" if provider else ""
+        changes = [FileChange(path="sso-proxy/docker-compose.yml", content=compose),
+                   FileChange(path="sso-proxy/.env.example", content=env)]
+        update: dict[str, Any] = {"auth": {"sso": "oidc", "notes": "via oauth2-proxy adapter"}, "ui": {"url": proxy_url}}
+        if provider is None:
+            return Patch(
+                id=pid, tool_id=tool.id, title=title, strategy=strategy, target="adapter",
+                rationale=f"{tool.name} has no single sign-on. An oauth2-proxy in front of it enforces suite-wide login "
+                          "without changing the tool itself. Import an identity provider to connect it.",
+                changes=changes, manifest_update=update,
+            )
+        redirect = f"{proxy_url}/oauth2/callback"
+        spec = ClientSpec(client_id=cid, name=f"{tool.name} (SSO proxy)", redirect_uris=[redirect], root_url=proxy_url, app_slug=cid)
+        reg = identity.registration(provider, spec, f"idp/{provider.tool_id}")
+        changes.insert(1, FileChange(path="sso-proxy/.env", content=env_text(
+            f"oauth2-proxy for {tool.name}, signing in through {provider.name}",
+            {"OIDC_ISSUER_URL": issuer, "OIDC_CLIENT_ID": cid, "OIDC_CLIENT_SECRET": CLIENT_SECRET, "COOKIE_SECRET": COOKIE_SECRET})))
+        update["auth"]["provider"] = provider.tool_id
         return Patch(
-            id=pid, tool_id=tool.id, title=title, strategy=strategy, target="adapter",
-            rationale=f"{tool.name} has no single sign-on. An oauth2-proxy in front of it enforces suite-wide login{via} "
-                      "without changing the tool itself.",
-            changes=[FileChange(path="sso-proxy/docker-compose.yml", content=compose),
-                     FileChange(path="sso-proxy/.env.example", content=env)],
-            manifest_update={"auth": {"sso": "oidc", "notes": "via oauth2-proxy adapter"},
-                             "ui": {"url": f"http://localhost:{proxy_port}"}},
+            id=pid, tool_id=tool.id, title=f"{title} ({provider.name})", strategy=strategy, target="adapter",
+            rationale=f"{tool.name} has no single sign-on {provider.name} can be connected to natively. An oauth2-proxy in "
+                      f"front of it enforces suite-wide login using {provider.name} as identity provider without changing "
+                      f"the tool itself; the proxy is registered at {provider.name} as client {cid}. Its client and cookie "
+                      "secrets are generated when the patch is applied and written only to the hub's adapter folder.",
+            changes=[*changes, *reg.files], manifest_update=update,
+            sso=SsoPlan(provider=provider.tool_id, provider_name=provider.name, protocol="oidc", client_id=cid,
+                        issuer=issuer, redirect_uris=[redirect], register_script=reg.script,
+                        steps=[*reg.steps, f"Start the proxy: docker compose up -d in sso-proxy/ of the adapter folder, then "
+                                           f"open {tool.name} at {proxy_url}."]),
         )
 
     if strategy == "event_adapter":
@@ -294,17 +400,37 @@ async def _is_git_repo(path: Path) -> bool:
     return result.exit_code == 0 and result.output.strip() == "true"
 
 
+def write_adapter(workspace: Path, tool_id: str, patch: Patch, changes: list[FileChange]) -> Path:
+    """Write files to the tool's adapter folder; SSO placeholders become the generated secrets (files kept private)."""
+    root = workspace / "adapters" / tool_id
+    private = {c.path for c in changes if identity.has_secret(c)}
+    if patch.sso:
+        changes = identity.fill_secrets(workspace, tool_id, patch.sso.provider, changes)
+    write_changes(root, changes)
+    for path in private:
+        identity.private_file(root / safe_relative(path))
+    return root
+
+
+def _refuse_secrets(workspace: Path, tool_id: str, patch: Patch) -> None:
+    if patch.sso is None:
+        return
+    known = identity.existing_secrets(workspace, tool_id, patch.sso.provider)
+    if any(identity.has_secret(c) or any(s in c.content for s in known) for c in patch.changes):
+        raise ValueError("Refusing to commit a client secret to the tool's repository")
+
+
 async def apply_patch(hub: "Hub", patch: Patch) -> Patch:
     tool = hub.get_tool(patch.tool_id)
     if tool is None or tool.manifest is None:
         raise ValueError("The tool for this patch no longer exists")
     workspace = hub.settings.workspace
+    adapters = workspace / "adapters" / tool.id
 
     if patch.target == "adapter":
-        root = workspace / "adapters" / tool.id
-        write_changes(root, patch.changes)
-        patch.location = str(root)
+        patch.location = str(write_adapter(workspace, tool.id, patch, patch.changes))
     elif patch.target == "repo":
+        _refuse_secrets(workspace, tool.id, patch)
         repo = Path(tool.path or "")
         if repo.is_dir() and await _is_git_repo(repo):
             branch = f"hub/{patch.strategy.replace('_', '-')}-{patch.id[2:8]}"
@@ -326,6 +452,10 @@ async def apply_patch(hub: "Hub", patch: Patch) -> Patch:
             write_changes(root, patch.changes)
             patch.location = str(root)
     # "manifest" patches only change the hub's view of the tool.
+    if patch.adapter_changes:
+        write_adapter(workspace, tool.id, patch, patch.adapter_changes)
+    if patch.sso and patch.sso.register_script:
+        patch.sso.register_command = f'bash "{(adapters / safe_relative(patch.sso.register_script)).as_posix()}"'
 
     if patch.manifest_update:
         merged = deep_merge(tool.manifest.model_dump(), patch.manifest_update)

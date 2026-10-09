@@ -9,6 +9,7 @@ import * as agents from "./views/agents.js";
 import * as approvals from "./views/approvals.js";
 import * as operator from "./views/operator.js";
 import * as assets from "./views/assets.js";
+import * as vulnerabilities from "./views/vulnerabilities.js";
 import * as compliance from "./views/compliance.js";
 import * as settings from "./views/settings.js";
 import * as users from "./views/users.js";
@@ -23,6 +24,7 @@ export const APPS = [
   { route: "approvals", name: "Approvals", icon: "checkCircle", color: "#ca8a04", view: approvals },
   { route: "operator", name: "Operator", icon: "terminal", color: "#334155", view: operator },
   { route: "assets", name: "Assets", icon: "box", color: "#0d9488", view: assets },
+  { route: "vulnerabilities", name: "Vulnerabilities", icon: "bug", color: "#dc2626", view: vulnerabilities },
   { route: "compliance", name: "Compliance hub", short: "Compliance", icon: "shield", color: "#16a34a", view: compliance },
   { route: "settings", name: "Settings", icon: "sliders", color: "#64748b", view: settings },
   { route: "users", name: "Users & access", short: "Users", icon: "users", color: "#db2777", view: users, minRole: "admin" },
@@ -47,8 +49,8 @@ function chrome() {
   const nav = [
     ...APPS.slice(0, 2),
     { section: "Run the suite" }, ...APPS.slice(2, 6),
-    { section: "Govern" }, ...APPS.slice(6, 8),
-    { section: "" }, ...APPS.slice(8),
+    { section: "Govern" }, ...APPS.slice(6, 9),
+    { section: "" }, ...APPS.slice(9),
   ];
   setHTML($("nav"), nav.map((a) => a.section !== undefined
     ? html`<div class="section">${a.section}</div>`
@@ -159,10 +161,13 @@ async function openPalette() {
   const operatorActions = can("operator") ? [
     { label: "Import a tool", kind: "Action", icon: "plus", run: () => tools.openImport() },
     { label: "Run a command", kind: "Action", icon: "terminal", go: "#/operator" },
+    { label: "Scan for vulnerabilities", kind: "Action", icon: "radar", go: "#/vulnerabilities" },
     { label: "Ask the Hub Supervisor", kind: "Action", icon: "chat", go: "#/agents" },
   ] : [];
   const entries = [
     ...APPS.filter((a) => can(a.minRole)).map((a) => ({ label: a.name, kind: "Page", icon: a.icon, go: `#/${a.route}` })),
+    { label: "Data flows", kind: "Page", icon: "flow", go: "#/integration", sub: "Integration hub" },
+    { label: "Scan scope", kind: "Page", icon: "radar", go: "#/vulnerabilities/scope", sub: "Vulnerabilities" },
     ...operatorActions,
     ...(session.user?.has_password ? [{ label: "Change password", kind: "Account", icon: "key", run: openChangePassword }] : []),
     { label: "Sessions", kind: "Account", icon: "monitor", run: openSessions },
@@ -215,15 +220,17 @@ function getStarted() {
       A Hub Supervisor agent coordinates one supervisor agent per tool, a Patch Agent that makes tools fit, and an Operator Agent that runs commands.</p>
       ${step(1, "Import your first tool", "From GitHub, a folder on this machine, or a SaaS URL with its OpenAPI spec.", "import", "Import", "operator")}
       ${step(2, "Connect a server", "Register an SSH host so the Operator can run commands and the Asset Supervisor can inventory it.", "host", "Add host", "operator")}
-      ${step(3, "Review approvals", "Agents ask before they change anything. Approve or reject their patches and commands.", "approvals", "Open")}
-      ${step(4, "Check compliance", "The GRC Supervisor maps live evidence to ISO 27001, SOC 2 and NIS2 controls.", "compliance", "Open")}
-      ${can("admin") ? step(5, "Invite your team", "Give people their own accounts as viewer, operator or admin, and create API tokens for integrations.", "users", "Open") : ""}
+      ${step(3, "Let tools exchange data", "Set up a tool's API in its Connection tab (Snipe-IT, OpenVAS, CISO Assistant or any REST API); the hub proposes data flows into Assets, Vulnerabilities and Compliance.", "flows", "Open")}
+      ${step(4, "Review approvals", "Agents ask before they change anything. Approve or reject their patches, data flows, scans and repairs.", "approvals", "Open")}
+      ${step(5, "Check compliance", "The GRC Supervisor maps live evidence to ISO 27001, SOC 2 and NIS2 controls.", "compliance", "Open")}
+      ${can("admin") ? step(6, "Invite your team", "Give people their own accounts as viewer, operator or admin, and create API tokens for integrations.", "users", "Open") : ""}
       ${llm && !llm.available ? html`<div class="notice" style="margin-top:14px">${icon("bot")}<div><b>Agents are in rules mode.</b>
         <span class="muted">Set <code>ANTHROPIC_API_KEY</code> before starting the hub to let them plan in plain language and write code patches with Claude.</span></div></div>` : ""}`,
   });
   actions(m.el, {
     import: () => { m.close(); tools.openImport(); },
     host: () => { m.close(); location.hash = "#/operator"; setTimeout(() => operator.openAddHost(), 50); },
+    flows: () => { m.close(); location.hash = "#/integration"; },
     approvals: () => { m.close(); location.hash = "#/approvals"; },
     compliance: () => { m.close(); location.hash = "#/compliance"; },
     users: () => { m.close(); location.hash = "#/users"; },

@@ -8,17 +8,23 @@ from typing import Any
 from ..bus import Message
 from ..grc.baseline import CONTROLS, CONTROLS_BY_ID
 from ..grc.checks import Snapshot, evaluate_controls, framework_scores
-from ..models import Asset, ControlState, Patch, Policy, Risk
+from ..integration import flows
+from ..models import Asset, ControlState, Flow, Patch, Policy, Risk, Vulnerability
 from ..store import new_id
-from .base import BaseAgent
+from .fabric import FlowOwner
+
+TREATMENTS = ("mitigate", "accept", "transfer", "avoid")
 
 
-class GrcSupervisor(BaseAgent):
+class GrcSupervisor(FlowOwner):
     role = "module-supervisor"
     title = "GRC Supervisor"
     max_concurrency = 1  # evaluations must not interleave
     description = ("Responsible for the Compliance hub: evaluates controls against live hub state, collects evidence, "
-                   "maps it to ISO 27001, SOC 2 and NIS2, and opens or closes risks when controls fail or recover.")
+                   "maps it to ISO 27001, SOC 2 and NIS2, opens or closes risks when controls fail or recover, pushes "
+                   "controls and evidence to GRC tools and pulls their risk scenarios into the risk register.")
+    flow_domains = ("controls", "risks")
+    permissions = ("read", "tool_api", "flows", "grc_write", "agents")
 
     def __init__(self, hub):
         super().__init__(hub, "module:grc", "GRC Supervisor", scope="grc")
@@ -30,7 +36,64 @@ class GrcSupervisor(BaseAgent):
             policies=hub.all("policies", Policy), patches=hub.all("patches", Patch), autonomy=hub.prefs["autonomy"],
             audit_entries=hub.store.count("activity") + hub.store.count("messages"),
             users=hub.auth.users(), oidc_enabled=hub.auth.oidc.enabled,
+            vulnerabilities=hub.all("vulnerabilities", Vulnerability), guardrails=hub.prefs["guardrails"],
         )
+
+    # -- data flows ------------------------------------------------------------------
+
+    async def execute(self, flow: Flow, body: dict[str, Any], msg: Message) -> dict[str, Any]:
+        if flow.domain == "controls" and flow.direction == "push":
+            states = self.hub.all("controls", ControlState)
+            records = [control_record(c) for c in control_catalog(states)]
+            return {"counts": await self.push_records(flow, records, label=lambda r: r["ref_id"])}
+        if flow.domain == "risks" and flow.direction == "pull":
+            return await self._pull_risks(flow)
+        raise ValueError(f"The GRC Supervisor cannot {flow.direction} {flow.domain}")
+
+    async def _pull_risks(self, flow: Flow) -> dict[str, Any]:
+        records, info = await self.pull_records(flow)
+        tool_id, source = flow.tool_id, f"sync:{flow.tool_id}"
+        tool = self.hub.get_tool(tool_id)
+        known = flows.links(self.hub, tool_id, "risks")
+        by_external = {link.external_id: hub_id for hub_id, link in known.items()}
+        risks = {r.id: r for r in self.hub.all("risks", Risk)}
+        counts = {"total": len(records), "created": 0, "updated": 0, "unchanged": 0, "closed": 0, "dropped": info["dropped"]}
+        seen: set[str] = set()
+        for record in records:
+            digest = flows.content_hash(record)
+            risk = risks.get(by_external.get(record["external_id"], ""))
+            if risk is not None and known[risk.id].hash == digest:
+                counts["unchanged"] += 1
+                seen.add(risk.id)
+                continue
+            treatment = (record.get("treatment") or "").strip()
+            description = record["description"]
+            if treatment and treatment.lower() not in TREATMENTS:
+                description = (description + "\n\n" if description else "") + f"Treatment: {treatment}"
+            values = {"title": record["title"], "description": description, "likelihood": record["likelihood"],
+                      "impact": record["impact"], "status": record["status"], "reviewed_at": time.time()}
+            if treatment.lower() in TREATMENTS:
+                values["treatment"] = treatment.lower()
+            if risk is None:
+                risk = Risk(id=new_id("r_"), source=source, category="security", **values)
+                counts["created"] += 1
+            else:
+                risk = risk.model_copy(update=values)
+                counts["updated"] += 1
+            self.hub.save("risks", risk, "risk")
+            flows.put_link(self.hub, tool_id, "risks", risk.id, record["external_id"], digest)
+            seen.add(risk.id)
+        if flow.options.get("retire_missing", True):
+            for hub_id in set(known) - seen:
+                risk = risks.get(hub_id)
+                if risk is None:
+                    flows.drop_link(self.hub, tool_id, "risks", hub_id)
+                elif risk.source == source and risk.status != "closed":
+                    risk.status = "closed"
+                    risk.description += f"\nClosed: no longer in {tool.name if tool else tool_id}."
+                    self.hub.save("risks", risk, "risk")
+                    counts["closed"] += 1
+        return {"counts": counts}
 
     async def on_evaluate(self, body: dict[str, Any], msg: Message) -> dict[str, Any]:
         overrides = {s.id: s for s in self.hub.all("controls", ControlState)}
@@ -91,6 +154,18 @@ class GrcSupervisor(BaseAgent):
                 self.hub.save("risks", risk, "risk")
                 closed += 1
         return opened, closed
+
+
+def control_record(control: dict[str, Any]) -> dict[str, Any]:
+    """A catalog entry as a canonical control record (external_id and ref_id are the hub control id)."""
+    evidence = [control["detail"]] if control.get("detail") else []
+    evidence += [str(e) for e in control.get("evidence") or [] if str(e) not in evidence]
+    if control.get("manual") and control.get("note"):
+        evidence.append(f"Set by hand: {control['note']}")
+    return {"hub_id": control["id"], "external_id": control["id"], "ref_id": control["id"], "name": control["title"],
+            "description": control["description"], "status": control["status"], "evidence": evidence,
+            "refs": control["refs"], "family": control["family"], "detail": control.get("detail") or "",
+            "evaluated_at": control.get("evaluated_at")}
 
 
 def control_catalog(states: list[ControlState]) -> list[dict[str, Any]]:

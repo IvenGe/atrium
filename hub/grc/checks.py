@@ -4,14 +4,16 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
-from typing import Callable
+from typing import Any, Callable
 
-from ..models import Asset, ControlState, Host, Patch, Policy, Risk, Tool, User
+from .. import guardrails
+from ..models import OPEN_STATES, Asset, ControlState, Host, Patch, Policy, Risk, Tool, User, Vulnerability
 from .baseline import CONTROLS, FRAMEWORKS, Control
 
 SSO_MODES = {"oidc", "saml", "oauth2", "ldap"}
 REVIEW_WINDOW = 90 * 24 * 3600
 DORMANT_AFTER = 90 * 24 * 3600
+SCAN_WINDOW = 30 * 24 * 3600
 
 
 @dataclass
@@ -26,6 +28,8 @@ class Snapshot:
     audit_entries: int
     users: list[User] = field(default_factory=list)
     oidc_enabled: bool = False
+    vulnerabilities: list[Vulnerability] = field(default_factory=list)
+    guardrails: dict[str, Any] = field(default_factory=guardrails.defaults)
 
 
 Result = tuple[str, str, list[str]]  # status, detail, evidence
@@ -70,6 +74,26 @@ def check_agent_approvals(s: Snapshot) -> Result:
     if s.autonomy == "autonomous":
         return "fail", "Agents run in autonomous mode - state-changing actions are not reviewed.", []
     return "pass", f"Autonomy is '{s.autonomy}': state-changing agent actions wait in the approval queue.", [f"autonomy={s.autonomy}"]
+
+
+AGENT_GUARDRAILS_REQUIRED = ("block_catastrophic_commands", "team_actions_need_approval", "limit_to_parent_permissions")
+
+
+def check_agent_guardrails(s: Snapshot) -> Result:
+    g = guardrails.merged(s.guardrails)
+    evidence = [f"{key}={g[key]}" for key in guardrails.REGISTRY if key in g]
+    off = [guardrails.REGISTRY[key].title for key in AGENT_GUARDRAILS_REQUIRED if not g[key]]
+    if off:
+        return "fail", "Switched off: " + "; ".join(off) + ".", evidence
+    loose = []
+    if not g["limit_team_size"]:
+        loose.append("agent teams have no size limit")
+    if g["allow_nested_teams"]:
+        loose.append(f"team agents may build nested teams (up to depth {g['max_team_depth']})")
+    if loose:
+        return "partial", "Core guardrails are on, but " + " and ".join(loose) + ".", evidence
+    return "pass", (f"Catastrophic commands are blocked, team agents' actions follow the approval policy and never exceed "
+                    f"their parent's permissions; teams have at most {g['max_team_size']} agents and do not nest."), evidence
 
 
 def check_ssh_hardening(s: Snapshot) -> Result:
@@ -141,6 +165,34 @@ def check_software_versions(s: Snapshot) -> Result:
     return status, detail, [f"{t.name} {t.manifest.version}" for t in analysed if t.manifest and t.manifest.version][:10]
 
 
+def check_scan_coverage(s: Snapshot) -> Result:
+    in_scope = [a for a in s.assets if a.scan_scope and a.status != "retired"]
+    if not in_scope:
+        return "manual", "No assets are in vulnerability-scan scope - put the assets to scan in scope.", []
+    cutoff = time.time() - SCAN_WINDOW
+    missing = [a.name for a in in_scope if not a.last_scanned_at or a.last_scanned_at < cutoff]
+    status, detail, _ = _ratio(len(in_scope) - len(missing), len(in_scope), "in-scope assets scanned within 30 days",
+                               missing)
+    evidence = [f"{a.name}: scanned {time.strftime('%Y-%m-%d', time.gmtime(a.last_scanned_at))}" for a in in_scope
+                if a.last_scanned_at and a.last_scanned_at >= cutoff]
+    return status, detail, evidence[:10]
+
+
+def check_vuln_sla(s: Snapshot) -> Result:
+    if not s.vulnerabilities and not any(a.scan_scope and a.status != "retired" for a in s.assets):
+        return "manual", "No vulnerability data yet - scan in-scope assets or connect a scanner.", []
+    now = time.time()
+    serious = [v for v in s.vulnerabilities if v.status in OPEN_STATES and v.severity in ("critical", "high")]
+    overdue = [v for v in serious if v.due_at is not None and v.due_at < now]
+    fixed = sum(1 for v in s.vulnerabilities if v.status == "fixed")
+    evidence = [f"{len(serious)} open critical/high finding(s)", f"{fixed} finding(s) fixed"]
+    if not overdue:
+        return "pass", f"{len(serious)} critical/high finding(s) open, all within their SLA.", evidence
+    shown = ", ".join(f"{v.title} ({v.host or 'unknown host'})" for v in overdue[:4]) + ("..." if len(overdue) > 4 else "")
+    status = "fail" if any(v.severity == "critical" for v in overdue) else "partial"
+    return status, f"{len(overdue)} critical/high finding(s) past their SLA: {shown}", evidence
+
+
 def check_saas_inventory(s: Snapshot) -> Result:
     saas = [t for t in s.tools if t.source_type == "saas"]
     if not saas:
@@ -180,6 +232,7 @@ CHECKS: dict[str, Callable[[Snapshot], Result]] = {
     "assets_owned": check_assets_owned,
     "tools_sso": check_tools_sso,
     "agent_approvals": check_agent_approvals,
+    "agent_guardrails": check_agent_guardrails,
     "ssh_hardening": check_ssh_hardening,
     "hub_auth": check_hub_auth,
     "dormant_accounts": check_dormant_accounts,
@@ -188,6 +241,8 @@ CHECKS: dict[str, Callable[[Snapshot], Result]] = {
     "tools_health": check_tools_health,
     "audit_log": check_audit_log,
     "software_versions": check_software_versions,
+    "scan_coverage": check_scan_coverage,
+    "vuln_sla": check_vuln_sla,
     "saas_inventory": check_saas_inventory,
     "risk_review": check_risk_review,
 }

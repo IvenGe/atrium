@@ -55,6 +55,17 @@ class Approvals:
                                 {"approval_id": approval.id, "approved": approve, "note": note, "decided_by": actor})
         return approval
 
+    def withdraw(self, approval_id: str, note: str, actor: str) -> Approval | None:
+        """Reject a pending approval on the requester's side because a newer request replaces it."""
+        approval = self.get(approval_id)
+        if approval is None or approval.status != "pending":
+            return None
+        approval.status, approval.note = "rejected", note
+        approval.decided_at, approval.decided_by = time.time(), actor
+        self._save(approval)
+        self.hub.activity(actor, "info", f"Superseded: {approval.title}", approval_id=approval.id)
+        return approval
+
     def complete(self, approval_id: str, ok: bool, result: dict[str, Any]) -> None:
         approval = self.get(approval_id)
         if approval is None:

@@ -75,6 +75,9 @@ const ICONS = {
   logout: '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="m16 17 5-5-5-5M21 12H9"/>',
   copy: '<rect x="8" y="8" width="13" height="13" rx="2"/><path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3"/>',
   monitor: '<rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/>',
+  bug: '<rect x="8" y="7" width="8" height="13" rx="4"/><path d="M10 7a2 2 0 0 1 4 0M12 11v9M8 13H4M20 13h-4M8 17.5l-3 1.5M16 17.5l3 1.5M8.5 9.5 5 7.5M15.5 9.5l3.5-2"/>',
+  radar: '<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><path d="m12 12 6.5-6.5"/><circle cx="12" cy="12" r="1"/>',
+  flow: '<path d="M4 8h14M14 4l4 4-4 4M20 16H6M10 12l-4 4 4 4"/>',
 };
 
 export function icon(name, extra = "") {
@@ -90,6 +93,21 @@ export function timeAgo(ts) {
   if (s < 3600) return `${Math.round(s / 60)}m ago`;
   if (s < 86400) return `${Math.round(s / 3600)}h ago`;
   return `${Math.round(s / 86400)}d ago`;
+}
+
+/** "in 5m" / "in 2h" for a time ahead; "due now" once it has passed. */
+export function timeIn(ts) {
+  if (!ts) return "";
+  const s = ts - Date.now() / 1000;
+  if (s < 45) return "due now";
+  if (s < 3600) return `in ${Math.round(s / 60)}m`;
+  if (s < 86400) return `in ${Math.round(s / 3600)}h`;
+  return `in ${Math.round(s / 86400)}d`;
+}
+
+/** Local date and time of a unix timestamp, for tooltips and detail views. */
+export function dateTime(ts) {
+  return ts ? new Date(ts * 1000).toLocaleString() : "";
 }
 
 export function debounce(fn, ms) {
@@ -152,6 +170,9 @@ const TONES = {
   analyzing: "info", importing: "info", maintenance: "warn", in_treatment: "info", draft: "warn", open: "bad",
   fail: "bad", error: "bad", failed: "bad", rejected: "bad", incompatible: "bad", denied: "bad", retired: "",
   low: "", medium: "info", high: "warn", critical: "bad", manual: "", na: "",
+  enabled: "ok", disabled: "", fixed: "ok", in_progress: "info", accepted: "", false_positive: "", info: "",
+  running: "info", awaiting_approval: "warn", failing: "bad", available: "info", needs_decision: "warn",
+  needs_claude: "", unavailable: "", not_needed: "", withdrawn: "",
 };
 export function badge(text, tone) {
   const t = tone ?? TONES[text] ?? "";

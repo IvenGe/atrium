@@ -11,9 +11,14 @@ from urllib.parse import urlparse
 import httpx
 
 from ..bus import Message
+from ..connectors.base import ConnectorError, check, normalize, redact
+from ..integration import connections
 from ..integration.analyzer import analyze_repo, analyze_saas, list_files, readme_summary
-from ..models import Manifest, Tool
+from ..models import AGENT_PERMISSIONS, Manifest, Tool
+from . import teams
 from .base import BaseAgent
+
+PUSH_ACTIONS = ("created", "updated", "skipped", "failed")
 
 ENRICH_SCHEMA = {
     "type": "object",
@@ -40,9 +45,15 @@ class ToolSupervisor(BaseAgent):
         "chat, ticketing, docs.wiki, monitoring.metrics. Only list capabilities the evidence supports."
     )
 
+    permissions = AGENT_PERMISSIONS  # it leads its tool's agent team
+
     def __init__(self, hub, tool_id: str, tool_name: str):
         super().__init__(hub, f"tool:{tool_id}", f"{tool_name} Supervisor", scope=tool_id)
         self.tool_id = tool_id
+
+    @property
+    def team(self) -> str:
+        return self.tool_id
 
     def _tool(self) -> Tool:
         tool = self.hub.get_tool(self.tool_id)
@@ -103,6 +114,135 @@ class ToolSupervisor(BaseAgent):
     async def on_stop(self, body: dict[str, Any], msg: Message) -> dict[str, Any]:
         return await self.ask("operator", "stop_tool", {"tool_id": self.tool_id})
 
+    # -- the tool's agent team ------------------------------------------------------------
+
+    async def on_team_propose(self, body: dict[str, Any], msg: Message) -> dict[str, Any]:
+        """Propose an AI agent team for this tool, from the templates for what the tool is or designed by Claude.
+        `designer`: "auto" (Claude when available, else the templates), "templates" or "claude". Proposals the hub
+        makes by itself (`auto`) happen once per tool and always use the templates: no model cost behind a background
+        trigger."""
+        tool = self._tool()
+        auto = bool(body.get("auto"))
+        if auto and teams.has_team_or_proposal(self.hub, tool.id):
+            return {"proposed": False, "approval_id": None, "created": [], "members": [], "skipped": [],
+                    "detail": f"{tool.name} already has an agent team or a team proposal."}
+        pending = teams.pending_proposal(self.hub, tool.id)
+        if pending:
+            return {"proposed": False, "approval_id": pending, "created": [], "members": [], "skipped": [],
+                    "detail": f"A team proposal for {tool.name} is already waiting for approval."}
+        designer = "templates" if auto else str(body.get("designer") or "auto")
+        if designer not in ("auto", "templates", "claude"):
+            raise ValueError("designer is auto, templates or claude")
+        if designer == "claude" and not self.hub.llm.available:
+            raise ValueError("Designing a team with Claude needs ANTHROPIC_API_KEY; use the templates instead")
+        category = teams.classify(self.hub, tool)
+        space = teams.room(self.hub, tool.id)
+        members, rationale, used = None, "", "templates"
+        if designer != "templates" and self.hub.llm.available and space != 0:
+            try:
+                members, rationale = await teams.design_with_claude(self.hub, tool, category, self.model,
+                                                                     8 if space is None else space)
+                used = "claude"
+            except Exception as exc:  # the templates always work
+                self.log("warn", f"Claude could not design a team for {tool.name}, using the templates: {exc}")
+        if members is None:
+            members = teams.template_members(self.hub, tool, category)
+            roles = ", ".join(m["title"].lower() for m in members)
+            rationale = (f"{tool.name} looks like a {teams.CATEGORIES[category].lower()} tool, so its team gets: {roles}."
+                         if category else f"No specialised template fits {tool.name}; every tool gets a maintainer.")
+        result = teams.propose_members(self.hub, requested_by=self.id, parent=self.id, members=members, designer=used,
+                                       rationale=rationale, tool_id=tool.id, category=category)
+        if result["proposed"]:
+            self.log("info", result["detail"], tool_id=tool.id)
+        return result
+
+    async def on_approval_decided(self, body: dict[str, Any], msg: Message) -> None:
+        teams.settle(self.hub, str(body.get("approval_id")), bool(body.get("approved")))
+
+    # -- the tool's own API (connector) ------------------------------------------------
+    # Only this agent decrypts the tool's credentials. Failures come back as {"failure": {message, status, excerpt}}
+    # with every secret masked, so the module agents can record them and the repair loop can diagnose them.
+
+    async def _connector(self, op: str, run, config_override: dict[str, Any] | None = None) -> dict[str, Any]:
+        secrets: dict[str, str] = {}
+        try:
+            connector, secrets = connections.build(self.hub, self.tool_id, config_override)
+            return await run(connector)
+        except Exception as exc:  # a connector bug must not take the agent down or leak a secret
+            failure = connections.safe_failure(exc, secrets)
+            if not isinstance(exc, ConnectorError):
+                self.log("warn", f"Connector {op} for {self.tool_id} failed unexpectedly: {failure['message']}")
+            return {"failure": failure}
+
+    async def on_connector_test(self, body: dict[str, Any], msg: Message) -> dict[str, Any]:
+        async def run(connector):
+            result = await connector.test()
+            checks = [check(str(c.get("name", "")), bool(c.get("ok")), redact(c.get("detail", ""), connector.secrets))
+                      for c in result.get("checks") or [] if isinstance(c, dict)]
+            domains = {str(d): sorted({str(o) for o in ops if o in ("read", "write")})
+                       for d, ops in (result.get("domains") or {}).items() if isinstance(ops, (list, set, tuple))}
+            return {"ok": bool(result.get("ok")), "detail": redact(result.get("detail", ""), connector.secrets),
+                    "checks": checks, "domains": {d: ops for d, ops in domains.items() if ops}}
+
+        result = await self._connector("test", run, body.get("config"))
+        if "failure" in result:
+            failure = result["failure"]
+            return {"ok": False, "detail": failure["message"], "checks": [check("connection", False, failure["message"])],
+                    "domains": {}, "failure": failure}
+        return result
+
+    async def on_connector_options(self, body: dict[str, Any], msg: Message) -> dict[str, Any]:
+        field = str(body.get("field", ""))
+
+        async def run(connector):
+            if field not in {f.name for f in connector.fields if f.options}:
+                raise ConnectorError(f"{connector.title} has no choices for '{field}'")
+            options = await connector.options(field)
+            return {"options": [{"value": str(o.get("value")), "label": str(o.get("label") or o.get("value"))}
+                                for o in options if isinstance(o, dict) and o.get("value") not in (None, "")][:1000]}
+
+        return await self._connector("options", run)
+
+    async def on_connector_pull(self, body: dict[str, Any], msg: Message) -> dict[str, Any]:
+        domain, since = str(body.get("domain")), body.get("since")
+
+        async def run(connector):
+            if "read" not in connector.domains().get(domain, []):
+                raise ConnectorError(f"{connector.title} cannot read {domain}")
+            records, errors = normalize(domain, await connector.pull(domain, since))
+            return {"records": records, "errors": [redact(e, connector.secrets) for e in errors[:50]],
+                    "dropped": len(errors)}
+
+        return await self._connector("pull", run)
+
+    async def on_connector_push(self, body: dict[str, Any], msg: Message) -> dict[str, Any]:
+        domain, records, links = str(body.get("domain")), list(body.get("records") or []), dict(body.get("links") or {})
+
+        async def run(connector):
+            if "write" not in connector.domains().get(domain, []):
+                raise ConnectorError(f"{connector.title} cannot write {domain}")
+            results = []
+            for item in await connector.push(domain, records, links):
+                if not isinstance(item, dict):
+                    continue
+                action = item.get("action") if item.get("action") in PUSH_ACTIONS else "failed"
+                results.append({"hub_id": item.get("hub_id"), "external_id": item.get("external_id"), "action": action,
+                                "error": redact(item["error"], connector.secrets)[:1000] if item.get("error") else None})
+            return {"results": results}
+
+        return await self._connector("push", run)
+
+    async def on_connector_action(self, body: dict[str, Any], msg: Message) -> dict[str, Any]:
+        name, params = str(body.get("name")), dict(body.get("params") or {})
+
+        async def run(connector):
+            if name not in connector.actions:
+                raise ConnectorError(f"{connector.title} has no action '{name}'")
+            result = await connector.action(name, params)
+            return {"result": result if isinstance(result, dict) else {"value": result}}
+
+        return await self._connector("action", run)
+
     # -- internals -------------------------------------------------------------------
 
     @staticmethod
@@ -111,8 +251,8 @@ class ToolSupervisor(BaseAgent):
             new.native = True
         if old.health.url and not new.health.url:
             new.health = old.health
-        if old.auth.notes and "adapter" in old.auth.notes:
-            new.auth = old.auth
+        if old.auth.provider or (old.auth.notes and "adapter" in old.auth.notes):  # connected by an SSO patch
+            new.auth = old.auth.model_copy(update={"env_keys": new.auth.env_keys})
         if old.launch.port and old.launch.env.get("PORT") == str(old.launch.port):
             new.launch.port, new.launch.env, new.ui.url = old.launch.port, old.launch.env, old.ui.url
         new.events.emits = sorted(set(new.events.emits) | set(old.events.emits))

@@ -15,11 +15,15 @@ if TYPE_CHECKING:
 
 class BaseAgent:
     role = "agent"
+    kind = "core"  # core agents are built in; "custom" agents are defined by people or other agents
     title = "Agent"
     description = ""
     default_instructions = ""
     uses_llm = False
     max_concurrency = 4
+    # What the agent may do through the shared toolkit, and the most a member of its team may get while the
+    # limit_to_parent_permissions guardrail is on (see agents/teams.py).
+    permissions: tuple[str, ...] = ("read",)
 
     def __init__(self, hub: "Hub", agent_id: str, name: str, scope: str | None = None):
         self.hub = hub
@@ -51,6 +55,11 @@ class BaseAgent:
         return self.instructions_override or self.default_instructions
 
     @property
+    def team(self) -> str:
+        """The team the agent leads or belongs to: "hub", a tool id or a built-in app's agent id."""
+        return "hub"
+
+    @property
     def status(self) -> str:
         if self.paused:
             return "paused"
@@ -80,6 +89,16 @@ class BaseAgent:
             "custom_instructions": self.instructions_override is not None,
             "uses_llm": self.uses_llm,
             "llm_active": self.uses_llm and self.hub.llm.available,
+            "kind": self.kind,
+            "provider": "anthropic" if self.uses_llm else "rules",
+            "provider_kind": "anthropic" if self.uses_llm else "rules",
+            "provider_label": "Claude" if self.uses_llm else "Rules",
+            "permissions": list(self.permissions),
+            "effective_permissions": list(self.permissions),
+            "team": self.team,
+            "parent": None,
+            "depth": 0,
+            "enabled": not self.paused,
             "handled": self.handled,
             "errors": self.errors,
             "active": self.active,

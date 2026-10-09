@@ -7,7 +7,9 @@ Three autonomy levels control agent-originated commands:
 * ``autonomous`` - agents may run anything that is not blocked.
 
 Commands typed by a person in the Operator console run directly (the person is
-the approval), but blocked commands are refused for everyone.
+the approval), but blocked commands are refused for everyone - unless an admin
+switched the ``block_catastrophic_commands`` guardrail off: blocked patterns are
+then ordinary ``change`` commands (people run them, agents follow the autonomy level).
 """
 
 from __future__ import annotations
@@ -67,13 +69,15 @@ class Decision:
     reason: str
 
 
-def classify(command: str) -> tuple[Risk, str]:
+def classify(command: str, *, block_catastrophic: bool = True) -> tuple[Risk, str]:
     cmd = command.strip()
     if not cmd:
         return "blocked", "empty command"
     for pattern, why in BLOCKED:
         if pattern.search(cmd):
-            return "blocked", why
+            if block_catastrophic:
+                return "blocked", why
+            return "change", f"{why} - not blocked because the block_catastrophic_commands guardrail is off"
     if METACHARS.search(cmd):
         return "change", "uses shell chaining or redirection"
     if any(p.match(cmd) for p in READ_ONLY):
@@ -81,9 +85,11 @@ def classify(command: str) -> tuple[Risk, str]:
     return "change", "may change state"
 
 
-def decide(command: str, autonomy: str, *, from_person: bool, trusted: bool = False) -> Decision:
-    """``trusted`` marks hub-defined commands (e.g. the built-in discovery script)."""
-    risk, why = classify(command)
+def decide(command: str, autonomy: str, *, from_person: bool, trusted: bool = False,
+           block_catastrophic: bool = True) -> Decision:
+    """``trusted`` marks hub-defined commands (e.g. the built-in discovery script); ``block_catastrophic`` is the
+    guardrail of that name."""
+    risk, why = classify(command, block_catastrophic=block_catastrophic)
     if risk == "blocked":
         return Decision("deny", risk, f"Blocked: {why}. Run it yourself if you really mean it.")
     if trusted and risk == "change":

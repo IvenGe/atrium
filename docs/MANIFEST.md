@@ -31,6 +31,7 @@ api:
 
 auth:
   sso: oidc               # oidc | saml | oauth2 | ldap | none | unknown
+  provider: keycloak      # tool id of the suite's identity provider this tool signs in through (optional)
 
 provides: [api.rest, crm.customers, webhooks]
 consumes: [auth.oidc, db.postgres]
@@ -62,9 +63,26 @@ Common names the analyzer understands:
 | `storage.s3`, `storage.files` | Object / file storage |
 | `notify.email` | Outgoing mail |
 | `git.hosting`, `ci`, `chat`, `docs.wiki`, `ticketing`, `assets.inventory` | Application domains |
+| `vuln.scanner`, `grc.compliance`, `grc.risks`, `identity.source` | Security domains: vulnerability scanners (OpenVAS / Greenbone), GRC tools (CISO Assistant), directories people come from (Keycloak, Okta) |
 | `monitoring.metrics`, `monitoring.dashboards`, `monitoring.uptime` | Observability |
 
 The hub itself provides `events.bus` and `notify.webhook` to every tool.
+
+## Single sign-on
+
+A tool whose manifest provides `auth.oidc` or `auth.saml` is an **identity provider** of the suite (Keycloak,
+authentik, Zitadel and Authelia are recognised by name; any other tool can declare it). Every other tool should sign
+in through one of them:
+
+- `auth.provider` names the provider the tool signs in through. A tool can declare it; the Patch Agent sets it (with
+  `auth.sso`) when an SSO patch is applied. The **Single sign-on** check passes once `auth.provider` is the provider
+  selected for the tool.
+- `auth.env_keys` is filled by the analyzer: the `OIDC_*`, `OPENID_*`, `OAUTH_*` and `OAUTH2_*` keys of the tool's
+  `.env` example. For a tool the hub does not know, the Patch Agent fills exactly these keys.
+
+The provider for a tool is chosen in this order: the choice made for that tool (Integration hub > Identity, or
+`POST /api/tools/{id}/sso`), the tool's `auth.provider`, the suite default, the only provider in the suite. With two or
+more providers and none of these, someone has to choose. See [ARCHITECTURE.md](ARCHITECTURE.md#single-sign-on).
 
 ## Events
 

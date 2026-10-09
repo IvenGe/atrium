@@ -26,7 +26,29 @@ SELF_SERVICE = {
     ("DELETE", "/api/auth/sessions"),
 }
 ADMIN_TREES = ("/api/users", "/api/tokens")
-AGENT_CONFIG = re.compile(r"/api/agents/[^/]+")
+# Single routes that need admin: settings (SLA, guardrails), agent definitions (create, configure, remove), the AI
+# model providers (they may hold API keys), the identity providers (credentials for sign-in) and tool connections
+# (they hold the tools' API credentials).
+ADMIN_ROUTES = (
+    ("PATCH", re.compile(r"/api/settings")),
+    ("PATCH", re.compile(r"/api/settings/guardrails")),
+    ("POST", re.compile(r"/api/agents")),
+    ("PATCH", re.compile(r"/api/agents/[^/]+")),
+    ("DELETE", re.compile(r"/api/agents/[^/]+")),
+    ("POST", re.compile(r"/api/llm/providers")),
+    ("PATCH", re.compile(r"/api/llm/providers/[^/]+")),
+    ("DELETE", re.compile(r"/api/llm/providers/[^/]+")),
+    ("POST", re.compile(r"/api/llm/providers/[^/]+/test")),
+    ("PUT", re.compile(r"/api/identity-providers/default")),
+    ("PATCH", re.compile(r"/api/identity-providers/[^/]+")),
+    ("POST", re.compile(r"/api/identity-providers/[^/]+/atrium")),
+    ("PUT", re.compile(r"/api/tools/[^/]+/connection")),
+    ("DELETE", re.compile(r"/api/tools/[^/]+/connection")),
+)
+# Reads that act on a tool with its stored credentials, so they need operator.
+OPERATOR_READS = (
+    ("GET", re.compile(r"/api/tools/[^/]+/connection/options/[^/]+")),
+)
 INTEGRATION = {("POST", "/api/bus/publish"), ("GET", "/api/health")}
 PASSWORD_CHANGE = {("GET", "/api/auth/me"), ("POST", "/api/auth/logout"), ("POST", "/api/auth/password")}
 
@@ -53,8 +75,10 @@ def required_role(method: str, path: str) -> str | None:
         return "viewer"
     if any(_under(path, root) for root in ADMIN_TREES):
         return "admin"
-    if method == "PATCH" and (path == "/api/settings" or AGENT_CONFIG.fullmatch(path)):
+    if any(method == m and rx.fullmatch(path) for m, rx in ADMIN_ROUTES):
         return "admin"
+    if any(method == m and rx.fullmatch(path) for m, rx in OPERATOR_READS):
+        return "operator"
     if method == "GET":
         return "viewer"
     return "operator"

@@ -1,4 +1,5 @@
-"""Asset Supervisor: keeps the asset register in sync with the tools and hosts the hub knows about."""
+"""Asset Supervisor: keeps the asset register in sync with the tools and hosts the hub knows about, and runs the
+asset data flows (pull from inventories such as Snipe-IT, push to tools that keep their own asset list)."""
 
 from __future__ import annotations
 
@@ -10,12 +11,58 @@ import time
 from typing import Any
 
 from ..bus import Message
-from ..models import Asset
+from ..connectors.base import valid_scan_target
+from ..integration import flows
+from ..models import Asset, Flow
 from ..store import new_id
-from .base import BaseAgent
+from .fabric import FlowOwner
 from .operator import DISCOVERY_SCRIPT
 
 LOCAL_SOURCE = "host:local"
+ADDRESS_FACTS = ("address", "hostname", "fqdn", "ip", "ip_address")
+SCALAR = (str, int, float, bool)
+
+
+def addresses(asset: Asset) -> list[str]:
+    """The IPs and hostnames an asset is known by (facts.addresses plus the usual single-address facts)."""
+    found: list[str] = []
+    listed = asset.facts.get("addresses")
+    for value in [*(listed if isinstance(listed, list) else []), *(asset.facts.get(k) for k in ADDRESS_FACTS)]:
+        text = str(value).strip().lower().rstrip(".") if isinstance(value, (str, int)) and value != "" else ""
+        if text and text not in found:
+            found.append(text)
+    return found
+
+
+def scan_targets(asset: Asset) -> list[str]:
+    return [a for a in addresses(asset) if valid_scan_target(a)]
+
+
+def merge_keys(asset_addresses: list[str], facts: dict[str, Any]) -> set[str]:
+    keys = {a.lower().rstrip(".") for a in asset_addresses if a}
+    for name in ("serial", "mac", "mac_address"):
+        if isinstance(facts.get(name), SCALAR) and str(facts[name]).strip():
+            keys.add(f"{name.split('_')[0]}:{str(facts[name]).strip().lower()}")
+    return keys
+
+
+def address_index(assets: list[Asset]) -> dict[str, str]:
+    """address / serial key -> asset id, over assets that are not retired (first registered wins)."""
+    index: dict[str, str] = {}
+    for asset in sorted(assets, key=lambda a: a.created_at):
+        if asset.status == "retired":
+            continue
+        for key in merge_keys(addresses(asset), asset.facts):
+            index.setdefault(key, asset.id)
+    return index
+
+
+def push_record(asset: Asset) -> dict[str, Any]:
+    """A hub asset as a canonical asset record for a tool (scalar facts only)."""
+    facts = {k: v for k, v in asset.facts.items() if isinstance(v, SCALAR) and k not in ADDRESS_FACTS}
+    return {"hub_id": asset.id, "external_id": None, "name": asset.name, "type": asset.type, "owner": asset.owner,
+            "status": asset.status, "addresses": addresses(asset), "facts": facts, "updated_at": asset.updated_at,
+            "criticality": asset.criticality}
 
 
 def parse_discovery(output: str) -> dict[str, Any]:
@@ -43,14 +90,119 @@ def parse_discovery(output: str) -> dict[str, Any]:
     return facts
 
 
-class AssetSupervisor(BaseAgent):
+class AssetSupervisor(FlowOwner):
     role = "module-supervisor"
     title = "Asset Supervisor"
     description = ("Responsible for the Assets app: registers every tool, SaaS service and host as an asset, "
-                   "discovers host facts over SSH, and retires assets that disappear.")
+                   "discovers host facts over SSH, retires assets that disappear, and runs the asset data flows - "
+                   "merging assets pulled from inventories with known ones by address, hostname or serial.")
+    flow_domains = ("assets",)
+
+    permissions = ("read", "tool_api", "flows", "assets_write", "agents")
 
     def __init__(self, hub):
         super().__init__(hub, "module:assets", "Asset Supervisor", scope="assets")
+
+    # -- data flows ------------------------------------------------------------------
+
+    async def execute(self, flow: Flow, body: dict[str, Any], msg: Message) -> dict[str, Any]:
+        if flow.direction == "pull":
+            return await self._pull(flow)
+        if flow.direction == "push":
+            return await self._push(flow)
+        raise ValueError(f"Asset flows cannot {flow.direction}")
+
+    async def _pull(self, flow: Flow) -> dict[str, Any]:
+        records, info = await self.pull_records(flow)
+        tool_id, source = flow.tool_id, f"sync:{flow.tool_id}"
+        known = flows.links(self.hub, tool_id, "assets")
+        by_external = {link.external_id: hub_id for hub_id, link in known.items()}
+        assets = {a.id: a for a in self._assets()}
+        index = address_index(list(assets.values()))
+        counts = {"total": len(records), "created": 0, "updated": 0, "merged": 0, "unchanged": 0, "retired": 0,
+                  "dropped": info["dropped"]}
+        seen: set[str] = set()
+        for record in records:
+            digest = flows.content_hash(record)
+            external = record["external_id"]
+            asset = assets.get(by_external.get(external, ""))
+            if asset is not None:
+                link = known.get(asset.id)
+                if link and link.hash == digest and asset.status != "retired":
+                    counts["unchanged"] += 1
+                    seen.add(asset.id)
+                    continue
+            else:  # not linked yet: the same machine may already be registered under another source
+                match = next((index[k] for k in merge_keys(record["addresses"], record["facts"]) if k in index), None)
+                candidate = assets.get(match or "")
+                asset = candidate if candidate is not None and candidate.id not in seen else None
+            if asset is None:
+                asset = Asset(id=new_id("a_"), name=record["name"], source=source)
+                counts["created"] += 1
+            elif asset.source == source:
+                counts["updated"] += 1
+            else:
+                counts["merged"] += 1
+            self._apply_record(asset, record, tool_id, owned=asset.source == source)
+            self._save(asset)
+            assets[asset.id] = asset
+            for key in merge_keys(addresses(asset), asset.facts):
+                index.setdefault(key, asset.id)
+            flows.put_link(self.hub, tool_id, "assets", asset.id, external, digest)
+            seen.add(asset.id)
+        if flow.options.get("retire_missing", True):
+            for hub_id in set(known) - seen:
+                asset = assets.get(hub_id)
+                if asset is None or asset.source != source:  # gone, or merged into an asset the hub knew anyway
+                    flows.drop_link(self.hub, tool_id, "assets", hub_id)
+                elif asset.status != "retired":  # the link stays, so the asset comes back if the record does
+                    asset.status = "retired"
+                    self._save(asset)
+                    counts["retired"] += 1
+        if counts["created"] or counts["updated"] or counts["merged"] or counts["retired"]:
+            await self.tell("module:grc", "evaluate")
+        detail = f"{info['dropped']} record(s) could not be read: {'; '.join(info['errors'][:3])}" if info["dropped"] else ""
+        return {"counts": counts, "detail": detail}
+
+    @staticmethod
+    def _apply_record(asset: Asset, record: dict[str, Any], tool_id: str, owned: bool) -> None:
+        """Copy a pulled record onto an asset. Assets this flow created follow the tool; assets the hub already knew
+        (merged by address, hostname or serial) keep their name, type and status and gain the tool's facts."""
+        merged_addresses = addresses(asset)
+        for value in record["addresses"]:
+            if value.lower() not in merged_addresses:
+                merged_addresses.append(value.lower())
+        external_ids = {**(asset.facts.get("external_ids") or {}), tool_id: record["external_id"]}
+        asset.facts = {**asset.facts, **record["facts"], "addresses": merged_addresses, "external_ids": external_ids}
+        if owned:
+            asset.name, asset.type, asset.status = record["name"], record["type"], record["status"]  # type: ignore[assignment]
+            asset.owner = record["owner"] or asset.owner
+        elif not asset.owner and record["owner"]:
+            asset.owner = record["owner"]
+
+    async def _push(self, flow: Flow) -> dict[str, Any]:
+        types = set(flow.options.get("asset_types") or [])
+        records = [push_record(a) for a in self._assets()
+                   if a.status != "retired" and a.source != f"sync:{flow.tool_id}" and (not types or a.type in types)]
+        return {"counts": await self.push_records(flow, records)}
+
+    async def on_scan_scope(self, body: dict[str, Any], msg: Message) -> dict[str, Any]:
+        """Put assets in (or take them out of) vulnerability-scan scope."""
+        ids, in_scope = set(body.get("asset_ids") or []), bool(body.get("in_scope"))
+        changed, unscannable = [], []
+        for asset in self._assets():
+            if asset.id not in ids or asset.scan_scope == in_scope:
+                continue
+            asset.scan_scope = in_scope
+            self._save(asset)
+            changed.append(asset.id)
+            if in_scope and not scan_targets(asset):
+                unscannable.append(asset.name)
+        if changed:
+            self.log("info", f"{len(changed)} asset(s) {'added to' if in_scope else 'removed from'} scan scope")
+            await self.tell("module:grc", "evaluate")
+        return {"changed": changed, "unknown": sorted(ids - {a.id for a in self._assets()}),
+                "without_address": unscannable}
 
     def _assets(self) -> list[Asset]:
         return self.hub.all("assets", Asset)
@@ -169,6 +321,7 @@ def summarize(assets: list[Asset]) -> dict[str, Any]:
         "by_type": by_type,
         "without_owner": sum(1 for a in active if not a.owner),
         "critical": sum(1 for a in active if a.criticality == "critical"),
+        "in_scan_scope": sum(1 for a in active if a.scan_scope),
     }
 
 

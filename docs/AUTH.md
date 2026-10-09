@@ -16,8 +16,8 @@ can. `integration` is a separate role that exists only for API tokens.
 | Role | May do |
 | --- | --- |
 | `viewer` | Read everything: every page, every `GET /api` endpoint, the live event stream (`/api/events`) and the API docs (`/api/docs`). Changes nothing. |
-| `operator` | Everything a viewer can, plus every state-changing call: import and remove tools, analyse, start/stop, propose patches, approve or reject, run commands, add/remove/discover hosts, add and edit assets, sync, edit compliance controls, risks and policies, chat with the Hub Supervisor. |
-| `admin` | Everything an operator can, plus accounts (`/api/users`), API tokens (`/api/tokens`), hub settings (`PATCH /api/settings`: autonomy level, default model) and agent configuration (`PATCH /api/agents/{id}`: pause/resume, model, instructions). |
+| `operator` | Everything a viewer can, plus every state-changing call: import and remove tools, analyse, start/stop, propose patches, approve or reject, run commands, add/remove/discover hosts, add and edit assets, sync, edit compliance controls, risks and policies, chat with the Hub Supervisor and any team agent (`POST /api/agents/{id}/chat`), run a team agent's task (`POST /api/agents/{id}/run`) and ask a tool's supervisor for an agent team (`POST /api/tools/{id}/team`). |
+| `admin` | Everything an operator can, plus accounts (`/api/users`), API tokens (`/api/tokens`), hub settings (`PATCH /api/settings`: autonomy level, default model, vulnerability SLA days, guardrails), the agent guardrails (`PATCH /api/settings/guardrails`), agent definitions (`POST /api/agents`, `PATCH` / `DELETE /api/agents/{id}`: create, configure and remove agents; core agents can only be paused and reconfigured), the AI model providers, which may hold API keys (`POST /api/llm/providers`, `PATCH` / `DELETE /api/llm/providers/{id}`, `POST /api/llm/providers/{id}/test`), the suite's identity providers (`PUT /api/identity-providers/default`, `PATCH /api/identity-providers/{id}`, `POST /api/identity-providers/{id}/atrium`) and tool connections, which hold the tools' API credentials (`PUT` / `DELETE /api/tools/{id}/connection`). Operators choose the provider per tool (`POST /api/tools/{id}/sso`) and run provider registrations (`POST /api/tools/{id}/sso/register`); they test connections, list a connection field's choices (`GET /api/tools/{id}/connection/options/{field}`, which uses the stored credentials), run, schedule and repair data flows, request scans and triage vulnerabilities. |
 | `integration` | API tokens only. Exactly two calls: `POST /api/bus/publish` and `GET /api/health`. |
 
 Endpoints outside the role ladder:
@@ -362,6 +362,21 @@ At every SSO sign-in the hub reads the claim named by `HUB_OIDC_ROLE_CLAIM`. A v
   way in when the identity provider is down. HB-AC-5 (dormant accounts) flags it once it has not
   signed in for 90 days: sign in with it now and then, or record an override with a justification
   in the Compliance hub.
+
+### Generating Atrium's client from the Integration hub
+
+When the suite contains an identity provider (Keycloak, authentik, or any OIDC provider), an administrator can let
+the hub prepare Atrium's own client: **Integration hub > Identity > Atrium sign-in** (`POST
+/api/identity-providers/{id}/atrium`). The hub writes into `HUB_DATA_DIR/workspace/identity/atrium/<provider>/`:
+
+- the client registration (`keycloak-client.json` with a kcadm.sh script, or an authentik blueprint), with redirect
+  URI `{HUB_PUBLIC_URL}/api/auth/oidc/callback`, a `groups` claim and the groups `atrium-admins` and `atrium-operators`;
+- `atrium-oidc.env` with the `HUB_OIDC_*` settings, including a client secret generated once by the hub.
+
+The secret is never shown in the UI or returned by the API; copy the lines from `atrium-oidc.env` into Atrium's `.env`
+and restart Atrium. **Register at <provider>** has the Operator Agent run the registration script (docker compose exec
+into the provider when the hub knows its compose file; otherwise set `KEYCLOAK_ADMIN_USER` and
+`KEYCLOAK_ADMIN_PASSWORD` for `register-keycloak.sh`). The walkthrough below does the same by hand.
 
 ### Keycloak walkthrough
 

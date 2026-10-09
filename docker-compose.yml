@@ -1,0 +1,38 @@
+# Atrium with Docker Compose (2.24 or newer for the optional env_file below).
+#
+#   docker compose up -d --build                     start (rebuild after git pull)
+#   docker compose logs atrium                       the one-time first-run setup link
+#   docker compose exec atrium atrium user list      offline account commands (atrium --help)
+#   docker compose down                              stop; the data stays in the atrium-data volume
+#
+# Settings come from .env when it exists (copy .env.example). Compose expands $ in .env values: put a value that
+# contains $ in single quotes.
+services:
+  atrium:
+    build: .
+    image: atrium:local
+    init: true  # reaps the processes of the tools the hub runs
+    restart: unless-stopped
+    ports:
+      # Only this machine can connect. To let others in, put a TLS reverse proxy in front (docs/AUTH.md).
+      - "127.0.0.1:8710:8710"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      # These win over .env: inside the container the hub listens on all interfaces, on the published port, and
+      # keeps its data in the volume.
+      HUB_HOST: "0.0.0.0"
+      HUB_PORT: "8710"
+      HUB_DATA_DIR: /data
+      HUB_PUBLIC_URL: "${HUB_PUBLIC_URL:-http://localhost:8710}"
+      # The Host check accepts localhost and 127.0.0.1, plus the names listed in HUB_ALLOWED_HOSTS in .env.
+      HUB_ALLOWED_HOSTS: "localhost,127.0.0.1,${HUB_ALLOWED_HOSTS:-}"
+    volumes:
+      - atrium-data:/data
+      # SSH keys and known_hosts for the hosts Atrium runs commands on (key paths like ~/.ssh/id_ed25519). The
+      # container user has uid 1000, so the files must be readable by that uid.
+      # - ~/.ssh:/home/atrium/.ssh:ro
+
+volumes:
+  atrium-data:

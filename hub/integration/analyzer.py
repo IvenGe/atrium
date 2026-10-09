@@ -48,6 +48,8 @@ ENV_RULES: list[tuple[re.Pattern[str], str | None, str | None]] = [
     (re.compile(r"^(AMQP|RABBITMQ)_"), "queue.amqp", None),
     (re.compile(r"^(ELASTICSEARCH|OPENSEARCH|MEILI)_"), "search.index", None),
 ]
+# Keys a tool's .env example uses to configure its own OIDC / OAuth2 login (the generic SSO strategy fills these).
+SSO_ENV_RE = re.compile(r"^(OIDC|OPENID|OAUTH2?)_")
 URL_SCHEMES = {"postgres": "db.postgres", "postgresql": "db.postgres", "mysql": "db.mysql", "mariadb": "db.mysql",
                "mongodb": "db.mongo", "mongodb+srv": "db.mongo", "redis": "cache.redis", "rediss": "cache.redis",
                "amqp": "queue.amqp", "amqps": "queue.amqp"}
@@ -82,7 +84,10 @@ DEP_RULES: dict[str, tuple[str, str]] = {
 
 # Well-known open-source tools and what they provide to the rest of the suite.
 KNOWN_TOOLS: dict[str, list[str]] = {
-    "keycloak": ["auth.oidc", "auth.saml"], "authentik": ["auth.oidc", "auth.saml"], "zitadel": ["auth.oidc"],
+    "keycloak": ["auth.oidc", "auth.saml", "identity.source"], "okta": ["auth.oidc", "auth.saml", "identity.source"],
+    "authentik": ["auth.oidc", "auth.saml"], "zitadel": ["auth.oidc"],
+    "openvas": ["vuln.scanner"], "greenbone": ["vuln.scanner"], "gvm": ["vuln.scanner"],
+    "ciso-assistant": ["grc.compliance", "grc.risks"], "snipeit": ["assets.inventory"],
     "authelia": ["auth.oidc"], "gitea": ["git.hosting", "webhooks"], "forgejo": ["git.hosting", "webhooks"],
     "gitlab": ["git.hosting", "ci", "webhooks"], "mattermost": ["chat", "webhooks"], "rocket.chat": ["chat", "webhooks"],
     "nextcloud": ["storage.files"], "minio": ["storage.s3"], "grafana": ["monitoring.dashboards"],
@@ -392,6 +397,7 @@ def analyze_repo(root: Path, tool_id: str, name: str) -> tuple[Manifest, list[st
         except yaml.YAMLError:
             notes.append(f"{compose_name} could not be parsed.")
     apply_env_rules(m, list(env_values), env_values)
+    m.auth.env_keys = sorted(k for k in env_values if SSO_ENV_RE.match(k.upper()))
 
     # ports
     for env_text in (_read(root / n) for n in ENV_FILES if n in names):

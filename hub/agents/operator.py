@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from .. import guardrails
 from ..bus import Message
 from ..execution import policy
 from ..execution.runner import CommandResult, run_local, run_ssh
@@ -31,6 +32,7 @@ class OperatorAgent(BaseAgent):
     title = "Operator Agent"
     description = ("Runs commands on this machine or on registered hosts over SSH. Enforces the command policy: "
                    "blocked commands are refused, and state-changing commands wait for approval.")
+    permissions = ("read", "commands")
 
     def __init__(self, hub):
         super().__init__(hub, "operator", "Operator Agent")
@@ -43,7 +45,7 @@ class OperatorAgent(BaseAgent):
         command = str(body.get("command", "")).strip()
         target = body.get("target") or "local"
         trusted = bool(body.get("discovery")) and command == DISCOVERY_SCRIPT
-        decision = policy.decide(command, self.hub.prefs["autonomy"], from_person=from_person(msg.sender), trusted=trusted)
+        decision = self._decide(command, msg.sender, trusted)
         request = {"command": command, "target": target, "cwd": body.get("cwd"), "timeout": body.get("timeout", 120),
                    "reason": body.get("reason", ""), "origin": msg.sender}
         if decision.action == "deny":
@@ -66,7 +68,7 @@ class OperatorAgent(BaseAgent):
         if tool is None or tool.manifest is None or not tool.manifest.launch.command:
             raise ValueError("This tool has no launch command in its manifest")
         command = tool.manifest.launch.command
-        decision = policy.decide(command, self.hub.prefs["autonomy"], from_person=from_person(msg.sender))
+        decision = self._decide(command, msg.sender)
         if decision.action == "deny":
             return {"status": "denied", "reason": decision.reason}
         payload = {"tool_id": tool.id, "origin": msg.sender}
@@ -102,6 +104,13 @@ class OperatorAgent(BaseAgent):
             raise
 
     # -- execution -------------------------------------------------------------------
+
+    def _decide(self, command: str, sender: str, trusted: bool = False) -> policy.Decision:
+        """The command policy for `sender`, with the guardrails: team agents ("agent:<slug>") follow the autonomy
+        level unless team_actions_need_approval is off, and blocked patterns stay refused while
+        block_catastrophic_commands is on."""
+        return policy.decide(command, guardrails.effective_autonomy(self.hub, sender), from_person=from_person(sender),
+                             trusted=trusted, block_catastrophic=bool(guardrails.value(self.hub, "block_catastrophic_commands")))
 
     async def execute(self, request: dict[str, Any]) -> dict[str, Any]:
         target = request.get("target") or "local"

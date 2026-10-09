@@ -47,6 +47,10 @@ class Settings:
     health_interval: float = 60.0
     allowed_hosts: list[str] = field(default_factory=lambda: ["127.0.0.1", "localhost"])
     start_background_tasks: bool = True
+    flow_interval: float = 30.0  # seconds between checks for due data flows and running scans
+
+    # encryption key(s) for stored connector secrets; default: {data_dir}/secret.key, created on first use
+    secret_key: str | None = None
 
     # sign-in and sessions
     session_idle_minutes: int = 720
@@ -91,6 +95,8 @@ class Settings:
             model=env.get("HUB_MODEL", DEFAULT_MODEL),
             autonomy=env.get("HUB_AUTONOMY", "assisted"),
             health_interval=float(env.get("HUB_HEALTH_INTERVAL", "60")),
+            flow_interval=float(env.get("HUB_FLOW_INTERVAL") or 30),
+            secret_key=env.get("HUB_SECRET_KEY") or None,
             session_idle_minutes=int(env.get("HUB_SESSION_IDLE_MINUTES") or 720),
             session_days=int(env.get("HUB_SESSION_DAYS") or 7),
             cookie_secure=_flag(env.get("HUB_COOKIE_SECURE")),
