@@ -115,7 +115,7 @@ function recordRow(d, cols, r) {
     ${cols.map((f) => html`<td>${f.type === "text" ? html`<span class="clip" style="max-width:220px" title="${r.fields[f.name] ?? ""}">${fieldValue(f, r.fields[f.name])}</span>` : fieldValue(f, r.fields[f.name])}</td>`)}
     <td>${r.asset ? html`<a href="#/assets/${enc(r.asset.id)}" data-act="nav" class="row" style="gap:4px;flex-wrap:nowrap">${icon("box")}<span class="clip" style="max-width:160px">${r.asset.name}</span></a>` : html`<span class="faint">-</span>`}</td>
     <td>${r.person ? html`<span data-act="nav">${personChip(r.person)}</span>` : html`<span class="faint">-</span>`}</td>
-    <td>${r.source === "manual" ? html`<span class="faint">by hand</span>` : html`<a href="#/tools/${enc(r.source)}" data-act="nav">${r.source_name}</a>`}</td>
+    <td style="white-space:nowrap">${r.source === "manual" ? html`<span class="faint">by hand</span>` : html`<a href="#/tools/${enc(r.source)}" data-act="nav">${r.source_name}</a>`}</td>
     <td class="faint" title="${dateTime(r.updated_at)}" style="white-space:nowrap">${timeAgo(r.updated_at)}</td></tr>`;
 }
 

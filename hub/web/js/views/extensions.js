@@ -186,7 +186,7 @@ function askForChange(tools, sp, done) {
   });
 }
 
-async function openSelfPatch(id, availability, done) {
+async function openSelfPatch(id, availability, names, done) {
   let sp;
   try {
     sp = await get(`/self-patches/${enc(id)}`);
@@ -209,7 +209,7 @@ async function openSelfPatch(id, availability, done) {
         <dt>Branch</dt><dd><span class="mono">${sp.branch || "-"}</span>${sp.base_branch ? html` <span class="faint">from ${sp.base_branch}${sp.base_commit ? ` @ ${sp.base_commit.slice(0, 10)}` : ""}</span>` : ""}</dd>
         ${sp.commit ? html`<dt>Commit</dt><dd class="mono">${sp.commit.slice(0, 12)}</dd>` : ""}
         <dt>Files</dt><dd><div class="tag-list">${sp.files.map((f) => html`<span class="badge mono">${f}</span>`)}</div></dd>
-        ${sp.tool_id ? html`<dt>Tool</dt><dd><a href="#/tools/${enc(sp.tool_id)}">${sp.tool_id}</a></dd>` : ""}
+        ${sp.tool_id ? html`<dt>Tool</dt><dd><a href="#/tools/${enc(sp.tool_id)}">${names[sp.tool_id] || sp.tool_id}</a></dd>` : ""}
         <dt>Requested</dt><dd>${sp.requested_by || "-"} - <span title="${dateTime(sp.created_at)}">${timeAgo(sp.created_at)}</span></dd>
         ${sp.decided_by ? html`<dt>Decided by</dt><dd>${sp.decided_by}</dd>` : ""}
         ${sp.applied_at ? html`<dt>Applied</dt><dd>${dateTime(sp.applied_at)}</dd>` : ""}
@@ -359,6 +359,7 @@ export async function render(el, ctx) {
   let data = null;
   let patches = [];
   const admin = can("admin");
+  const toolNames = () => Object.fromEntries(ctx.state.tools.map((t) => [t.id, t.name]));
 
   const draw = async () => {
     const [d, sp] = await Promise.all([get("/extensions"), get("/self-patches")]);
@@ -368,7 +369,7 @@ export async function render(el, ctx) {
     const enabled = data.extensions.filter((p) => p.status === "enabled").length;
     const proposed = data.extensions.filter((p) => p.status === "proposed").length + patches.filter((p) => p.status === "proposed").length;
     const records = data.domains.reduce((n, x) => n + x.count, 0);
-    const names = Object.fromEntries(ctx.state.tools.map((t) => [t.id, t.name]));
+    const names = toolNames();
     const inner = (label, value, sub, iconName) => html`<div class="stat-icon">${icon(iconName)}</div>
       <div><div class="label">${label}</div><div class="value">${value}</div><div class="sub">${sub}</div></div>`;
     const stat = (label, value, sub, iconName, target) => (target.startsWith("#")
@@ -450,7 +451,7 @@ export async function render(el, ctx) {
     },
     extend: (d) => openExtend({ id: d.tool, name: d.name }, { claude: data?.self_patching.claude, done: refresh }),
     ask: () => askForChange(ctx.state.tools, data.self_patching, refresh),
-    patch: (d) => openSelfPatch(d.id, data?.self_patching, refresh),
+    patch: (d) => openSelfPatch(d.id, data?.self_patching, toolNames(), refresh),
     async apply(d, btn) {
       btn.disabled = true;
       try {
@@ -465,7 +466,7 @@ export async function render(el, ctx) {
   await draw();
   // #/extensions/packs/<id> and #/extensions/self-patches/<id> open that pack or self-patch (links from apps and Approvals)
   if (second && first === "packs") openPack(second, { activeDomains: activeDomains(second), done: refresh });
-  if (second && first === "self-patches") openSelfPatch(second, data.self_patching, refresh);
+  if (second && first === "self-patches") openSelfPatch(second, data.self_patching, toolNames(), refresh);
   if (second) history.replaceState(null, "", tab === "packs" ? "#/extensions" : `#/extensions/${tab}`);
   ctx.live(LIVE, refresh, 600);
 }
