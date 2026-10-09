@@ -9,6 +9,7 @@ from typing import Any, TypeVar
 from pydantic import BaseModel
 
 from .approvals import Approvals
+from .auth.service import AuthService
 from .bus import Bus
 from .config import AUTONOMY_LEVELS, Settings
 from .execution.processes import ProcessManager
@@ -29,6 +30,7 @@ class Hub:
         settings.workspace.mkdir(parents=True, exist_ok=True)
         self.store = Store(settings.db_path)
         self.bus = Bus(self.store)
+        self.auth = AuthService(self)
         self.llm = LLM(self)
         self.approvals = Approvals(self)
         self.processes = ProcessManager(self)
@@ -71,13 +73,13 @@ class Hub:
         stored = (self.store.get("settings", "prefs") or {}).get("values", {})
         return {"autonomy": self.settings.autonomy, "model": self.settings.model, **stored}
 
-    def update_prefs(self, **values: Any) -> dict[str, Any]:
+    def update_prefs(self, actor: str, **values: Any) -> dict[str, Any]:
         values = {k: v for k, v in values.items() if v is not None}
         if "autonomy" in values and values["autonomy"] not in AUTONOMY_LEVELS:
             raise ValueError(f"autonomy must be one of {', '.join(AUTONOMY_LEVELS)}")
         stored = (self.store.get("settings", "prefs") or {}).get("values", {})
         self.store.put("settings", {"id": "prefs", "values": {**stored, **values}})
-        self.activity("user", "info", "Settings changed: " + ", ".join(f"{k}={v}" for k, v in values.items()))
+        self.activity(actor, "info", "Settings changed: " + ", ".join(f"{k}={v}" for k, v in values.items()))
         return self.prefs
 
     # -- activity log ----------------------------------------------------------------

@@ -22,8 +22,8 @@ function pendingCard(a) {
       ${diffLines(p) > 30
         ? html`<details><summary class="muted" style="cursor:pointer">Show diff (${diffLines(p)} lines)</summary><div style="margin-top:8px">${diffView(p.diff)}</div></details>`
         : diffView(p.diff)}` : ""}
-    <div class="row" style="margin-top:12px">
-      <input placeholder="Note (optional)" data-note="${a.id}" style="flex:1;min-width:180px">
+    <div class="row" style="margin-top:12px" data-min-role="operator">
+      <input placeholder="Note (optional)" data-note="${a.id}" style="flex:1;min-width:180px" aria-label="Note">
       <button class="btn" data-act="reject" data-id="${a.id}">${icon("x")}Reject</button>
       <button class="btn ok" data-act="approve" data-id="${a.id}">${icon("check")}Approve</button>
     </div></section>`;
@@ -43,7 +43,7 @@ export async function render(el, ctx) {
         : html`<section class="card">${emptyState("checkCircle", "Nothing waiting", "When an agent wants to run a state-changing command or apply a patch, it shows up here.")}</section>`)
       : html`<section class="card flush">${history.length ? html`<div class="table-wrap"><table class="table"><thead><tr><th>Action</th><th>Kind</th><th>By</th><th>Decision</th><th>Result</th><th>When</th></tr></thead><tbody>
           ${history.map((a) => html`<tr><td style="max-width:420px;overflow-wrap:anywhere">${a.title}${a.note ? html`<div class="faint">Note: ${a.note}</div>` : ""}</td>
-            <td>${badge(a.kind)}</td><td>${a.requested_by}</td><td>${badge(a.status)}</td>
+            <td>${badge(a.kind)}</td><td>${a.requested_by}</td><td>${badge(a.status)}${a.decided_by ? html`<div class="faint" style="font-size:12px">by ${a.decided_by}</div>` : ""}</td>
             <td class="faint" style="font-size:12px;max-width:260px;overflow-wrap:anywhere">${a.result ? (a.result.error || a.result.branch || (a.result.exit_code !== undefined ? `exit ${a.result.exit_code}` : a.result.location || "")) : ""}</td>
             <td class="faint">${timeAgo(a.decided_at || a.created_at)}</td></tr>`)}</tbody></table></div>`
         : emptyState("checkCircle", "No decisions yet", "Approved and rejected actions are kept here as an audit trail.")}</section>`}`);

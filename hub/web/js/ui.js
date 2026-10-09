@@ -68,6 +68,13 @@ const ICONS = {
   link: '<path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1"/><path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/>',
   edit: '<path d="M4 20h4L19 9l-4-4L4 16z"/><path d="m13.5 6.5 4 4"/>',
   minus: '<path d="M5 12h14"/>',
+  user: '<circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/>',
+  users: '<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><path d="M16 4.5a3.5 3.5 0 0 1 0 7M18 14a6.5 6.5 0 0 1 3.5 6"/>',
+  key: '<circle cx="8" cy="15" r="4"/><path d="m11 12 9-9M16 7l3 3M14 9l2 2"/>',
+  lock: '<rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/>',
+  logout: '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="m16 17 5-5-5-5M21 12H9"/>',
+  copy: '<rect x="8" y="8" width="13" height="13" rx="2"/><path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3"/>',
+  monitor: '<rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/>',
 };
 
 export function icon(name, extra = "") {
@@ -88,6 +95,36 @@ export function timeAgo(ts) {
 export function debounce(fn, ms) {
   let t;
   return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), ms); };
+}
+
+// ---------- roles & small helpers ----------
+
+const RANK = { viewer: 1, operator: 2, admin: 3 };
+
+/** True when the signed-in role (body[data-role]) is at least `min`; no `min` means everyone. */
+export function can(min) {
+  return !min || (RANK[document.body.dataset.role] || 0) >= (RANK[min] || Infinity);
+}
+
+export function toggleTheme() {
+  const next = document.documentElement.dataset.theme === "light" ? "dark" : "light";
+  document.documentElement.dataset.theme = next;
+  try { localStorage.setItem("hub.theme", next); } catch {}
+  return next;
+}
+
+/** Copy text; falls back to selecting `input` where the async clipboard API is unavailable (plain http). */
+export async function copyText(text, input) {
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch {
+    input?.focus();
+    input?.select();
+    let ok = false;
+    try { ok = document.execCommand("copy"); } catch {}
+    if (!ok) return toast("Press Ctrl+C to copy the selected text", "warn");
+  }
+  toast("Copied to the clipboard", "ok");
 }
 
 const PALETTE = ["#7c3aed", "#4f46e5", "#0ea5e9", "#0d9488", "#16a34a", "#ca8a04", "#ea580c", "#db2777", "#9333ea", "#2563eb"];
@@ -188,38 +225,42 @@ export function toast(message, tone = "info") {
 
 // ---------- modals ----------
 
-/** Opens a modal. `body` is html``; returns {el, close}. onSubmit receives FormData when the form is submitted. */
-export function modal({ title, body, submit = "Save", cancel = "Cancel", wide = false, onSubmit, footer }) {
+/**
+ * Opens a modal. `body` is html``; returns {el, close}. onSubmit receives FormData when the form is submitted.
+ * `minRole`: below that role the body is read-only and the submit button hidden. `sticky`: only the buttons close it.
+ */
+export function modal({ title, body, submit = "Save", cancel = "Cancel", wide = false, onSubmit, footer, minRole, sticky = false }) {
+  const readOnly = !can(minRole);
   const backdrop = document.createElement("div");
   backdrop.className = "backdrop";
-  const foot = footer ?? html`${cancel ? html`<button type="button" class="btn" data-close>${cancel}</button>` : ""}
-      ${submit ? html`<button type="submit" class="btn primary">${submit}</button>` : ""}`;
+  const foot = footer ?? html`${cancel ? html`<button type="button" class="btn" data-close>${readOnly && cancel === "Cancel" ? "Close" : cancel}</button>` : ""}
+      ${submit ? html`<button type="submit" class="btn primary" ${minRole ? html`data-min-role="${minRole}"` : ""}>${submit}</button>` : ""}`;
   setHTML(backdrop, html`<form class="modal ${wide ? "wide" : ""}" role="dialog" aria-modal="true" novalidate>
     <header><h2>${title}</h2><button type="button" class="icon-btn" data-close aria-label="Close">${icon("x")}</button></header>
-    <div class="body">${body}</div>
+    <div class="body">${readOnly ? html`<fieldset class="plain" disabled>${body}</fieldset>` : body}</div>
     <footer>${foot}</footer></form>`);
   const form = backdrop.querySelector("form");
   const close = () => { backdrop.remove(); document.removeEventListener("keydown", onKey); };
-  const onKey = (e) => { if (e.key === "Escape") close(); };
+  const onKey = (e) => { if (e.key === "Escape" && !sticky) close(); };
   document.addEventListener("keydown", onKey);
-  backdrop.addEventListener("mousedown", (e) => { if (e.target === backdrop) close(); });
+  backdrop.addEventListener("mousedown", (e) => { if (e.target === backdrop && !sticky) close(); });
   backdrop.querySelectorAll("[data-close]").forEach((b) => b.addEventListener("click", close));
   form.addEventListener("submit", async (e) => {
     e.preventDefault();
-    if (!onSubmit) return close();
+    if (!onSubmit || readOnly) return close();
     const btn = form.querySelector('button[type="submit"]');
     if (btn) btn.disabled = true;
     try {
       const keep = await onSubmit(new FormData(form), form);
       if (keep !== true) close();
     } catch (err) {
-      toast(err.message, "bad");
+      if (err.status !== 401) toast(err.message, "bad"); // a 401 already sent the person to the login screen
     } finally {
       if (btn) btn.disabled = false;
     }
   });
   document.body.append(backdrop);
-  setTimeout(() => form.querySelector("input:not([type=hidden]), select, textarea")?.focus(), 30);
+  setTimeout(() => form.querySelector("input:not([type=hidden]):not([hidden]):not(:disabled), select:not(:disabled), textarea:not(:disabled)")?.focus(), 30);
   return { el: form, close };
 }
 

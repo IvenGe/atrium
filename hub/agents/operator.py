@@ -21,6 +21,11 @@ DISCOVERY_SCRIPT = (
 )
 
 
+def from_person(sender: str) -> bool:
+    """A command comes from a person when a signed-in user sent it; tokens and agents are automation."""
+    return sender.startswith("user:")
+
+
 class OperatorAgent(BaseAgent):
     role = "operator"
     title = "Operator Agent"
@@ -33,11 +38,12 @@ class OperatorAgent(BaseAgent):
     # -- requests --------------------------------------------------------------------
 
     async def on_run(self, body: dict[str, Any], msg: Message) -> dict[str, Any]:
-        """Run a shell command. The sender decides the policy: 'user' means a person typed it."""
+        """Run a shell command. The sender decides the policy: "user:<name>" means a person typed it;
+        API tokens ("token:<name>") are automation and follow the autonomy policy like agents."""
         command = str(body.get("command", "")).strip()
         target = body.get("target") or "local"
         trusted = bool(body.get("discovery")) and command == DISCOVERY_SCRIPT
-        decision = policy.decide(command, self.hub.prefs["autonomy"], from_person=msg.sender == "user", trusted=trusted)
+        decision = policy.decide(command, self.hub.prefs["autonomy"], from_person=from_person(msg.sender), trusted=trusted)
         request = {"command": command, "target": target, "cwd": body.get("cwd"), "timeout": body.get("timeout", 120),
                    "reason": body.get("reason", ""), "origin": msg.sender}
         if decision.action == "deny":
@@ -60,7 +66,7 @@ class OperatorAgent(BaseAgent):
         if tool is None or tool.manifest is None or not tool.manifest.launch.command:
             raise ValueError("This tool has no launch command in its manifest")
         command = tool.manifest.launch.command
-        decision = policy.decide(command, self.hub.prefs["autonomy"], from_person=msg.sender == "user")
+        decision = policy.decide(command, self.hub.prefs["autonomy"], from_person=from_person(msg.sender))
         if decision.action == "deny":
             return {"status": "denied", "reason": decision.reason}
         payload = {"tool_id": tool.id, "origin": msg.sender}
@@ -79,7 +85,7 @@ class OperatorAgent(BaseAgent):
             return
         origin = approval.payload.get("origin", "supervisor")
         if not body.get("approved"):
-            if origin != "user":
+            if not from_person(origin):
                 await self.tell(origin, "command.completed", {"status": "rejected", "command": approval.payload.get("command")})
             return
         try:
@@ -89,7 +95,7 @@ class OperatorAgent(BaseAgent):
                 return
             result = await self.execute(approval.payload)
             self.hub.approvals.complete(approval.id, result["exit_code"] == 0, result)
-            if origin != "user":
+            if not from_person(origin):
                 await self.tell(origin, "command.completed", {"status": "done", **result})
         except Exception as exc:
             self.hub.approvals.complete(approval.id, False, {"error": str(exc)})

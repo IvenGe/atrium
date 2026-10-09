@@ -28,8 +28,8 @@ export async function render(el, ctx) {
     setHTML(el, html`
       <div class="hero">
         <div><h1>Your suite</h1><p class="muted">Open-source, closed-source and SaaS tools - integrated, patched and supervised by agents.</p></div>
-        <div class="row"><a class="btn" href="#/agents">${icon("chat")}Ask the supervisor</a>
-          <button class="btn primary" data-act="import">${icon("plus")}Import tool</button></div>
+        <div class="row"><a class="btn" href="#/agents" data-min-role="operator">${icon("chat")}Ask the supervisor</a>
+          <button class="btn primary" data-act="import" data-min-role="operator">${icon("plus")}Import tool</button></div>
       </div>
       <div class="grid cols-5" style="margin-bottom:16px">
         ${stat("Apps integrated", ov.tools, ov.suite_score != null ? `suite score ${ov.suite_score} - ${ov.running} running` : "import your first tool", "grid", "#/tools")}
@@ -44,7 +44,7 @@ export async function render(el, ctx) {
         <section class="card"><header><h2>Apps</h2><a href="#/tools">All apps &rarr;</a></header>
           ${tools.length ? html`<div class="tool-grid">${tools.map(toolCard)}</div>`
             : emptyState("grid", "No tools yet", "Import a GitHub repository, a local project or a SaaS service. A supervisor agent is assigned to each one.",
-              html`<button class="btn primary" data-act="import">${icon("plus")}Import your first tool</button>`)}
+              html`<button class="btn primary" data-act="import" data-min-role="operator">${icon("plus")}Import your first tool</button>`)}
         </section>
         <section class="card"><header><h2>Live agent activity</h2><a href="#/agents">Agents &rarr;</a></header>
           <div class="feed scroll">${activity.length ? activity.slice().reverse().map(feedItem) : html`<p class="muted">Nothing yet.</p>`}</div>

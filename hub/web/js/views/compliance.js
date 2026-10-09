@@ -1,6 +1,6 @@
 import { del, get, patch, post } from "../api.js";
 import {
-  actions, badge, confirmDialog, emptyState, field, html, icon, md, modal, options, setHTML, timeAgo, toast,
+  actions, badge, can, confirmDialog, emptyState, field, html, icon, md, modal, options, setHTML, timeAgo, toast,
 } from "../ui.js";
 
 const STATUS_ICON = { pass: "check", partial: "minus", fail: "x", manual: "edit", na: "minus" };
@@ -45,7 +45,7 @@ function controlRow(c) {
         <ul style="margin:4px 0;padding-left:18px;font-size:12.5px">${c.evidence.map((e) => html`<li>${e}</li>`)}</ul></details>` : ""}
       <div class="row" style="gap:6px;margin-top:6px">${Object.entries(c.refs).map(([k, v]) => html`<span class="badge">${k} ${v}</span>`)}</div>
     </div>
-    <div><button class="btn sm" data-act="override" data-id="${c.id}">${icon("edit")}Set</button></div></div>`;
+    <div data-min-role="operator"><button class="btn sm" data-act="override" data-id="${c.id}">${icon("edit")}Set</button></div></div>`;
 }
 
 function riskForm(r = {}) {
@@ -92,7 +92,7 @@ export async function render(el, ctx) {
     const families = [...new Set(data.controls.map((c) => c.family))];
     setHTML(el, html`
       <div class="page-head"><div><h1>Compliance hub</h1><p class="muted">Governance, risk and compliance. The GRC Supervisor checks controls against live hub state and maps the evidence to ISO 27001, SOC 2 and NIS2.</p></div>
-        <button class="btn" data-act="evaluate">${icon("refresh")}Re-evaluate</button></div>
+        <button class="btn" data-act="evaluate" data-min-role="operator">${icon("refresh")}Re-evaluate</button></div>
       <div class="tabs">${[["overview", "Overview"], ["controls", `Controls (${data.controls.length})`], ["risks", `Risks (${openRisks.length} open)`], ["policies", `Policies (${policies.length})`]]
         .map(([k, label]) => html`<button class="${tab === k ? "active" : ""}" data-act="tab" data-tab="${k}">${label}</button>`)}</div>
 
@@ -110,7 +110,7 @@ export async function render(el, ctx) {
         ${data.controls.filter((c) => c.family === fam).map(controlRow)}</section>`)}` : ""}
 
       ${tab === "risks" ? html`<div class="grid split">
-          <section class="card flush"><header><h2>Risk register</h2><button class="btn sm primary" data-act="add-risk">${icon("plus")}Add risk</button></header>
+          <section class="card flush"><header><h2>Risk register</h2><button class="btn sm primary" data-act="add-risk" data-min-role="operator">${icon("plus")}Add risk</button></header>
             ${risks.length ? html`<div class="table-wrap" style="margin-top:10px"><table class="table"><thead><tr><th>Score</th><th>Risk</th><th>Owner</th><th>Treatment</th><th>Status</th><th>Reviewed</th></tr></thead><tbody>
               ${risks.slice().sort((a, b) => (a.status === "closed") - (b.status === "closed") || b.score - a.score).map((r) => html`<tr class="clickable" data-act="edit-risk" data-id="${r.id}">
                 <td><span class="badge" style="background:${riskColor(r.score)};color:#fff;border:0">${r.score}</span></td>
@@ -120,13 +120,13 @@ export async function render(el, ctx) {
           <section class="card"><header><h2>Heatmap</h2></header>${heatmap(risks)}</section></div>` : ""}
 
       ${tab === "policies" ? html`<section class="card"><header><h2>Policies</h2>
-          <div class="row"><select id="tpl" aria-label="Policy template"><option value="">New from template...</option>${options(POLICY_CATEGORIES.slice(0, 6))}</select>
+          <div class="row" data-min-role="operator"><select id="tpl" aria-label="Policy template"><option value="">New from template...</option>${options(POLICY_CATEGORIES.slice(0, 6))}</select>
             <button class="btn sm primary" data-act="add-policy">${icon("plus")}Blank policy</button></div></header>
           ${policies.length ? policies.map((p) => html`<div class="check-row"><div class="stat-icon">${icon("file")}</div>
             <div style="flex:1;min-width:0"><div class="row" style="gap:8px"><b>${p.title}</b>${badge(p.status)}<span class="badge">${p.category}</span><span class="faint">v${p.version}</span></div>
               <div class="faint" style="font-size:12px">${p.owner ? `Owner ${p.owner}` : "No owner"}${p.review_due ? ` - review due ${p.review_due}` : ""} - updated ${timeAgo(p.updated_at)}</div></div>
-            <div class="row" style="gap:6px">${p.status !== "approved" ? html`<button class="btn sm ok" data-act="approve-policy" data-id="${p.id}">${icon("check")}Approve</button>` : ""}
-              <button class="btn sm" data-act="edit-policy" data-id="${p.id}">${icon("edit")}Edit</button></div></div>`)
+            <div class="row" style="gap:6px">${p.status !== "approved" ? html`<button class="btn sm ok" data-act="approve-policy" data-id="${p.id}" data-min-role="operator">${icon("check")}Approve</button>` : ""}
+              <button class="btn sm" data-act="edit-policy" data-id="${p.id}">${can("operator") ? html`${icon("edit")}Edit` : html`${icon("file")}View`}</button></div></div>`)
           : emptyState("file", "No policies yet", "Start from a template - the GRC Supervisor counts approved policies as evidence.")}</section>` : ""}`);
     el.querySelector("#tpl")?.addEventListener("change", async (e) => {
       const cat = e.target.value;
@@ -138,9 +138,10 @@ export async function render(el, ctx) {
 
   const openPolicy = (p, existing = false) => {
     const m = modal({
-      title: existing ? p.title : "New policy", body: policyForm(p), wide: true, submit: "Save",
-      footer: html`${existing ? html`<button type="button" class="btn danger" data-del style="margin-right:auto">${icon("trash")}Delete</button>` : ""}
-        <button type="button" class="btn" data-preview>Preview</button><button type="button" class="btn" data-close>Cancel</button><button type="submit" class="btn primary">Save</button>`,
+      title: existing ? p.title : "New policy", body: policyForm(p), wide: true, submit: "Save", minRole: "operator",
+      footer: html`${existing ? html`<button type="button" class="btn danger" data-del style="margin-right:auto" data-min-role="operator">${icon("trash")}Delete</button>` : ""}
+        <button type="button" class="btn" data-preview>Preview</button><button type="button" class="btn" data-close>${can("operator") ? "Cancel" : "Close"}</button>
+        <button type="submit" class="btn primary" data-min-role="operator">Save</button>`,
       async onSubmit(d) {
         if (existing) await patch(`/grc/policies/${p.id}`, policyData(d)); else await post("/grc/policies", policyData(d));
         toast("Policy saved", "ok");
@@ -163,25 +164,26 @@ export async function render(el, ctx) {
       const c = data.controls.find((x) => x.id === d.id);
       const m = modal({
         title: `${c.id} ${c.title}`,
+        minRole: "operator",
         body: html`<p class="muted" style="margin-bottom:12px">${c.description}</p>
           ${field("Status", html`<select name="status">${options([["pass", "Pass"], ["partial", "Partial"], ["fail", "Fail"], ["na", "Not applicable"]], c.status)}</select>`)}
           ${field("Justification / evidence", html`<textarea name="note" rows="3" placeholder="e.g. Backups handled by the hosting provider, contract ref. 2026-14">${c.note || ""}</textarea>`)}
           ${c.automated ? html`<p class="faint" style="font-size:12px">This control is automated. A status set by hand overrides the check until you switch it back.</p>` : ""}`,
-        footer: html`${c.manual ? html`<button type="button" class="btn" data-auto style="margin-right:auto">Back to automatic</button>` : ""}
-          <button type="button" class="btn" data-close>Cancel</button><button type="submit" class="btn primary">Save</button>`,
+        footer: html`${c.manual ? html`<button type="button" class="btn" data-auto style="margin-right:auto" data-min-role="operator">Back to automatic</button>` : ""}
+          <button type="button" class="btn" data-close>Cancel</button><button type="submit" class="btn primary" data-min-role="operator">Save</button>`,
         async onSubmit(f) { await patch(`/grc/controls/${c.id}`, { status: f.get("status"), note: f.get("note") || null }); toast("Control updated", "ok"); draw(); },
       });
       m.el.querySelector("[data-auto]")?.addEventListener("click", async () => { m.close(); await patch(`/grc/controls/${c.id}`, { clear: true }); draw(); });
     },
     "add-risk"() {
-      modal({ title: "Add risk", body: riskForm(), submit: "Add", async onSubmit(d) { await post("/grc/risks", riskData(d)); toast("Risk added", "ok"); draw(); } });
+      modal({ title: "Add risk", body: riskForm(), submit: "Add", minRole: "operator", async onSubmit(d) { await post("/grc/risks", riskData(d)); toast("Risk added", "ok"); draw(); } });
     },
     "edit-risk"(d) {
       const r = risks.find((x) => x.id === d.id);
       const m = modal({
-        title: r.title, body: riskForm(r), wide: true,
-        footer: html`<button type="button" class="btn danger" data-del style="margin-right:auto">${icon("trash")}Delete</button>
-          <button type="button" class="btn" data-close>Cancel</button><button type="submit" class="btn primary">Save &amp; mark reviewed</button>`,
+        title: r.title, body: riskForm(r), wide: true, minRole: "operator",
+        footer: html`<button type="button" class="btn danger" data-del style="margin-right:auto" data-min-role="operator">${icon("trash")}Delete</button>
+          <button type="button" class="btn" data-close>${can("operator") ? "Cancel" : "Close"}</button><button type="submit" class="btn primary" data-min-role="operator">Save &amp; mark reviewed</button>`,
         async onSubmit(f) { await patch(`/grc/risks/${r.id}`, riskData(f)); toast("Risk updated", "ok"); draw(); },
       });
       m.el.querySelector("[data-del]").addEventListener("click", async () => {

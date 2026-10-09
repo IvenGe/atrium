@@ -1,10 +1,11 @@
 import { del, get, post } from "../api.js";
-import { actions, badge, confirmDialog, emptyState, field, html, icon, modal, options, setHTML, timeAgo, toast } from "../ui.js";
+import { actions, badge, can, confirmDialog, emptyState, field, html, icon, modal, options, setHTML, timeAgo, toast } from "../ui.js";
 
 export function openAddHost() {
   modal({
     title: "Add an SSH host",
     submit: "Add host",
+    minRole: "operator",
     body: html`<div class="form-grid">
         ${field("Name", html`<input name="name" placeholder="web-1" required>`)}
         ${field("Address", html`<input name="address" placeholder="10.0.0.12 or web-1.example.com" required>`)}
@@ -37,11 +38,12 @@ export async function render(el, ctx) {
     const command = el.querySelector("[name=command]")?.value || "";
     setHTML(el, html`
       <div class="page-head"><div><h1>Operator</h1><p class="muted">Run commands on this machine or on your servers over SSH. The Operator Agent runs the same commands for the other agents.</p></div>
-        <button class="btn" data-act="add-host">${icon("plus")}Add host</button></div>
+        <button class="btn" data-act="add-host" data-min-role="operator">${icon("plus")}Add host</button></div>
       <div class="grid split">
         <div class="stack">
           <section class="card"><header><h2>Console</h2></header>
-            <form id="run-form">
+            ${can("operator") ? "" : html`<p class="muted">Running commands needs the operator role. Pick a recent command below to see its output.</p>`}
+            <form id="run-form" data-min-role="operator">
               <div class="form-grid">${field("Target", html`<select name="target">${options(targets, target)}</select>`)}
                 ${field("Working directory (optional)", html`<input name="cwd" placeholder="defaults to the hub's directory">`)}</div>
               <div class="row" style="flex-wrap:nowrap"><input name="command" class="mono" placeholder="e.g. df -h" value="${command}" autocomplete="off" aria-label="Command">
@@ -65,10 +67,10 @@ export async function render(el, ctx) {
             <div style="flex:1;min-width:0"><b>${h.name}</b><div class="faint mono" style="font-size:12px">${h.username}@${h.address}:${h.port}</div>
               <div class="row" style="gap:6px;margin-top:6px">${h.key_path ? badge("key auth", "ok") : badge("agent/default keys")}
                 ${h.strict_host_keys ? badge("host key verified", "ok") : badge("host key NOT verified", "bad")}${h.tags.map((t) => badge(t, ""))}</div></div>
-            <div class="row" style="gap:6px;align-items:flex-start"><button class="btn sm" data-act="discover" data-id="${h.id}" title="Collect OS, CPU, memory and disk facts">${icon("search")}Discover</button>
+            <div class="row" style="gap:6px;align-items:flex-start" data-min-role="operator"><button class="btn sm" data-act="discover" data-id="${h.id}" title="Collect OS, CPU, memory and disk facts">${icon("search")}Discover</button>
               <button class="btn sm danger" data-act="remove-host" data-id="${h.id}" aria-label="Remove host">${icon("trash")}</button></div></div>`)
           : emptyState("server", "No hosts", "Add a server to run commands over SSH and inventory it in Assets.",
-            html`<button class="btn primary" data-act="add-host">${icon("plus")}Add host</button>`)}
+            html`<button class="btn primary" data-act="add-host" data-min-role="operator">${icon("plus")}Add host</button>`)}
         </section>
       </div>`);
     el.querySelector("#run-form").addEventListener("submit", run);

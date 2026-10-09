@@ -25,6 +25,7 @@ export function openImport(type = "github") {
   const m = modal({
     title: "Import a tool",
     submit: "Import",
+    minRole: "operator",
     body: html`<div class="seg" style="margin-bottom:16px">
         <button type="button" data-type="github">${icon("branch")}GitHub</button>
         <button type="button" data-type="local">${icon("folder")}Local project</button>
@@ -55,7 +56,7 @@ async function renderList(el, ctx) {
     const tools = await get("/tools");
     setHTML(el, html`
       <div class="page-head"><div><h1>Apps</h1><p class="muted">Every imported tool has its own supervisor agent and an integration score.</p></div>
-        <button class="btn primary" data-act="import">${icon("plus")}Import tool</button></div>
+        <button class="btn primary" data-act="import" data-min-role="operator">${icon("plus")}Import tool</button></div>
       <section class="card flush">
       ${tools.length ? html`<div class="table-wrap"><table class="table"><thead><tr>
           <th>App</th><th>Type</th><th>Status</th><th>Integration</th><th>Health</th><th></th></tr></thead><tbody>
@@ -68,7 +69,7 @@ async function renderList(el, ctx) {
             <td style="text-align:right">${t.manifest?.ui?.url ? html`<a class="btn sm" href="#/portal/${t.id}" data-stop>${icon("external")}Open</a>` : ""}</td>
           </tr>`)}</tbody></table></div>`
         : emptyState("grid", "No tools yet", "Import from GitHub, a local folder or a SaaS URL.",
-          html`<button class="btn primary" data-act="import">${icon("plus")}Import tool</button>`)}
+          html`<button class="btn primary" data-act="import" data-min-role="operator">${icon("plus")}Import tool</button>`)}
       </section>`);
     el.querySelectorAll("[data-stop]").forEach((a) => a.addEventListener("click", (e) => e.stopPropagation()));
   };
@@ -147,13 +148,13 @@ async function renderDetail(el, ctx, id) {
         <div class="row" style="margin-top:14px">
           ${m?.ui?.url ? html`<a class="btn primary" href="#/portal/${tool.id}">${icon("external")}Open portal</a>` : ""}
           ${m?.kind !== "saas" && m?.launch?.command ? (running
-            ? html`<button class="btn" data-act="stop">${icon("stop")}Stop</button>`
-            : html`<button class="btn" data-act="start">${icon("play")}Start</button>`) : ""}
-          <button class="btn" data-act="health" ${!m?.health?.url ? "disabled" : ""}>${icon("activity")}Check health</button>
-          <button class="btn" data-act="analyze" ${busy ? "disabled" : ""}>${icon("refresh")}Re-analyse</button>
-          <button class="btn" data-act="patch" ${!tool.report ? "disabled" : ""}>${icon("wrench")}Propose patches</button>
+            ? html`<button class="btn" data-act="stop" data-min-role="operator">${icon("stop")}Stop</button>`
+            : html`<button class="btn" data-act="start" data-min-role="operator">${icon("play")}Start</button>`) : ""}
+          <button class="btn" data-act="health" data-min-role="operator" ${!m?.health?.url ? "disabled" : ""}>${icon("activity")}Check health</button>
+          <button class="btn" data-act="analyze" data-min-role="operator" ${busy ? "disabled" : ""}>${icon("refresh")}Re-analyse</button>
+          <button class="btn" data-act="patch" data-min-role="operator" ${!tool.report ? "disabled" : ""}>${icon("wrench")}Propose patches</button>
           <span class="spacer"></span>
-          <button class="btn danger" data-act="remove">${icon("trash")}Remove</button>
+          <button class="btn danger" data-act="remove" data-min-role="operator">${icon("trash")}Remove</button>
         </div>
       </section>
       <div class="tabs">${[["integration", "Integration"], ["manifest", "Manifest"], ["patches", `Patches (${tool.patches.length})`], ["process", "Process"], ["supervisor", "Supervisor"]]

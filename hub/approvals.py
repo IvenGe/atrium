@@ -36,7 +36,9 @@ class Approvals:
     def pending_count(self) -> int:
         return sum(1 for a in self.list() if a.status == "pending")
 
-    async def decide(self, approval_id: str, approve: bool, note: str | None = None) -> Approval:
+    async def decide(self, approval_id: str, approve: bool, note: str | None, actor: str,
+                     sender: str | None = None) -> Approval:
+        """Record a person's (or token's) decision; `sender` is their bus id, defaulting to the actor."""
         approval = self.get(approval_id)
         if approval is None:
             raise KeyError(approval_id)
@@ -45,11 +47,12 @@ class Approvals:
         approval.status = "approved" if approve else "rejected"
         approval.note = note
         approval.decided_at = time.time()
+        approval.decided_by = actor
         self._save(approval)
         verb = "Approved" if approve else "Rejected"
-        self.hub.activity("user", "info", f"{verb}: {approval.title}", approval_id=approval.id)
-        await self.hub.bus.tell("user", approval.requested_by, "approval.decided",
-                                {"approval_id": approval.id, "approved": approve, "note": note})
+        self.hub.activity(actor, "info", f"{verb}: {approval.title}", approval_id=approval.id)
+        await self.hub.bus.tell(sender or actor, approval.requested_by, "approval.decided",
+                                {"approval_id": approval.id, "approved": approve, "note": note, "decided_by": actor})
         return approval
 
     def complete(self, approval_id: str, ok: bool, result: dict[str, Any]) -> None:

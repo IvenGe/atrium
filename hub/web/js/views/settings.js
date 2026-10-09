@@ -1,5 +1,5 @@
 import { get, patch } from "../api.js";
-import { badge, field, html, icon, setHTML, toast } from "../ui.js";
+import { badge, can, field, html, icon, setHTML, toast } from "../ui.js";
 
 const LEVELS = [
   ["manual", "Manual", "Every agent command and patch waits for your approval."],
@@ -9,8 +9,10 @@ const LEVELS = [
 
 export async function render(el) {
   const s = await get("/settings");
+  const admin = can("admin");
   setHTML(el, html`
     <div class="page-head"><div><h1>Settings</h1><p class="muted">How much the agents may do on their own, and which Claude model they use.</p></div></div>
+    ${admin ? "" : html`<div class="notice" style="margin-bottom:16px">${icon("lock")}<div class="muted">Only administrators can change these settings.</div></div>`}
     <form id="settings-form" class="grid split">
       <section class="card"><header><h2>Agent autonomy</h2></header>
         <div class="stack" style="gap:10px">${LEVELS.map(([value, title, text]) => html`<label class="radio-card">
@@ -24,13 +26,19 @@ export async function render(el) {
           ${s.llm.available ? "" : html`<div class="notice">${icon("bot")}<div class="muted">No Claude credentials found. Set <code>ANTHROPIC_API_KEY</code> (or run <code>ant auth login</code>)
             and restart the hub. Without it the agents use deterministic rules and templates.</div></div>`}
           ${s.llm.last_error ? html`<p style="color:var(--bad);margin-top:8px;font-size:12.5px">Last error: ${s.llm.last_error}</p>` : ""}</div>
+        <div class="card" data-min-role="admin"><header><h2>Users &amp; access</h2>${icon("users")}</header>
+          <p class="muted" style="margin-bottom:10px">Accounts, roles and API tokens for scripts and integrations.</p>
+          <a class="btn" href="#/users">${icon("arrow")}Manage users</a></div>
         <div class="card"><header><h2>About</h2></header><dl class="kv"><dt>Version</dt><dd>${s.version}</dd><dt>Data directory</dt><dd class="mono">${s.data_dir}</dd>
           <dt>API docs</dt><dd><a href="/api/docs" target="_blank" rel="noopener">/api/docs</a></dd></dl></div>
-        <div><button class="btn primary">${icon("check")}Save settings</button></div>
+        <div data-min-role="admin"><button class="btn primary">${icon("check")}Save settings</button></div>
       </section>
     </form>`);
-  el.querySelector("#settings-form").addEventListener("submit", async (e) => {
+  const form = el.querySelector("#settings-form");
+  if (!admin) form.querySelectorAll("input").forEach((input) => { input.disabled = true; });
+  form.addEventListener("submit", async (e) => {
     e.preventDefault();
+    if (!admin) return;
     const data = new FormData(e.target);
     try {
       await patch("/settings", { autonomy: data.get("autonomy"), model: String(data.get("model") || "").trim() || null });

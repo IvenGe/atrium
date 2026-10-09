@@ -1,5 +1,5 @@
 import { del, get, patch, post } from "../api.js";
-import { actions, badge, confirmDialog, emptyState, field, html, icon, modal, options, setHTML, timeAgo, toast } from "../ui.js";
+import { actions, badge, can, confirmDialog, emptyState, field, html, icon, modal, options, setHTML, timeAgo, toast } from "../ui.js";
 
 const TYPES = ["server", "workstation", "network", "software", "saas", "cloud", "data", "other"];
 const TYPE_ICON = { server: "server", workstation: "terminal", network: "link", software: "grid", saas: "cloud", cloud: "cloud", data: "file", other: "box" };
@@ -38,7 +38,7 @@ export async function render(el, ctx) {
     const counts = Object.fromEntries(TYPES.map((t) => [t, active.filter((a) => a.type === t).length]));
     setHTML(el, html`
       <div class="page-head"><div><h1>Assets</h1><p class="muted">The asset register. The Asset Supervisor keeps tools, SaaS services and hosts in sync; add anything else by hand.</p></div>
-        <div class="row"><button class="btn" data-act="sync">${icon("refresh")}Sync now</button><button class="btn primary" data-act="add">${icon("plus")}Add asset</button></div></div>
+        <div class="row" data-min-role="operator"><button class="btn" data-act="sync">${icon("refresh")}Sync now</button><button class="btn primary" data-act="add">${icon("plus")}Add asset</button></div></div>
       <div class="grid cols-5" style="margin-bottom:16px">
         <div class="card stat"><div class="stat-icon">${icon("box")}</div><div><div class="label">Active assets</div><div class="value">${active.length}</div></div></div>
         <div class="card stat"><div class="stat-icon">${icon("alert")}</div><div><div class="label">Without owner</div><div class="value">${active.filter((a) => !a.owner).length}</div></div></div>
@@ -65,15 +65,15 @@ export async function render(el, ctx) {
     filter: (d) => { filter = d.f; draw(); },
     async sync() { const r = await post("/assets/sync"); toast(`Synced: ${r.created} new, ${r.updated} updated, ${r.retired} retired`, "ok"); draw(); },
     add() {
-      modal({ title: "Add asset", body: assetForm(), submit: "Add",
+      modal({ title: "Add asset", body: assetForm(), submit: "Add", minRole: "operator",
         async onSubmit(data) { await post("/assets", formData(data)); toast("Asset added", "ok"); draw(); } });
     },
     edit(d) {
       const a = assets.find((x) => x.id === d.id);
       const m = modal({
-        title: a.name, body: assetForm(a), submit: "Save", wide: true,
-        footer: html`<button type="button" class="btn danger" data-del style="margin-right:auto">${icon("trash")}Delete</button>
-          <button type="button" class="btn" data-close>Cancel</button><button type="submit" class="btn primary">Save</button>`,
+        title: a.name, body: assetForm(a), submit: "Save", wide: true, minRole: "operator",
+        footer: html`<button type="button" class="btn danger" data-del style="margin-right:auto" data-min-role="operator">${icon("trash")}Delete</button>
+          <button type="button" class="btn" data-close>${can("operator") ? "Cancel" : "Close"}</button><button type="submit" class="btn primary" data-min-role="operator">Save</button>`,
         async onSubmit(data) { await patch(`/assets/${a.id}`, formData(data)); toast("Saved", "ok"); draw(); },
       });
       m.el.querySelector("[data-del]").addEventListener("click", async () => {

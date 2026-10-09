@@ -3,14 +3,15 @@
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable
 
-from ..models import Asset, ControlState, Host, Patch, Policy, Risk, Tool
+from ..models import Asset, ControlState, Host, Patch, Policy, Risk, Tool, User
 from .baseline import CONTROLS, FRAMEWORKS, Control
 
 SSO_MODES = {"oidc", "saml", "oauth2", "ldap"}
 REVIEW_WINDOW = 90 * 24 * 3600
+DORMANT_AFTER = 90 * 24 * 3600
 
 
 @dataclass
@@ -23,6 +24,8 @@ class Snapshot:
     patches: list[Patch]
     autonomy: str
     audit_entries: int
+    users: list[User] = field(default_factory=list)
+    oidc_enabled: bool = False
 
 
 Result = tuple[str, str, list[str]]  # status, detail, evidence
@@ -75,6 +78,34 @@ def check_ssh_hardening(s: Snapshot) -> Result:
     missing = [h.name for h in s.hosts if not h.strict_host_keys or not h.key_path]
     status, detail, _ = _ratio(len(s.hosts) - len(missing), len(s.hosts), "hosts (key auth + host key check)", missing)
     return status, detail, [h.name for h in s.hosts if h.name not in missing]
+
+
+def check_hub_auth(s: Snapshot) -> Result:
+    enabled = [u for u in s.users if not u.disabled]
+    if not any(u.role == "admin" for u in enabled):
+        return "fail", "No enabled administrator account: finish first-run setup.", []
+    roles = ", ".join(f"{sum(1 for u in enabled if u.role == r)} {r}" for r in ("admin", "operator", "viewer"))
+    evidence = [f"{len(enabled)} enabled accounts ({roles})", "role checked on every API call"]
+    if s.oidc_enabled:
+        sso = sum(1 for u in enabled if u.auth_source == "oidc")
+        return "pass", f"Single sign-on (OIDC) is enabled; {sso} of {len(enabled)} accounts use it.", evidence
+    return "partial", ("Hub accounts use local passwords only - connect the suite's identity provider (OIDC) "
+                       "to enforce MFA."), evidence
+
+
+def check_dormant_accounts(s: Snapshot) -> Result:
+    if not s.users:
+        return "manual", "No hub accounts yet.", []
+    cutoff = time.time() - DORMANT_AFTER
+    enabled = [u for u in s.users if not u.disabled]
+    dormant = [u.username for u in enabled if (u.last_login or u.created_at) < cutoff]
+    if not enabled:
+        return "pass", "Every hub account is disabled.", []
+    if not dormant:
+        return "pass", f"All {len(enabled)} enabled accounts signed in within 90 days.", [u.username for u in enabled[:10]]
+    status = "fail" if len(dormant) == len(enabled) else "partial"
+    shown = ", ".join(dormant[:6]) + ("..." if len(dormant) > 6 else "")
+    return status, f"{len(dormant)}/{len(enabled)} enabled accounts have not signed in for 90 days: {shown}", []
 
 
 def check_tools_manifest(s: Snapshot) -> Result:
@@ -150,6 +181,8 @@ CHECKS: dict[str, Callable[[Snapshot], Result]] = {
     "tools_sso": check_tools_sso,
     "agent_approvals": check_agent_approvals,
     "ssh_hardening": check_ssh_hardening,
+    "hub_auth": check_hub_auth,
+    "dormant_accounts": check_dormant_accounts,
     "tools_manifest": check_tools_manifest,
     "patch_review": check_patch_review,
     "tools_health": check_tools_health,

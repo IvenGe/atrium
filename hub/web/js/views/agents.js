@@ -1,8 +1,14 @@
 import { get, patch, post } from "../api.js";
-import { actions, badge, builtinIcon, colorFor, field, html, icon, md, modal, setHTML, timeAgo, toast } from "../ui.js";
+import { actions, badge, builtinIcon, can, colorFor, field, html, icon, md, modal, setHTML, timeAgo, toast } from "../ui.js";
 
-// Chat history survives navigation inside the app.
-const chat = { log: [], busy: false };
+// Chat history survives navigation inside the app; redraw belongs to the Agents page currently shown.
+const chat = { log: [], busy: false, redraw: null };
+
+/** Forget the transcript, e.g. on sign-out, so the next person starts fresh. */
+export function resetChat() {
+  chat.log = [];
+  chat.busy = false;
+}
 
 const GROUPS = [
   ["Orchestration", (a) => a.role === "supervisor"],
@@ -25,8 +31,8 @@ function agentCard(a) {
       <span class="row" style="gap:6px">${a.uses_llm ? (a.llm_active ? badge(a.model, "accent") : badge("rules mode")) : badge("deterministic")}
         ${a.custom_instructions ? badge("custom instructions", "info") : ""}</span>
       <span class="row" style="gap:6px">
-        <button class="btn sm" data-act="toggle" data-id="${a.id}" data-paused="${a.paused}">${icon(a.paused ? "play" : "pause")}${a.paused ? "Resume" : "Pause"}</button>
-        <button class="btn sm" data-act="configure" data-id="${a.id}">${icon("sliders")}Configure</button></span></div>
+        <button class="btn sm" data-act="toggle" data-id="${a.id}" data-paused="${a.paused}" data-min-role="admin">${icon(a.paused ? "play" : "pause")}${a.paused ? "Resume" : "Pause"}</button>
+        <button class="btn sm" data-act="configure" data-id="${a.id}" data-min-role="admin">${icon("sliders")}Configure</button></span></div>
   </div>`;
 }
 
@@ -50,10 +56,11 @@ export async function render(el, ctx) {
           return list.length ? html`<div><h3 class="muted" style="margin:0 0 10px">${title}</h3><div class="grid cols-3">${list.map(agentCard)}</div></div>` : "";
         })}</div>
         <div class="stack">
-          <section class="card chat"><header><h2>Hub Supervisor</h2><button class="btn sm ghost" data-act="reset">${icon("refresh")}New conversation</button></header>
+          <section class="card chat"><header><h2>Hub Supervisor</h2><button class="btn sm ghost" data-act="reset" data-min-role="operator">${icon("refresh")}New conversation</button></header>
             <div class="msgs" id="chat-msgs">${chatLog()}</div>
-            <form id="chat-form"><input name="text" placeholder="Ask the supervisor..." autocomplete="off" aria-label="Message" ${chat.busy ? "disabled" : ""}>
-              <button class="btn primary" ${chat.busy ? "disabled" : ""} aria-label="Send">${icon("send")}</button></form></section>
+            <form id="chat-form" data-min-role="operator"><input name="text" placeholder="Ask the supervisor..." autocomplete="off" aria-label="Message" ${chat.busy ? "disabled" : ""}>
+              <button class="btn primary" ${chat.busy ? "disabled" : ""} aria-label="Send">${icon("send")}</button></form>
+            ${can("operator") ? "" : html`<p class="faint" style="font-size:12.5px">Chatting with the supervisor needs the operator role.</p>`}</section>
           <section class="card"><header><h2>Agent conversations</h2><span class="faint" style="font-size:12px">live</span></header>
             <div class="scroll" style="max-height:360px" id="msg-stream">${messages.slice().reverse().map((m) => html`<div class="msg-line">
               <span class="route">${m.sender} &rarr; ${m.recipient}</span><span><span class="subj">${m.subject}</span> <span class="faint">${m.kind}</span></span>
@@ -63,36 +70,41 @@ export async function render(el, ctx) {
     const box = el.querySelector("#chat-msgs");
     box.scrollTop = box.scrollHeight;
     el.querySelector("#chat-form").addEventListener("submit", send);
-    if (!chat.busy) el.querySelector("#chat-form input").focus({ preventScroll: true });
+    if (!chat.busy && can("operator")) el.querySelector("#chat-form input").focus({ preventScroll: true });
   };
+  chat.redraw = () => { if (el.isConnected) draw(); }; // the reply may arrive after the person left and came back
 
   async function send(e) {
     e.preventDefault();
     const text = new FormData(e.target).get("text").trim();
     if (!text || chat.busy) return;
-    chat.log.push({ me: true, text });
+    const log = chat.log; // a sign-out meanwhile swaps in a new transcript; the reply stays with this one
+    log.push({ me: true, text });
     chat.busy = true;
     draw();
     try {
       const reply = await post("/chat", { text });
-      chat.log.push({ me: false, text: reply.reply });
+      log.push({ me: false, text: reply.reply });
     } catch (err) {
-      chat.log.push({ me: false, text: `Error: ${err.message}` });
+      log.push({ me: false, text: `Error: ${err.message}` });
     } finally {
-      chat.busy = false;
-      if (el.querySelector("#chat-msgs")) draw(); // only if the person is still on this page
+      if (log === chat.log) {
+        chat.busy = false;
+        chat.redraw?.();
+      }
     }
   }
 
   actions(el, {
     async toggle(d) {
-      await patch(`/agents/${encodeURIComponent(d.id)}`, { paused: d.paused !== "true" });
+      await patch(`/agents/${encodeURIComponent(d.id)}`, { paused: d.paused !== "true" }).catch((e) => toast(e.message, "bad"));
     },
     configure(d) {
       const a = agents.find((x) => x.id === d.id);
       modal({
         title: `Configure ${a.name}`,
         wide: true,
+        minRole: "admin",
         body: html`<p class="muted" style="margin-bottom:12px">${a.description}</p>
           ${a.uses_llm ? html`${field("Model", html`<input name="model" list="models" value="${a.model_override || ""}" placeholder="Default: ${a.model}">
             <datalist id="models"><option value="claude-opus-5-5"><option value="claude-sonnet-5-5"><option value="claude-haiku-5-5"><option value="claude-fable-5-1"></datalist>`,

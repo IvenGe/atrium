@@ -16,7 +16,8 @@ suite. A team of agents does the integration work:
 - an **Asset Supervisor** and a **GRC Supervisor** for the built-in Assets and Compliance apps.
 
 Everything the agents say to each other is visible live, and anything that changes state waits
-in an approval queue until a person approves it.
+in an approval queue until a person approves it. People sign in to the hub and get a role -
+viewer, operator or admin - that decides what they may do.
 
 ## What's inside
 
@@ -30,6 +31,7 @@ in an approval queue until a person approves it.
 | **Operator** | Run commands locally or over SSH, manage hosts, discover host facts. |
 | **Assets** | Asset register kept in sync automatically (tools, SaaS services, hosts) plus manual assets, owners and criticality. |
 | **Compliance hub** | GRC: a control baseline evaluated against live hub state, mapped to ISO/IEC 27001:2022, SOC 2 and NIS2; risk register with heatmap (risks open and close automatically); policies with templates. |
+| **Users & access** | Admins only. Accounts (local passwords or single sign-on through the suite's OIDC identity provider), roles, password resets, and API tokens for scripts and tools. Everyone can change their password and sign out other sessions from the user menu. |
 
 ## Quick start
 
@@ -41,8 +43,26 @@ python -m venv .venv
 .venv/bin/atrium                            # Windows: .venv\Scripts\atrium
 ```
 
-Open <http://127.0.0.1:8710>, click **Get Started**, and import the projects in
-[`examples/`](examples/) to see the agents at work.
+On the first start there are no accounts yet, so the hub prints a one-time setup link:
+
+```
+First run: create the administrator at http://127.0.0.1:8710/#/setup?token=...
+```
+
+Open it, choose an administrator username and password (at least 12 characters), and you are
+signed in. Then click **Get Started** and import the projects in [`examples/`](examples/) to see
+the agents at work. Add colleagues under **Users & access**.
+
+To skip the link, set `HUB_ADMIN_USERNAME` and `HUB_ADMIN_PASSWORD` before the first start, or
+create the account offline with `atrium user create alice --role admin`. The same command line is
+the way back in if every administrator is locked out:
+
+```bash
+.venv/bin/atrium user passwd alice           # set a new password, sign out all of alice's sessions
+.venv/bin/atrium user create rescue --role admin
+```
+
+Roles, sessions, API tokens and single sign-on are described in [docs/AUTH.md](docs/AUTH.md).
 
 ### Turn on Claude (optional)
 
@@ -95,23 +115,34 @@ More detail in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Safety model
 
+- **Sign-in and roles**: every API call needs a signed-in person or an API token, checked on the
+  server. `viewer` reads everything, `operator` may also change things (import, approve, run
+  commands, ...), `admin` also manages accounts, tokens, settings and agents. Tokens with the
+  `integration` role can only publish events. Sign in with a local password (scrypt-hashed,
+  12+ characters, throttled after repeated failures) or through single sign-on (OIDC) against the
+  suite's identity provider, which is where MFA belongs. By default sessions expire after 12 hours
+  idle and 7 days at most. Details in [docs/AUTH.md](docs/AUTH.md).
 - **Autonomy levels** (Settings): `manual` - every agent command and patch needs approval;
   `assisted` (default) - agents may run known read-only commands, everything else needs approval;
   `autonomous` - agents act alone (the GRC Supervisor flags this as a failing control).
+- **People and automation**: commands an operator types run directly; commands from agents and
+  API tokens follow the autonomy level. Approvals record who decided them.
 - **Blocked commands** (wiping disks, `rm -rf /`, shutdown, piping downloads into a shell, ...)
   are refused for everyone, people included.
 - **SSH** uses keys only - the hub never stores passwords - and verifies host keys by default.
 - **Patches** to source code land on a new branch in a separate worktree.
 - **Web hardening**: binds to `127.0.0.1` by default, rejects unknown `Host` headers
-  (DNS rebinding), and requires an `X-Hub-Request: 1` header on every state-changing API call
-  (cross-site request forgery). There is no built-in login yet - if you expose the hub, put it
-  behind an authenticating reverse proxy and list its hostname in `HUB_ALLOWED_HOSTS`.
+  (DNS rebinding), uses `HttpOnly`, `SameSite=Lax` session cookies, and requires an
+  `X-Hub-Request: 1` header on every state-changing browser call (cross-site request forgery). If
+  other people reach the hub over a network, put a TLS reverse proxy in front and set
+  `HUB_PUBLIC_URL`, `HUB_ALLOWED_HOSTS` and `HUB_COOKIE_SECURE=1`.
 
 ## Project layout
 
 ```
 hub/
   agents/          Hub Supervisor, Tool Supervisor, Patch Agent, Operator, Asset & GRC Supervisors
+  auth/            accounts, passwords, sessions, API tokens, role policy, single sign-on (OIDC)
   integration/     analyzer, compatibility scoring, importer, patch planner, tool event bus
   execution/       command policy, local/SSH runners, tool process manager
   grc/             control baseline (ISO 27001 / SOC 2 / NIS2 mapping) and automated checks
@@ -119,7 +150,7 @@ hub/
   api.py           REST + Server-Sent Events API (docs at /api/docs)
   bus.py           agent message bus
   core.py          the Hub runtime
-docs/              architecture and manifest specification
+docs/              architecture, sign-in and access control, manifest specification
 examples/          sample tools to import
 tests/             pytest suite
 ```
@@ -131,11 +162,12 @@ tests/             pytest suite
 .venv/bin/atrium --port 8711 --data-dir .hub-dev
 ```
 
-The UI is plain ES modules served by the API - edit `hub/web/` and reload.
+A fresh data directory prints its own setup link; set `HUB_ADMIN_USERNAME` and
+`HUB_ADMIN_PASSWORD` to get an administrator without it. The UI is plain ES modules served by the
+API - edit `hub/web/` and reload.
 
 ## Roadmap
 
-- Built-in login and roles (OIDC against the suite's identity provider)
 - More built-in apps: service desk / ticketing, vulnerability management (match tool versions
   against advisories), backup orchestration
 - Pull requests for patches on GitHub-hosted tools

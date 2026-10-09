@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import re
 import time
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, computed_field
+from pydantic import BaseModel, Field, computed_field, field_validator
+
+from .store import new_id
 
 
 def now() -> float:
@@ -140,6 +143,7 @@ class Approval(BaseModel):
     result: dict[str, Any] | None = None
     created_at: float = Field(default_factory=now)
     decided_at: float | None = None
+    decided_by: str | None = None
 
 
 class FileChange(BaseModel):
@@ -235,3 +239,62 @@ class ControlState(BaseModel):
     manual: bool = False  # True when a person set the status by hand
     note: str | None = None
     evaluated_at: float | None = None
+
+
+# --------------------------------------------------------------------------------------
+# Hub accounts: people (users) and automation (API tokens)
+# --------------------------------------------------------------------------------------
+
+UserRole = Literal["viewer", "operator", "admin"]
+TokenRole = Literal["viewer", "operator", "admin", "integration"]
+USERNAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{1,63}$")
+
+
+def normalize_username(value: str) -> str:
+    username = value.strip().lower()
+    if not USERNAME_RE.match(username):
+        raise ValueError("Usernames are 2-64 characters: letters, digits, dots, dashes and underscores, "
+                         "starting with a letter or digit.")
+    return username
+
+
+class User(BaseModel):
+    id: str = Field(default_factory=lambda: new_id("u_"))
+    username: str
+    display_name: str = ""
+    email: str | None = None
+    role: UserRole = "viewer"
+    disabled: bool = False
+    password_hash: str | None = None  # None for accounts that only sign in through SSO
+    auth_source: Literal["local", "oidc"] = "local"
+    oidc_subject: str | None = None  # "<issuer>|<sub>"
+    must_change_password: bool = False
+    created_at: float = Field(default_factory=now)
+    last_login: float | None = None
+    password_changed_at: float | None = None
+
+    @field_validator("username")
+    @classmethod
+    def _username(cls, value: str) -> str:
+        return normalize_username(value)
+
+
+class ApiToken(BaseModel):
+    id: str = Field(default_factory=lambda: new_id("tok_"))
+    name: str
+    role: TokenRole
+    token_hash: str  # sha256 hex of the full "atr_..." secret
+    prefix: str  # first characters of the secret, for recognising a token
+    created_by: str
+    created_at: float = Field(default_factory=now)
+    last_used: float | None = None
+    expires_at: float | None = None
+
+
+def public_user(user: User) -> dict[str, Any]:
+    """What the API may show about an account: everything except the password hash."""
+    return {**user.model_dump(mode="json", exclude={"password_hash"}), "has_password": user.password_hash is not None}
+
+
+def public_token(token: ApiToken) -> dict[str, Any]:
+    return token.model_dump(mode="json", exclude={"token_hash"})
