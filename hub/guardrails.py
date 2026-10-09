@@ -9,7 +9,7 @@ control HB-AC-6.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
     from .core import Hub
@@ -26,6 +26,10 @@ class Guardrail:
     minimum: int = 1  # numbers only
     maximum: int = 100
     requires: str | None = None  # a number that only matters while this switch is on (or, for limits, on)
+    # the compliance control that relaxing this switch weakens, how far ("fail" or "partial"), and the finding text
+    control: str | None = None
+    weakens: Literal["fail", "partial"] = "partial"
+    finding: str = ""
 
     @property
     def kind(self) -> str:
