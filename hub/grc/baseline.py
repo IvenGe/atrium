@@ -94,6 +94,41 @@ CONTROLS: list[Control] = [
             "Open critical and high findings are fixed (or formally accepted) before their remediation deadline.",
             "vuln_sla", {"ISO27001": "A.8.8", "SOC2": "CC7.1", "NIS2": "21(2)(e)"},
             ("Known critical vulnerabilities remain exploitable", 4, 5)),
+    # Network security: evidence from the firewalls' and network devices' snapshots (hub/integration/network.py,
+    # segmentation.py). UNVERIFIED: these reference strings (ISO/IEC 27001:2022 Annex A, SOC 2, NIS2 Art. 21(2), CIR
+    # (EU) 2024/2690 Annex 6.8, CyFun 2025 ids from the CISO Assistant library copy) are analyst mappings that were
+    # not checked against the licensed / official texts.
+    Control("HB-NW-1", "Network security", "Network segmentation follows the policy",
+            "Firewall rules allow traffic between zones only where the segmentation policy does: untrusted zones do "
+            "not reach management, internet traffic ends in a DMZ, guest and IoT networks are isolated, development is "
+            "separated from production (CIR (EU) 2024/2690 Annex 6.8 network segmentation). Evaluated approximately "
+            "from the firewalls' rules.",
+            "network_segmentation", {"ISO27001": "A.8.22 / A.8.20", "SOC2": "CC6.6", "NIS2": "21(2)(e)",
+                                     "CyFun2025": "PR.IR-01.2 / PR.IR-01.3 / PR.IR-01.8 / ID.AM-03.2"},
+            ("Attackers can move freely between network zones", 3, 4)),
+    Control("HB-NW-2", "Network security", "Device configuration changes are explained",
+            "Firewall and network device configurations change through approved changes; changes made elsewhere "
+            "(drift) are reviewed and acknowledged, against an approved baseline configuration.",
+            "network_drift", {"ISO27001": "A.8.9 / A.8.32", "SOC2": "CC7.1 / CC8.1", "NIS2": "21(2)(e)",
+                              "CyFun2025": "PR.PS-01.1 / PR.PS-01.5"},
+            ("Unreviewed firewall changes open the network", 3, 4)),
+    Control("HB-NW-3", "Network security", "Device management is not exposed to the internet",
+            "No firewall rule lets traffic from anywhere (any source on a WAN interface, or a floating rule) reach a "
+            "network device's own management services.",
+            "network_management", {"ISO27001": "A.8.20", "SOC2": "CC6.6", "NIS2": "21(2)(i)",
+                                   "CyFun2025": "PR.IR-01.4 / PR.PS-01.3"},
+            ("Device management is reachable from the internet", 3, 5)),
+    Control("HB-NW-4", "Network security", "Device configurations are backed up",
+            "Every firewall and network device has a configuration backup from the last 7 days, stored encrypted and "
+            "verified by its SHA-256.",
+            "network_backups", {"ISO27001": "A.8.13", "SOC2": "A1.2", "NIS2": "21(2)(c)", "CyFun2025": "PR.DS-11.1"},
+            ("A failed device cannot be restored to a known configuration", 2, 4)),
+    Control("HB-NW-5", "Network security", "Firewall rules are least-privilege and documented",
+            "No pass rule allows any source to reach any destination on any service, and every pass rule says what it "
+            "is for.",
+            "network_rules", {"ISO27001": "A.8.20 / A.8.22", "SOC2": "CC6.6", "NIS2": "21(2)(e)",
+                              "CyFun2025": "PR.IR-01.1 / PR.IR-01.8 / PR.PS-01.3"},
+            ("Overly broad firewall rules expose systems", 3, 4)),
     Control("HB-SC-1", "Supplier management", "SaaS and supplier inventory",
             "Every SaaS service is registered as an asset with an owner responsible for the supplier relationship.",
             "saas_inventory", {"ISO27001": "A.5.19 / A.5.23", "SOC2": "CC9.2", "NIS2": "21(2)(d)"},

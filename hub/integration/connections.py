@@ -236,6 +236,8 @@ def record_test(hub: "Hub", tool_id: str, result: dict[str, Any]) -> None:
     if conn is None:
         return
     conn.last_test = {k: result.get(k) for k in ("ok", "detail", "checks", "domains")} | {"at": time.time()}
+    if "network_write" in result:  # what a network device and its credential allow (hub/integration/network.py)
+        conn.last_test["network_write"] = result["network_write"]
     _put(hub, conn)
 
 

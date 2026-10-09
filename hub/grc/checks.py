@@ -35,6 +35,8 @@ class Snapshot:
     accounts: list[Account] = field(default_factory=list)
     # results of the active extension packs' control rules (hub/extensions/controls.py), merged into their controls
     extension_results: list[dict[str, Any]] = field(default_factory=list)
+    # network facts (hub/integration/network.compliance_facts): devices, drift, segmentation - ids only, no device text
+    network: dict[str, Any] = field(default_factory=dict)
 
 
 Result = tuple[str, str, list[str]]  # status, detail, evidence
@@ -262,6 +264,98 @@ def check_policy(category: str) -> Callable[[Snapshot], Result]:
     return check
 
 
+# -- network security (HB-NW-*): device text never reaches details or evidence, only ids and counts -----------------
+
+BACKUP_WINDOW = 7 * 24 * 3600
+NO_DEVICE = "No firewall or network device is connected"
+
+
+def _shown(items: list[str], limit: int = 5) -> str:
+    return ", ".join(items[:limit]) + (f" and {len(items) - limit} more" if len(items) > limit else "")
+
+
+def _stale_note(devices: list[dict[str, Any]]) -> list[str]:
+    stale = [d["ref"] for d in devices if d.get("stale")]
+    return [f"snapshot not current for {_shown(stale)}"] if stale else []
+
+
+def check_network_segmentation(s: Snapshot) -> Result:
+    facts = s.network.get("segmentation") or {}
+    if not facts.get("firewalls"):
+        return "manual", "No firewall connected; segmentation is not verified.", []
+    evidence = [f"{facts['firewalls']} firewall(s) evaluated (approximate: block rules, rule order and NAT are not "
+                "evaluated)", *_stale_note(s.network.get("devices") or [])]
+    violations = [v for v in facts.get("violations") or [] if v.get("control") in (None, "HB-NW-1")]
+    if violations:
+        shown = "; ".join(f"{v['from']} -> {v['to']} on {v['firewall']} ({v['policy']})" for v in violations[:4])
+        more = f" and {len(violations) - 4} more" if len(violations) > 4 else ""
+        return "partial", f"Possible violation: {shown}{more} (approximate evaluation).", evidence
+    problems = []
+    if facts.get("unconfirmed_roles"):
+        problems.append(f"{len(facts['unconfirmed_roles'])} zone role(s) not confirmed")
+    if facts.get("unresolved_aliases"):
+        problems.append(f"{len(facts['unresolved_aliases'])} unresolved alias(es)")
+    if problems:
+        return "partial", "No possible violation found, but " + " and ".join(problems) + ".", evidence
+    return "pass", "No possible violation of the segmentation policy; every zone role is confirmed.", evidence
+
+
+def check_network_drift(s: Snapshot) -> Result:
+    devices = s.network.get("devices") or []
+    if not devices:
+        return "manual", f"{NO_DEVICE}; configuration drift is not monitored.", []
+    d = s.network.get("drift") or {}
+    evidence = [f"{len(devices)} device(s) monitored",
+                f"{d.get('detected_30d', 0)} change(s) in 30 days: {d.get('attributed_30d', 0)} made through Atrium, "
+                f"{d.get('acknowledged_30d', 0)} acknowledged", *_stale_note(devices)]
+    where = _shown(d.get("open_devices") or [])
+    if d.get("open_critical"):
+        return "fail", (f"{d['open_critical']} unexplained critical change(s) (any-to-any or management exposure) on "
+                        f"{where} - review them in the Network app."), evidence
+    if d.get("open"):
+        return "partial", f"{d['open']} change(s) not made through Atrium wait for review on {where}.", evidence
+    return "pass", "Every configuration change was made through Atrium or has been acknowledged.", evidence
+
+
+def check_network_management(s: Snapshot) -> Result:
+    devices = s.network.get("devices") or []
+    if not devices:
+        return "manual", f"{NO_DEVICE}; management exposure is not verified.", []
+    exposed = [f"{d['ref']}:{ref}" for d in devices for ref in d.get("management_exposed") or []]
+    evidence = [f"{len(devices)} device(s) checked", *_stale_note(devices)]
+    if exposed:
+        return "fail", f"{len(exposed)} rule(s) let traffic from anywhere reach device management: {_shown(exposed)}.", evidence
+    return "pass", f"No rule exposes device management to the internet on {len(devices)} device(s).", evidence
+
+
+def check_network_backups(s: Snapshot) -> Result:
+    devices = s.network.get("devices") or []
+    if not devices:
+        return "manual", f"{NO_DEVICE}; no configuration to back up.", []
+    cutoff = time.time() - BACKUP_WINDOW
+    fresh = [d for d in devices if d.get("last_backup_at") and d["last_backup_at"] >= cutoff]
+    missing = [d["ref"] + ("" if d.get("backup_supported") else " (its connector cannot take backups)")
+               for d in devices if d not in fresh]
+    status, detail, _ = _ratio(len(fresh), len(devices), "devices backed up within 7 days", missing)
+    return status, detail, [f"{d['ref']}: {time.strftime('%Y-%m-%d', time.gmtime(d['last_backup_at']))}" for d in fresh]
+
+
+def check_network_rules(s: Snapshot) -> Result:
+    devices = s.network.get("devices") or []
+    if not devices:
+        return "manual", f"{NO_DEVICE}; firewall rules are not reviewed.", []
+    any_any = [f"{d['ref']}:{ref}" for d in devices for ref in d.get("any_any") or []]
+    undocumented = [f"{d['ref']}:{ref}" for d in devices for ref in d.get("undocumented_pass") or []]
+    total = sum(d.get("pass_rules", 0) for d in devices)
+    evidence = [f"{total} enabled pass rule(s) on {len(devices)} device(s)",
+                f"{sum(d.get('unlogged_pass', 0) for d in devices)} pass rule(s) without logging", *_stale_note(devices)]
+    if any_any:
+        return "fail", f"{len(any_any)} pass rule(s) allow any source to any destination on any service: {_shown(any_any)}.", evidence
+    if undocumented:
+        return "partial", f"{len(undocumented)} of {total} pass rule(s) have no description: {_shown(undocumented)}.", evidence
+    return "pass", f"No any-to-any pass rule; all {total} pass rule(s) are described.", evidence
+
+
 CHECKS: dict[str, Callable[[Snapshot], Result]] = {
     "assets_inventory": check_assets_inventory,
     "assets_owned": check_assets_owned,
@@ -281,6 +375,11 @@ CHECKS: dict[str, Callable[[Snapshot], Result]] = {
     "vuln_sla": check_vuln_sla,
     "saas_inventory": check_saas_inventory,
     "risk_review": check_risk_review,
+    "network_segmentation": check_network_segmentation,
+    "network_drift": check_network_drift,
+    "network_management": check_network_management,
+    "network_backups": check_network_backups,
+    "network_rules": check_network_rules,
 }
 
 

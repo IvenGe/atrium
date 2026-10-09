@@ -99,6 +99,8 @@ EDITIONS: dict[str, dict[str, Any]] = {
         # the NIST CSF 1.1 statement of ID.BE-3 equals the library text of requirement ID.BE-3.1: a short title of our
         # own for the subcategory and its requirements
         "own_titles": {"ID.BE-3": "Priorities for mission, objectives and activities set and communicated"},
+        # CISO Assistant's CyFun 2023 -> 2025 mapping, aligned on the CCB transposition table (ids and relationships)
+        "mapping": {"file": "mapping-ccb-cff-2023-03-01-and-ccb-cyfun2025.yaml", "target": "cyfun2025"},
         # BELAC, transition plan CyberFundamentals (10.12.2025)
         "transition": {"assess_until": "2027-04-18", "valid_until": "2028-04-18",
                        "note": "CyFun 2023 may still be applied, verified and certified until 18 April 2027; its "
@@ -200,9 +202,13 @@ def check_outcomes(framework: dict[str, Any]) -> None:
     for group, target in GROUP_TARGETS.items():
         require(targets.get(group) == target, f"group {group} target changed: {targets.get(group)} (expected {target})")
     require(framework.get("target_score") == 3.0, "the framework target score changed")
+    # scoring.py counts an N/A requirement at the target score (3.0) in every average and minimum, as the library does
+    require(framework.get("anchor_na_to_target") is True, "the library no longer anchors N/A requirements to the target")
 
 
-def build(key: str, raw: bytes, nist_raw: bytes, source_url: str, nist_url: str) -> tuple[dict[str, Any], list[str]]:
+def build(key: str, raw: bytes, nist_raw: bytes, source_url: str,
+          nist_url: str) -> tuple[dict[str, Any], list[str], dict[str, str]]:
+    """The catalog, the fingerprints of the library's texts, and node URN -> Atrium ref_id of every requirement."""
     spec = EDITIONS[key]
     library = yaml.safe_load(raw)
     framework = library["objects"]["framework"]
@@ -214,6 +220,8 @@ def build(key: str, raw: bytes, nist_raw: bytes, source_url: str, nist_url: str)
     require(framework.get("min_score") == 1 and framework.get("max_score") == 5, "the maturity scale is not 1-5")
     names = {s["score"]: s["name"] for s in framework.get("scores_definition") or []}
     require(names == SCALE_NAMES, f"the maturity level names changed: {names}")
+    require(framework.get("score_calculation_method") == "average_of_averages",
+            f"{key}: the score calculation method changed: {framework.get('score_calculation_method')}")
     if spec["outcomes"]:
         check_outcomes(framework)
     else:
@@ -225,6 +233,7 @@ def build(key: str, raw: bytes, nist_raw: bytes, source_url: str, nist_url: str)
     requirements: list[dict[str, Any]] = []
     seen: set[str] = set()
     own_titles_used: list[str] = []
+    urns: dict[str, str] = {}
 
     def nist_title(table: dict[str, str], ident: str, what: str) -> str:
         title = table.get(ident, "")
@@ -255,6 +264,7 @@ def build(key: str, raw: bytes, nist_raw: bytes, source_url: str, nist_url: str)
             require(hub_id.rsplit(".", 1)[0] == sub_id, f"{key}: {hub_id} is not under subcategory {sub_id}")
             require(hub_id not in seen, f"{key}: duplicate requirement {hub_id}")
             seen.add(hub_id)
+            urns[str(node["urn"]).strip().lower()] = hub_id
             tags = [str(t) for t in node.get("implementation_groups") or []]
             tags = [g for g in GROUPS if g in tags] + sorted(set(tags) - set(GROUPS))
             check_tags(hub_id, tags, spec["management_aspects"])
@@ -316,6 +326,10 @@ def build(key: str, raw: bytes, nist_raw: bytes, source_url: str, nist_url: str)
                        "library's rules (CISO Assistant library copy) to CyFun 2023 as well"),
             "verified_against_library": bool(spec["outcomes"]),
             "group_targets": GROUP_TARGETS,
+            # how the library's scores are computed (hub/grc/frameworks/scoring.py): an N/A requirement counts at the
+            # framework target in every average and minimum; a missing documentation maturity counts as 1
+            "na_counts_as": 3.0,
+            "na_anchor_verified": bool(spec["outcomes"]),
             "levels": CONFORMITY,
         },
         "counts": {"requirements": len(requirements), "functions": len(functions), "categories": len(categories),
@@ -325,7 +339,35 @@ def build(key: str, raw: bytes, nist_raw: bytes, source_url: str, nist_url: str)
         "subcategories": subcategories,
         "requirements": requirements,
     }
-    return catalog, sorted({fingerprint(t) for t in library_texts(nodes, framework, translations=False)})
+    return catalog, sorted({fingerprint(t) for t in library_texts(nodes, framework, translations=False)}), urns
+
+
+def edition_mapping(raw: bytes, url: str, source: dict[str, Any], urns: dict[str, dict[str, str]],
+                    target_key: str) -> dict[str, Any]:
+    """The requirement mapping from one edition to the next as [source ref_id, target ref_id, relationship] (no text)."""
+    library = yaml.safe_load(raw)
+    sets = library["objects"]["requirement_mapping_sets"]
+    forward = [m for m in sets if m["source_framework_urn"] == source["framework_urn"]]
+    require(len(forward) == 1, f"mapping: expected one set from {source['framework_urn']}, found {len(forward)}")
+    pairs: set[tuple[str, str, str]] = set()
+    for item in forward[0]["requirement_mappings"]:
+        relationship = str(item.get("relationship") or "")
+        require(relationship in ("equal", "intersect", "subset", "superset", "not_related"),
+                f"mapping: unknown relationship {relationship!r}")
+        if relationship == "not_related":
+            continue
+        src = urns[source["id"]].get(str(item["source_requirement_urn"]).strip().lower())
+        dst = urns[target_key].get(str(item["target_requirement_urn"]).strip().lower())
+        require(src is not None and dst is not None,
+                f"mapping: {item['source_requirement_urn']} -> {item['target_requirement_urn']} is not a requirement")
+        pairs.add((src, dst, relationship))
+    require(len(pairs) > 150, f"mapping: only {len(pairs)} pairs - review the mapping library")
+    return {"target": target_key, "relationship_note": "equal: same requirement; intersect: overlapping requirements",
+            "source": {"library_urn": library["urn"], "version": library["version"],
+                       "publication_date": str(library["publication_date"]), "provider": library.get("provider"),
+                       "url": url, "sha256": sha256(raw),
+                       "aligned_on": "the CCB transposition table CyFun 2023 - CyFun 2025 (as stated by the library)"},
+            "pairs": [list(p) for p in sorted(pairs)]}
 
 
 # -- output --------------------------------------------------------------------------------------------------------
@@ -343,6 +385,13 @@ def dumps(catalog: dict[str, Any]) -> str:
             lines.append(f'  "{key}": [')
             lines += [f"    {item}{',' if i < len(items) - 1 else ''}" for i, item in enumerate(items)]
             lines.append(f"  ]{comma}")
+        elif key == "edition_mapping":  # one pair per line
+            head = json.dumps({k: v for k, v in value.items() if k != "pairs"}, ensure_ascii=False, indent=2)
+            pairs = [json.dumps(v, ensure_ascii=False) for v in value["pairs"]]
+            lines.append(f'  "{key}": ' + head[:-2].replace("\n", "\n  ") + ",")
+            lines.append('    "pairs": [')
+            lines += [f"      {item}{',' if i < len(pairs) - 1 else ''}" for i, item in enumerate(pairs)]
+            lines += ["    ]", f"  }}{comma}"]
         else:
             text = json.dumps(value, ensure_ascii=False, indent=2).replace("\n", "\n  ")
             lines.append(f'  "{key}": {text}{comma}')
@@ -370,18 +419,31 @@ def main(argv: list[str] | None = None) -> int:
             item.unlink()
     fingerprints: dict[str, Any] = {}
     outputs: dict[Path, str] = {}
+    catalogs: dict[str, dict[str, Any]] = {}
+    urns: dict[str, dict[str, str]] = {}
     try:
         for key, spec in EDITIONS.items():
             url, nist_url = CA_RAW + spec["file"], CPRT.format(spec["nist"])
             raw = fetch(url, cache / spec["file"], args.offline)
             nist_raw = fetch(nist_url, cache / f"nist-{spec['nist']}.json", args.offline)
-            catalog, prints = build(key, raw, nist_raw, url, nist_url)
-            outputs[OUT_DIR / f"{key}.json"] = dumps(catalog)
+            catalog, prints, urns[key] = build(key, raw, nist_raw, url, nist_url)
+            catalogs[key] = catalog
             fingerprints[key] = {"library_sha256": catalog["source"]["sha256"], "text_fingerprints": prints}
             c = catalog["counts"]
             print(f"{key}: {c['requirements']} requirements (B {c['B']}, I {c['I']}, E {c['E']}; key measures "
                   f"BK {c['BK']}, IK {c['IK']}, EK {c['EK']}), library v{catalog['source']['version']} "
                   f"{catalog['source']['publication_date']}", file=sys.stderr)
+        for key, spec in EDITIONS.items():
+            if spec.get("mapping"):
+                url = CA_RAW + spec["mapping"]["file"]
+                raw = fetch(url, cache / spec["mapping"]["file"], args.offline)
+                catalogs[key]["edition_mapping"] = edition_mapping(
+                    raw, url, {"id": key, "framework_urn": catalogs[key]["source"]["framework_urn"]}, urns,
+                    spec["mapping"]["target"])
+                print(f"{key}: {len(catalogs[key]['edition_mapping']['pairs'])} mapped requirement pairs to "
+                      f"{spec['mapping']['target']}", file=sys.stderr)
+        for key, catalog in catalogs.items():
+            outputs[OUT_DIR / f"{key}.json"] = dumps(catalog)
     except BuildError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1

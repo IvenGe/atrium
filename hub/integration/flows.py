@@ -24,10 +24,14 @@ if TYPE_CHECKING:
 COLLECTION = "flows"
 LINKS = "sync_links"
 OWNERS = {"assets": "module:assets", "vulnerabilities": "module:vulns", "risks": "module:grc", "controls": "module:grc",
-          "people": "module:people", "accounts": "module:people"}
+          "people": "module:people", "accounts": "module:people", "network": "module:network",
+          "frameworks": "module:grc", "assessments": "module:grc"}
 APPS = {"assets": "Hub Assets", "vulnerabilities": "Hub Vulnerabilities", "risks": "Hub risk register",
-        "controls": "Hub controls and evidence", "people": "Hub People", "accounts": "Hub People (accounts)"}
+        "controls": "Hub controls and evidence", "people": "Hub People", "accounts": "Hub People (accounts)",
+        "network": "Hub Network", "frameworks": "Hub Compliance frameworks",
+        "assessments": "Hub framework self-assessments"}
 DEFAULT_SCHEDULE = {"pull": 60, "push": 60, "scan": 7 * 24 * 60}
+DOMAIN_SCHEDULE = {"network": 15}  # pull minutes where the default does not fit (device drift is noticed sooner)
 REPAIR_AFTER = 3  # consecutive failures before the Hub Supervisor asks the Patch Agent for a repair
 STALE_RUN = 30 * 60  # a run marked as under way for longer than this was interrupted
 ASSET_TYPES = ("server", "workstation", "network", "software", "saas", "cloud", "data", "other")
@@ -86,7 +90,8 @@ def make(hub: "Hub", domain: str, source: str, target: str, action: str | None =
          created_by: str = "supervisor", strategy: str = "connector", status: str = "proposed") -> Flow:
     flow = Flow(id=new_id("fl_"), domain=domain, source=source, target=target, action=action,  # type: ignore[arg-type]
                 reason=reason, created_by=created_by, strategy=strategy, status=status)  # type: ignore[arg-type]
-    flow.schedule_minutes = DEFAULT_SCHEDULE[flow.direction]
+    flow.schedule_minutes = DOMAIN_SCHEDULE.get(domain, DEFAULT_SCHEDULE[flow.direction]) if flow.direction == "pull" \
+        else DEFAULT_SCHEDULE[flow.direction]
     flow.title = title(hub, flow)
     return flow
 

@@ -12,6 +12,11 @@ Flow rules, from each connection's capabilities (its last successful test, else 
 - writes controls -> push the hub's controls with their evidence; reads risks -> pull them into the risk register;
 - reads people (a directory: Okta, Keycloak, SCIM, HR) -> pull them into the People app; reads accounts -> pull the
   tool's user accounts into the People app (linked to people; leavers with active accounts fail HB-AC-7);
+- reads network (a firewall, router, switch or host firewall) -> pull its configuration into the Network app every
+  15 minutes (snapshots, drift, segmentation); device changes never go through flows;
+- reads frameworks (a GRC tool: CISO Assistant) -> pull its loaded frameworks and assessments into the Compliance hub
+  (read-only); writes assessments (an administrator switched it on in the connection) -> push the hub's CyFun
+  self-assessment results to it. Two domains, so the pull and the push are not a loop;
 - reads an enabled extension domain ("x:alerts") -> pull it into that domain's app; only writes it -> push to it.
 
 Proposals become approvals of kind "flow" (enabled straight away in autonomous mode).
@@ -92,6 +97,18 @@ def proposals(hub: "Hub") -> list[Flow]:
             add("accounts", end, "hub", None,
                 f"{name} has user accounts: they are linked to people in the People app, so leavers who can still "
                 "sign in are found.")
+        if reads("network") and not conn.generated:
+            add("network", end, "hub", None,
+                f"{name} is a network device: its interfaces, zones and rules are read into the Network app, where "
+                "changes made outside Atrium show up as drift and the segmentation map and compliance checks use them.")
+        if reads("frameworks") and not conn.generated:
+            add("frameworks", end, "hub", None,
+                f"{name} holds compliance frameworks and assessments: they are shown read-only in the Compliance hub "
+                "(frameworks, requirement trees, its assessment results), next to Atrium's own CyFun assessments.")
+        if writes("assessments") and not conn.generated:
+            add("assessments", "hub", end, None,
+                f"An administrator allowed sending the hub's CyFun self-assessments to {name}: each one's results and "
+                "maturity scores are written into a compliance assessment there.")
         for key, (defn, _) in extension_domains.items():
             domain, what = f"x:{key}", defn.title.lower()
             if reads(domain):

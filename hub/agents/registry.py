@@ -20,6 +20,7 @@ class AgentRegistry:
         from .assets import AssetSupervisor
         from .extensions import ExtensionSupervisor
         from .grc import GrcSupervisor
+        from .network import NetworkSupervisor
         from .operator import OperatorAgent
         from .patcher import PatchAgent
         from .people import PeopleSupervisor
@@ -28,7 +29,7 @@ class AgentRegistry:
 
         for agent in (HubSupervisor(self.hub), PatchAgent(self.hub), OperatorAgent(self.hub),
                       AssetSupervisor(self.hub), GrcSupervisor(self.hub), VulnerabilitySupervisor(self.hub),
-                      PeopleSupervisor(self.hub), ExtensionSupervisor(self.hub)):
+                      PeopleSupervisor(self.hub), ExtensionSupervisor(self.hub), NetworkSupervisor(self.hub)):
             self.add(agent)
 
     def start_custom(self) -> None:

@@ -40,6 +40,8 @@ import httpx
 from .base import DOMAINS, Connector, ConnectorError, ConnectorField, check, dotted, endpoint_of, is_domain
 
 AUTH_TYPES = ("bearer", "token", "header", "basic", "none")
+# devices need a device connector; framework trees and assessments need a GRC connector (ciso_assistant)
+MAPPABLE = tuple(d for d in DOMAINS if d not in ("network", "frameworks", "assessments"))
 PAGINATION = ("none", "offset", "page", "next")
 WRITE_METHODS = ("POST", "PUT", "PATCH")
 MAX_PAGES = 200
@@ -100,7 +102,11 @@ def validate_mapping(mapping: Any) -> dict[str, Any]:
         raise _fail("expected an object with at least one domain (assets, vulnerabilities, risks, controls)")
     for domain, spec in mapping.items():
         if not isinstance(domain, str) or not is_domain(domain):
-            raise _fail(f"unknown domain '{domain}' (use {', '.join(DOMAINS)} or an extension domain x:<key>)")
+            raise _fail(f"unknown domain '{domain}' (use {', '.join(MAPPABLE)} or an extension domain x:<key>)")
+        if domain == "network":
+            raise _fail("network devices need a device connector - a generic REST mapping cannot read them")
+        if domain in ("frameworks", "assessments"):
+            raise _fail(f"{domain} need a GRC connector (CISO Assistant) - a generic REST mapping cannot carry them")
         if not isinstance(spec, dict) or not any(spec.get(k) for k in ("list", "create", "update")):
             raise _fail(f"{domain} needs 'list' (read) and/or 'create' / 'update' (write)")
         _check_fields(spec.get("fields") or {}, f"{domain}.fields")
@@ -214,7 +220,7 @@ class GenericRestConnector(Connector):
         ConnectorField(name="mapping", label="Mapping", kind="json", required=True,
                        help="Per domain: list (path, items, pagination), fields, create / update. See the docs."),
     ]
-    capabilities = {d: {"read", "write"} for d in DOMAINS}  # narrowed by the mapping, see domains()
+    capabilities = {d: {"read", "write"} for d in MAPPABLE}  # narrowed by the mapping, see domains()
 
     @classmethod
     def validate_config(cls, config: dict[str, Any]) -> dict[str, Any]:

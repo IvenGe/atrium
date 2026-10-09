@@ -179,7 +179,8 @@ def test_settings_api_root_and_detection():
     assert connectors.detect(named)[0]["kind"] == "ciso_assistant"
     entry = next(c for c in connectors.catalog() if c["kind"] == "ciso_assistant")
     assert "error" not in entry and entry["capabilities"] == {"assets": ["read", "write"], "controls": ["write"],
-                                                               "risks": ["read"], "vulnerabilities": ["write"]}
+                                                               "risks": ["read"], "vulnerabilities": ["write"],
+                                                               "frameworks": ["read"], "assessments": ["write"]}
     assert next(f for f in entry["fields"] if f["name"] == "folder_id")["options"] is True
 
 

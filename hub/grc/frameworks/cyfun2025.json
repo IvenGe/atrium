@@ -93,6 +93,8 @@
       "EK": 3.0,
       "EG": 3.0
     },
+    "na_counts_as": 3.0,
+    "na_anchor_verified": true,
     "levels": {
       "B": {
         "maturity_min": 2.5,

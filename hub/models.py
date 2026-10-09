@@ -248,8 +248,10 @@ class Vulnerability(BaseModel):
         return self.status in OPEN_STATES and self.due_at is not None and self.due_at < time.time()
 
 
-Domain = Literal["assets", "vulnerabilities", "risks", "controls", "people", "accounts"]
-BUILTIN_DOMAINS: tuple[str, ...] = ("assets", "vulnerabilities", "risks", "controls", "people", "accounts")
+Domain = Literal["assets", "vulnerabilities", "risks", "controls", "people", "accounts", "network", "frameworks",
+                 "assessments"]
+BUILTIN_DOMAINS: tuple[str, ...] = ("assets", "vulnerabilities", "risks", "controls", "people", "accounts", "network",
+                                    "frameworks", "assessments")
 EXTENSION_DOMAIN_RE = re.compile(r"^x:[a-z][a-z0-9_]{1,31}$")  # a data type an extension pack adds ("x:alerts")
 
 

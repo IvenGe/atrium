@@ -4,16 +4,18 @@ methods; this module holds the shapes. Connectors import from here::
 
     from .netmodel import ChangeError, NetworkRecord, parse_ops, marker, rule_line, management_guard
 
-Reading - ``pull("network")`` returns one record per device the connection reaches (normally exactly one; see
-``Connector.network_multi_device``). Every key below is validated by ``NetworkRecord`` when the hub normalises the
-pull (unknown keys are dropped, bad entries are dropped with a message, strings are cut to length and stripped of
-control characters). Text read from a device (names, descriptions, comments) is UNTRUSTED: the hub never renders it
-as HTML, never builds commands from it and never hands it to agent/LLM tools; connectors must not either.
+Reading - ``pull("network")`` returns a list with exactly ONE record: the device the connection reaches (one
+connection per device; the hub keeps only the first record of a longer list and says so in the snapshot's errors).
+Every key below is validated by ``NetworkRecord`` when the hub normalises the pull (unknown keys are dropped, bad
+entries are dropped with a message, strings are cut to length and stripped of control characters). Text read from a
+device (names, descriptions, comments, alias names) is UNTRUSTED: the hub never renders it as HTML, never builds
+commands from it and never hands it to agent/LLM tools; connectors must not either (quote or validate anything
+device-provided before it goes near a shell or an API path).
 
 ::
 
     {"external_id": "fw1",                      # stable device id (serial, hostname); the hub's device id is the
-                                                #   tool id (or "<tool id>:<external id>" for multi-device connectors)
+                                                #   tool id of the connection
      "revision": "r-5521",                      # opaque config/ruleset revision as the device reports it (or a hash
                                                 #   of what was read); changes bind to it (apply_change base_revision)
      "read_at": 1760000000.0,
@@ -69,7 +71,15 @@ validated by ``parse_ops`` (canonical dicts, see ``AllowOp`` / ``DisableRulesOp`
 
 ``zone`` is the native zone or interface id the rule binds to (the hub's zone id without "z:<device id>:"). An allow
 never uses "any": both sides are explicit networks and every service is explicit (at most 16). Approvals bind to
-``ops_hash(ops)``, so connectors must not reinterpret ops (no widening, no merging).
+``ops_hash(ops)``, so connectors must not reinterpret ops (no widening, no merging). The rule an allow creates is a
+pass rule bound inbound to the source zone's interface(s) (or, for zone-based products, from the source zone to the
+destination zone), placed before the rules that could block it (connectors say where in ``preview_change``), with
+the op's ``marker`` (plus its description) as the rule's description/comment.
+
+Helpers for both sides: ``ops_diff`` (the diff text a preview shows), ``ops_applied`` / ``ops_reverted`` (did a
+re-read show the change / its undo - what the hub verifies before confirming), ``record_hash`` (what history and
+drift compare: hit counters and read times excluded), ``management_guard`` (anti-lockout), ``rule_ref`` (a rule's
+id safe for logs, compliance details and agent-visible text).
 """
 
 from __future__ import annotations
@@ -103,7 +113,8 @@ MARKER_PREFIX = "atrium:"
 MARKER_RE = re.compile(r"atrium:([A-Za-z0-9_-]{1,64})")
 PORTS_RE = re.compile(r"^\d{1,5}(-\d{1,5})?(,\d{1,5}(-\d{1,5})?)*$")
 PROTO_RE = re.compile(r"^[a-z0-9][a-z0-9.+-]{0,23}$")
-CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f  ‪-‮⁦-⁩]")
+# control characters plus zero-width, line/paragraph separators and bidi overrides (text that could disguise itself)
+CONTROL_CHARS = re.compile("[\x00-\x08\x0b-\x1f\x7f-\x9f\u061c\u200b-\u200f\u2028-\u202e\u2066-\u2069\ufeff]")
 # The method names of the write contract (and the op names): never connector actions, so the generic
 # connector.action path can never reach them (base.Connector refuses such actions at class creation).
 RESERVED_ACTIONS = frozenset({"backup", "preview_change", "apply_change", "confirm_change", "rollback_change",
@@ -402,8 +413,14 @@ def _services(value: Any) -> list[dict[str, Any]] | None:
     items = value if isinstance(value, (list, tuple)) else [value]
     out: list[dict[str, Any]] = []
     for item in items[:500]:
-        if isinstance(item, str):
-            proto, _, ports = item.partition("/") if "/" in item and item.split("/")[0].isalpha() else ("tcp", "", item)
+        if isinstance(item, str):  # "tcp/443", "443/tcp", "tcp", "443" (tcp)
+            left, _, right = item.strip().lower().partition("/")
+            if right and not left[:1].isdigit():
+                proto, ports = left, right
+            elif right:
+                proto, ports = right, left
+            else:
+                proto, ports = (left, "") if not left[:1].isdigit() else ("tcp", left)
             item = {"proto": proto, "ports": ports or None}
         if not isinstance(item, dict):
             raise ValueError("a service is an object {proto, ports}")
@@ -880,17 +897,27 @@ def management_guard(record: dict[str, Any], ops: list[dict[str, Any]]) -> list[
     return problems
 
 
-def exposes_management(record: dict[str, Any], rule: dict[str, Any]) -> bool:
-    """An enabled pass rule from anywhere (any source) or a WAN interface to the device itself on a management port."""
-    if not rule.get("enabled", True) or rule.get("action") != "pass":
+def from_untrusted(record: dict[str, Any], rule: dict[str, Any]) -> bool:
+    """Whether a rule's traffic can come from anywhere: source any (or negated) and ingress on a WAN interface, from a
+    vendor zone holding a WAN interface, or floating (bound to nothing)."""
+    source = rule.get("source") or {}
+    if not (source.get("any") or source.get("negate")):
         return False
     wan = {i["id"] for i in record.get("interfaces") or [] if i.get("role") == "wan"}
-    from_untrusted = (rule.get("source") or {}).get("any") and (
-        rule.get("floating") or not rule.get("interfaces") or bool(wan & set(rule.get("interfaces") or [])))
-    if not from_untrusted:
+    if rule.get("interfaces"):
+        return bool(wan & set(rule["interfaces"]))
+    if rule.get("source_zones"):
+        zones = {z["id"]: set(z.get("interfaces") or []) for z in record.get("zones") or []}
+        return any(wan & zones.get(z, set()) for z in rule["source_zones"])
+    return True
+
+
+def exposes_management(record: dict[str, Any], rule: dict[str, Any]) -> bool:
+    """An enabled pass rule from anywhere (see ``from_untrusted``) that can reach the device itself (this device, any,
+    or a network holding one of its self addresses) on a management port (or any port)."""
+    if not rule.get("enabled", True) or rule.get("action") != "pass" or not from_untrusted(record, rule):
         return False
-    dest = rule.get("destination") or {}
-    if not (dest.get("self") or (dest.get("cidrs") and targets_device(record, dest))):
+    if not targets_device(record, rule.get("destination") or {}):
         return False
     services = rule.get("services")
     if not services:
@@ -904,3 +931,189 @@ def is_any_any(rule: dict[str, Any]) -> bool:
     """An enabled pass rule from any to any for any service."""
     return (rule.get("enabled", True) and rule.get("action") == "pass" and (rule.get("source") or {}).get("any")
             and (rule.get("destination") or {}).get("any") and not rule.get("services"))
+
+
+# --------------------------------------------------------------------------------------
+# comparing records: history, drift, previews and verification
+# --------------------------------------------------------------------------------------
+
+RULE_FIELDS = ("enabled", "action", "interfaces", "out_interfaces", "source_zones", "destination_zones", "floating",
+               "direction", "quick", "source", "destination", "services", "log", "description")
+DRIFT_KINDS = ("rule_added", "rule_removed", "rule_changed", "rule_enabled", "rule_disabled", "rules_reordered",
+               "interface_added", "interface_removed", "interface_changed", "zone_added", "zone_removed", "zone_changed",
+               "alias_added", "alias_removed", "alias_changed", "default_policy_changed", "device_changed",
+               "any_any_introduced", "management_exposed")
+CRITICAL_DRIFT = ("any_any_introduced", "management_exposed")
+INFO_DRIFT = ("rules_reordered", "alias_added", "alias_removed", "alias_changed", "device_changed")
+
+
+def record_hash(record: dict[str, Any]) -> str:
+    """"sha256:<hex>" of what a record says about the device's configuration: read time, revision, notes, errors and
+    rule hit counters are left out, so a re-read of an unchanged device hashes the same."""
+    body = {k: v for k, v in record.items() if k not in ("read_at", "revision", "notes", "errors")}
+    body["rules"] = [{k: v for k, v in r.items() if k not in ("hits", "marker")} for r in record.get("rules") or []]
+    return "sha256:" + hashlib.sha256(canonical_json(body).encode()).hexdigest()
+
+
+def rule_ref(rule: dict[str, Any]) -> str:
+    """A rule's native id reduced to safe characters - for activity, compliance details and anything agents read."""
+    return display_id(rule.get("vendor_ref") or rule.get("id"), 80)
+
+
+def interface_names(record: dict[str, Any]) -> dict[str, str]:
+    return {i["id"]: i.get("name") or i["id"] for i in record.get("interfaces") or []}
+
+
+def _same(a: dict[str, Any], b: dict[str, Any], fields: tuple[str, ...]) -> bool:
+    return all(canonical_json(a.get(f)) == canonical_json(b.get(f)) for f in fields)
+
+
+def diff_records(old: dict[str, Any], new: dict[str, Any]) -> list[dict[str, Any]]:
+    """What changed between two normalised records of one device, as drift items
+    {"kind", "severity" (info | warn | critical), "subject" (rule / interface / zone / alias id), "before", "after"
+    (one-line texts, device text included - untrusted), "marker" (the change id of an "atrium:<id>" marker on the rule,
+    else None)}. Rules are matched by ``id``; a moved rule is reported once as "rules_reordered"."""
+    items: list[dict[str, Any]] = []
+    old_names, new_names = interface_names(old), interface_names(new)
+
+    def add(kind: str, subject: str, before: str | None, after: str | None, marker_id: str | None = None) -> None:
+        severity = "critical" if kind in CRITICAL_DRIFT else "info" if kind in INFO_DRIFT else "warn"
+        items.append({"kind": kind, "severity": severity, "subject": subject, "before": before, "after": after,
+                      "marker": marker_id})
+
+    old_rules = {r["id"]: r for r in old.get("rules") or []}
+    new_rules = {r["id"]: r for r in new.get("rules") or []}
+    for rid, rule in new_rules.items():
+        before = old_rules.get(rid)
+        if before is None:
+            add("rule_added", rid, None, rule_line(rule, new_names), rule.get("marker"))
+        elif not _same(before, rule, RULE_FIELDS):
+            only_state = _same({**before, "enabled": rule.get("enabled")}, rule, RULE_FIELDS)
+            kind = ("rule_enabled" if rule.get("enabled", True) else "rule_disabled") if only_state else "rule_changed"
+            add(kind, rid, rule_line(before, old_names), rule_line(rule, new_names), rule.get("marker") or before.get("marker"))
+    for rid, rule in old_rules.items():
+        if rid not in new_rules:
+            add("rule_removed", rid, rule_line(rule, old_names), None, rule.get("marker"))
+    common_old = [r["id"] for r in old.get("rules") or [] if r["id"] in new_rules]
+    common_new = [r["id"] for r in new.get("rules") or [] if r["id"] in old_rules]
+    if common_old != common_new:
+        add("rules_reordered", "rules", f"{len(common_old)} rules in the previous order",
+            f"{sum(1 for a, b in zip(common_old, common_new) if a != b)} position(s) changed")
+
+    for key, kind, fields in (("interfaces", "interface", ("name", "description", "vlan", "subnets", "addresses", "role",
+                                                           "enabled")),
+                              ("zones", "zone", ("name", "description", "interfaces")),
+                              ("aliases", "alias", ("kind", "cidrs", "ports", "resolved"))):
+        ident = "name" if key == "aliases" else "id"
+        before_map = {x[ident]: x for x in old.get(key) or []}
+        after_map = {x[ident]: x for x in new.get(key) or []}
+        line = {"interfaces": lambda x: record_lines({"interfaces": [x]})[1],
+                "zones": lambda x: record_lines({"zones": [x]})[1],
+                "aliases": lambda x: record_lines({"aliases": [x]})[1]}[key]
+        for name, item in after_map.items():
+            if name not in before_map:
+                add(f"{kind}_added", name, None, line(item))
+            elif not _same(before_map[name], item, fields):
+                add(f"{kind}_changed", name, line(before_map[name]), line(item))
+        for name, item in before_map.items():
+            if name not in after_map:
+                add(f"{kind}_removed", name, line(item), None)
+
+    if canonical_json(old.get("default_policy") or {}) != canonical_json(new.get("default_policy") or {}):
+        add("default_policy_changed", "default_policy",
+            ", ".join(f"{k} {v}" for k, v in sorted((old.get("default_policy") or {}).items())) or "-",
+            ", ".join(f"{k} {v}" for k, v in sorted((new.get("default_policy") or {}).items())) or "-")
+    old_device, new_device = old.get("device") or {}, new.get("device") or {}
+    if (old_device.get("vendor"), old_device.get("version"), old_device.get("model")) != \
+            (new_device.get("vendor"), new_device.get("version"), new_device.get("model")):
+        add("device_changed", "device", " ".join(filter(None, (old_device.get("vendor"), old_device.get("model"),
+                                                               old_device.get("version")))) or "-",
+            " ".join(filter(None, (new_device.get("vendor"), new_device.get("model"), new_device.get("version")))) or "-")
+
+    exposed_before = {r["id"] for r in old.get("rules") or [] if exposes_management(old, r)}
+    any_before = {r["id"] for r in old.get("rules") or [] if is_any_any(r)}
+    for rule in new.get("rules") or []:
+        if exposes_management(new, rule) and rule["id"] not in exposed_before:
+            add("management_exposed", rule["id"], None, rule_line(rule, new_names), rule.get("marker"))
+        if is_any_any(rule) and rule["id"] not in any_before:
+            add("any_any_introduced", rule["id"], None, rule_line(rule, new_names), rule.get("marker"))
+    return items
+
+
+def _op_rule(op: dict[str, Any]) -> dict[str, Any]:
+    """The rule an allow op asks for, in the normalised shape (for previews and diffs)."""
+    return {"id": op["marker"], "action": "pass", "direction": "in", "interfaces": [op["source"]["zone"]],
+            "source": {"cidrs": op["source"]["cidrs"]}, "destination": {"cidrs": op["destination"]["cidrs"]},
+            "services": op["services"], "log": op.get("log", True), "enabled": True,
+            "description": f"{op['marker']} {op.get('description') or ''}".strip()}
+
+
+def ops_diff(record: dict[str, Any], ops: list[dict[str, Any]]) -> str:
+    """A unified-diff style text of what `ops` change in `record` ("+" added, "-" removed lines) - what previews and
+    approval cards show (device text included: untrusted, display as text only)."""
+    names = interface_names(record)
+    rules = {r["id"]: r for r in record.get("rules") or []}
+    by_ref = {r["vendor_ref"]: r for r in record.get("rules") or []}
+    lines = [f"--- {record.get('revision', 'current')}", "+++ proposed"]
+    for op in parse_ops(ops):
+        if op["op"] == "allow":
+            lines.append("+ " + rule_line(_op_rule(op), names))
+        else:
+            for ref in op["rules"]:
+                rule = rules.get(ref["id"]) or by_ref.get(ref["vendor_ref"])
+                if rule is None:
+                    lines.append(f"? rule {display_id(ref['id'])} is not in the snapshot")
+                    continue
+                lines.append("- " + rule_line(rule, names))
+                lines.append("+ " + rule_line({**rule, "enabled": False}, names))
+    return "\n".join(lines)
+
+
+def _find_rule(record: dict[str, Any], ref: dict[str, Any]) -> dict[str, Any] | None:
+    for rule in record.get("rules") or []:
+        if rule["id"] == ref.get("id") or (ref.get("vendor_ref") and rule["vendor_ref"] == ref["vendor_ref"]):
+            return rule
+    return None
+
+
+def ops_applied(record: dict[str, Any], ops: list[dict[str, Any]]) -> list[str]:
+    """Problems showing that a re-read `record` does NOT hold the change (empty = applied): every allow's rule (found
+    by its marker) is there, enabled, a pass rule with the op's networks and services; every rule disable_rules named
+    is there and disabled."""
+    problems = []
+    for op in parse_ops(ops):
+        if op["op"] == "allow":
+            change_id = find_marker(op["marker"])
+            found = [r for r in record.get("rules") or [] if r.get("marker") == change_id]
+            match = [r for r in found if r.get("enabled", True) and r.get("action") == "pass"
+                     and set(op["source"]["cidrs"]) <= set((r.get("source") or {}).get("cidrs") or [])
+                     and set(op["destination"]["cidrs"]) <= set((r.get("destination") or {}).get("cidrs") or [])
+                     and {(s["proto"], s.get("ports")) for s in op["services"]}
+                     <= {(s["proto"], s.get("ports")) for s in r.get("services") or []}]
+            if not match:
+                problems.append(f"the rule marked {op['marker']} is " + ("not as proposed" if found else "missing"))
+        else:
+            for ref in op["rules"]:
+                rule = _find_rule(record, ref)
+                if rule is None:
+                    problems.append(f"rule {display_id(ref['id'])} is missing")
+                elif rule.get("enabled", True):
+                    problems.append(f"rule {display_id(ref['id'])} is still enabled")
+    return problems
+
+
+def ops_reverted(before: dict[str, Any], after: dict[str, Any], ops: list[dict[str, Any]]) -> list[str]:
+    """Problems showing that `after` (a re-read) still holds part of the change compared with `before` (the record
+    the change was made against); empty = fully reverted."""
+    problems = []
+    for op in parse_ops(ops):
+        if op["op"] == "allow":
+            change_id = find_marker(op["marker"])
+            if any(r.get("marker") == change_id for r in after.get("rules") or []):
+                problems.append(f"the rule marked {op['marker']} is still on the device")
+        else:
+            for ref in op["rules"]:
+                old, new = _find_rule(before, ref), _find_rule(after, ref)
+                if old is not None and (new is None or new.get("enabled", True) != old.get("enabled", True)):
+                    problems.append(f"rule {display_id(ref['id'])} is not back to its previous state")
+    return problems
