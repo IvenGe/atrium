@@ -24,7 +24,25 @@ viewer, operator or admin - that decides what they may do.
 
 ## Screenshots
 
-The Network app with no devices connected yet, the Integration map, the Compliance frameworks tab, and the network-change guardrails.
+Home, the app launcher, agents, approvals, the operator console, assets, the risk register, users, and the same home page in the light theme. More shots (Network, the Integration map, frameworks, guardrails, a phone-width menu) are in [docs/screenshots](docs/screenshots).
+
+![Home](docs/screenshots/home.png)
+
+![Portals](docs/screenshots/portals.png)
+
+![Agents](docs/screenshots/agents.png)
+
+![Approvals](docs/screenshots/approvals.png)
+
+![Operator](docs/screenshots/operator.png)
+
+![Assets](docs/screenshots/assets.png)
+
+![Risk register](docs/screenshots/compliance-risks.png)
+
+![Users and access](docs/screenshots/users.png)
+
+![Home, light theme](docs/screenshots/home-light.png)
 
 ![Network app](docs/screenshots/network-empty.png)
 
