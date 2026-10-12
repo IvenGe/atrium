@@ -270,8 +270,9 @@ export function toast(message, tone = "info") {
  * Opens a modal. `body` is html``; returns {el, close}. onSubmit receives FormData when the form is submitted.
  * `minRole`: below that role the body is read-only and the submit button hidden. `sticky`: only the buttons close it.
  */
-export function modal({ title, body, submit = "Save", cancel = "Cancel", wide = false, onSubmit, footer, minRole, sticky = false }) {
+export function modal({ title, body, submit = "Save", cancel = "Cancel", wide = false, onSubmit, footer, minRole, sticky = false, onClose }) {
   const readOnly = !can(minRole);
+  const opener = document.activeElement;
   const backdrop = document.createElement("div");
   backdrop.className = "backdrop";
   const foot = footer ?? html`${cancel ? html`<button type="button" class="btn" data-close>${readOnly && cancel === "Cancel" ? "Close" : cancel}</button>` : ""}
@@ -281,7 +282,12 @@ export function modal({ title, body, submit = "Save", cancel = "Cancel", wide = 
     <div class="body">${readOnly ? html`<fieldset class="plain" disabled>${body}</fieldset>` : body}</div>
     <footer>${foot}</footer></form>`);
   const form = backdrop.querySelector("form");
-  const close = () => { backdrop.remove(); document.removeEventListener("keydown", onKey); };
+  const close = () => {
+    backdrop.remove();
+    document.removeEventListener("keydown", onKey);
+    if (opener instanceof HTMLElement) opener.focus();
+    if (onClose) onClose();
+  };
   const onKey = (e) => { if (e.key === "Escape" && !sticky) close(); };
   document.addEventListener("keydown", onKey);
   backdrop.addEventListener("mousedown", (e) => { if (e.target === backdrop && !sticky) close(); });

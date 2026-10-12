@@ -6,6 +6,7 @@ import { actions, appIcon, builtinIcon, can, debounce, emptyState, html, icon, m
 import * as home from "./views/home.js";
 import * as tools from "./views/tools.js";
 import * as integration from "./views/integration.js";
+import * as network from "./views/network.js";
 import * as agents from "./views/agents.js";
 import * as approvals from "./views/approvals.js";
 import * as operator from "./views/operator.js";
@@ -24,6 +25,7 @@ export const APPS = [
   { route: "", name: "Home", icon: "home", color: "#4f46e5", view: home },
   { route: "tools", name: "Apps", icon: "grid", color: "#7c3aed", view: tools },
   { route: "integration", name: "Integration hub", short: "Integration", icon: "plug", color: "#0ea5e9", view: integration },
+  { route: "network", name: "Network", icon: "radar", color: "#0284c7", view: network },
   { route: "agents", name: "Agents", icon: "bot", color: "#9333ea", view: agents },
   { route: "approvals", name: "Approvals", icon: "checkCircle", color: "#ca8a04", view: approvals },
   { route: "operator", name: "Operator", icon: "terminal", color: "#334155", view: operator },
@@ -90,10 +92,10 @@ const xApp = (d) => ({ route: `x/${d.key}`, name: d.title, icon: d.icon, color: 
 function renderNav() {
   const nav = [
     ...APPS.slice(0, 2),
-    { section: "Run the suite" }, ...APPS.slice(2, 6),
-    { section: "Govern" }, ...APPS.slice(6, 10),
+    { section: "Run the suite" }, ...APPS.slice(2, 7),
+    { section: "Govern" }, ...APPS.slice(7, 11),
     ...(xDomains.length ? [{ section: "Extensions" }, ...xDomains.map(xApp)] : []),
-    { section: "" }, ...APPS.slice(10),
+    { section: "" }, ...APPS.slice(11),
   ];
   setHTML($("nav"), nav.map((a) => a.section !== undefined
     ? html`<div class="section">${a.section}</div>`

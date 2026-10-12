@@ -7,6 +7,17 @@ import {
 const STATUS_ICON = { pass: "check", partial: "minus", fail: "x", manual: "edit", na: "minus" };
 const POLICY_CATEGORIES = ["security", "access", "incident", "backup", "acceptable-use", "supplier", "other"];
 
+function frameworksPanel(payload) {
+  const items = payload?.frameworks || [];
+  return html`<section class="card"><header><h2>Compliance frameworks</h2></header>
+    <p class="muted">CyFun 2025 is the default self-assessment. Requirement text stays on cyfun.eu; Atrium stores titles, scores and evidence links. Viewers read, operators score, administrators delete.</p>
+    ${items.length ? html`<ul>${items.map((f) => html`<li><b>${f.short_name || f.name}</b> ${f.kind === "external" ? badge("from CISO Assistant", "info") : ""}
+      ${f.default ? badge("default", "ok") : ""} ${f.counts?.requirements ? html`<span class="faint">${f.counts.requirements} requirements</span>` : ""}
+      ${f.kind === "builtin" && can("operator") ? html`<button class="btn sm" data-act="assess" data-id="${f.id}" data-min-role="operator">Start assessment</button>` : ""}</li>`)}</ul>`
+      : html`<p class="muted">No frameworks loaded.</p>`}
+    ${(payload?.ciso || []).length ? html`<p class="faint">${payload.ciso.length} CISO Assistant connection(s).</p>` : ""}</section>`;
+}
+
 function riskColor(score) {
   if (score >= 15) return "#dc2626";
   if (score >= 9) return "#ea580c";
@@ -98,9 +109,14 @@ export async function render(el, ctx) {
   let tab = ctx.params[0] || "overview";
   let data, risks, policies;
   let people = [];
+  let frameworks = null;
   let byId = {};
   const draw = async () => {
-    [data, risks, policies, people] = await Promise.all([get("/grc"), get("/grc/risks"), get("/grc/policies"), loadPeople()]);
+    let frameworks = null;
+    [data, risks, policies, people, frameworks] = await Promise.all([
+      get("/grc"), get("/grc/risks"), get("/grc/policies"), loadPeople(),
+      tab === "frameworks" ? get("/frameworks") : null,
+    ]);
     byId = Object.fromEntries(people.map((p) => [p.id, p]));
     const failing = data.controls.filter((c) => c.status === "fail" || c.status === "partial");
     const openRisks = risks.filter((r) => r.status !== "closed").sort((a, b) => b.score - a.score);
@@ -108,7 +124,7 @@ export async function render(el, ctx) {
     setHTML(el, html`
       <div class="page-head"><div><h1>Compliance hub</h1><p class="muted">Governance, risk and compliance. The GRC Supervisor checks controls against live hub state and maps the evidence to ISO 27001, SOC 2 and NIS2.</p></div>
         <button class="btn" data-act="evaluate" data-min-role="operator">${icon("refresh")}Re-evaluate</button></div>
-      <div class="tabs">${[["overview", "Overview"], ["controls", `Controls (${data.controls.length})`], ["risks", `Risks (${openRisks.length} open)`], ["policies", `Policies (${policies.length})`]]
+      <div class="tabs">${[["overview", "Overview"], ["controls", `Controls (${data.controls.length})`], ["frameworks", "Frameworks"], ["risks", `Risks (${openRisks.length} open)`], ["policies", `Policies (${policies.length})`]]
         .map(([k, label]) => html`<button class="${tab === k ? "active" : ""}" data-act="tab" data-tab="${k}">${label}</button>`)}</div>
 
       ${tab === "overview" ? html`${frameworkCards(data.frameworks)}
@@ -120,6 +136,8 @@ export async function render(el, ctx) {
             <div class="card"><header><h3>Top risks</h3></header>${openRisks.length ? openRisks.slice(0, 5).map((r) => html`<div class="msg-line" style="grid-template-columns:auto 1fr">
               <span class="badge" style="background:${riskColor(r.score)};color:#fff;border:0">${r.score}</span><span>${r.title}</span></div>`) : html`<p class="muted">No open risks.</p>`}</div>
           </section></div>` : ""}
+
+      ${tab === "frameworks" ? frameworksPanel(frameworks) : ""}
 
       ${tab === "controls" ? html`${families.map((fam) => html`<section class="card" style="margin-bottom:12px"><header><h2>${fam}</h2></header>
         ${data.controls.filter((c) => c.family === fam).map(controlRow)}</section>`)}` : ""}
@@ -176,6 +194,12 @@ export async function render(el, ctx) {
 
   actions(el, {
     tab: (d) => { tab = d.tab; history.replaceState(null, "", `#/compliance/${tab}`); draw(); },
+    async assess(d) {
+      const name = window.prompt("Name this self-assessment");
+      if (!name) return;
+      await post(`/frameworks/${d.id}/assessments`, { name, target_level: "B" });
+      toast("Assessment started", "ok");
+    },
     async evaluate() { await post("/grc/evaluate"); toast("Controls re-evaluated", "ok"); draw(); },
     override(d) {
       const c = data.controls.find((x) => x.id === d.id);

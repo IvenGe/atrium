@@ -25,6 +25,12 @@ REGISTRY: dict[str, str | type[Connector]] = {
     "keycloak": "hub.connectors.keycloak:KeycloakConnector",
     "scim": "hub.connectors.scim:ScimConnector",
     "generic_rest": "hub.connectors.generic_rest:GenericRestConnector",
+    "opnsense": "hub.connectors.opnsense:OpnSenseConnector",
+    "pfsense": "hub.connectors.pfsense:PfSenseConnector",
+    "mikrotik": "hub.connectors.mikrotik:MikroTikConnector",
+    "fortigate": "hub.connectors.fortigate:FortiGateConnector",
+    "panos": "hub.connectors.panos:PanOsConnector",
+    "hostfw": "hub.connectors.hostfw:HostFirewallConnector",
 }
 if os.environ.get("HUB_DEV_FAKE_DEVICES") == "1":  # an in-memory firewall to try the Network app (never in production)
     REGISTRY["fake_firewall"] = "hub.connectors.fake_firewall:FakeFirewallConnector"

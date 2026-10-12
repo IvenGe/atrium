@@ -140,6 +140,42 @@ for _g in (
     register(_g)
 
 
+register(Guardrail(
+    "device_changes", "Device changes",
+    "Lets operators propose firewall and host-firewall changes. Off, nothing is written to a device.", False,
+    "Atrium can change firewall and host-firewall rules after an approval. A mistake can interrupt traffic.",
+    group="network", safe_value=False))
+register(Guardrail(
+    "device_changes_need_second_person", "A second person approves device changes",
+    "The person who proposed a firewall change cannot approve it, and only an administrator can.", True,
+    "One person could propose and apply a firewall change.",
+    group="network", control="HB-CM-3", weakens="fail",
+    finding="firewall changes can be approved by the person who proposed them"))
+register(Guardrail(
+    "device_changes_need_maintenance_window", "Device changes wait for a maintenance window",
+    "An approved change is applied only inside a maintenance window, unless an administrator marks it an emergency.",
+    True, "Approved firewall changes are applied as soon as they are approved, including during the working day.",
+    group="network", control="HB-CM-3", weakens="partial",
+    finding="firewall changes do not wait for a maintenance window"))
+register(Guardrail(
+    "device_changes_need_backup", "A backup is taken before a device change",
+    "Apply is refused when the pre-change configuration backup fails.", True,
+    "A firewall change can be applied with no Atrium copy of the configuration to restore.",
+    group="network", control="HB-CM-3", weakens="fail",
+    finding="firewall changes can be applied without a configuration backup"))
+register(Guardrail(
+    "approval_expiry_hours", "Approval expiry (hours)",
+    "Firewall and self-patch approvals expire this many hours after they are requested. 24 is the default.",
+    24, "A longer window means an approval can still be used after the device or the code has moved on.",
+    group="network", minimum=1, maximum=72))
+register(Guardrail(
+    "approvals_need_second_person", "A second person approves other requests",
+    "When on, the person who requested an approval (or who is named as proposed_by) cannot decide it. "
+    "Firewall changes use the device-change switch above, which is on by default. This one is off by default.",
+    False, "The same person can request and approve a change.",
+    group="network", safe_value=True))
+
+
 def defaults() -> dict[str, Any]:
     return {key: g.default for key, g in REGISTRY.items()}
 

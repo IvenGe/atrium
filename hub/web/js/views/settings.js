@@ -11,6 +11,7 @@ const SLA = ["critical", "high", "medium", "low"];
 const GUARD_GROUPS = {
   teams: "Agent teams", agents: "Agent actions", commands: "Commands", scans: "Vulnerability scans",
   extensions: "Extensions", self_patching: "Self-patching (changes to Atrium's own code)",
+  network: "Network changes",
 };
 const SERVERS = "Ollama: http://localhost:11434/v1 - LM Studio: http://localhost:1234/v1 - vLLM: http://<host>:8000/v1 - llama.cpp server: http://<host>:8080/v1";
 // Switches that allow a capability are on by default, but off is their protective side (safe_value in hub/guardrails.py):

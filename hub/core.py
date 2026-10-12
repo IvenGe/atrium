@@ -130,6 +130,7 @@ class Hub:
                 flows.save(self, flow)
                 await self.bus.tell("hub", flows.owner(flow), "flow.run", {"flow_id": flow.id, "trigger": "schedule"})
                 started.append(flow.id)
+        await self.bus.tell("hub", "module:network", "change.sweep", {})
         if now - self._sla_checked >= SLA_CHECK_INTERVAL:
             self._sla_checked = now
             await self.bus.tell("hub", "module:vulns", "sla.check")

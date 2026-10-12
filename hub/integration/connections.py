@@ -309,6 +309,10 @@ def public(hub: "Hub", tool: Tool, conn: Connection | None) -> dict[str, Any]:
 def safe_failure(exc: BaseException, secrets: dict[str, str] | None = None) -> dict[str, Any]:
     """{"message", "status", "excerpt"} of a failed connector call, with every secret masked."""
     if isinstance(exc, ConnectorError):
-        return {"message": redact(exc.message, secrets), "status": exc.status,
-                "excerpt": redact(exc.excerpt, secrets) if exc.excerpt else None}
+        out = {"message": redact(exc.message, secrets), "status": exc.status,
+               "excerpt": redact(exc.excerpt, secrets) if exc.excerpt else None}
+        code = getattr(exc, "code", None)
+        if code:
+            out["code"] = code
+        return out
     return {"message": redact(f"{exc.__class__.__name__}: {exc}", secrets), "status": None, "excerpt": None}

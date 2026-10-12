@@ -654,6 +654,8 @@ def compliance_facts(hub: "Hub", now: float | None = None) -> dict[str, Any]:
     items = drift(hub)
     recent = [d for d in items if d["detected_at"] >= now - 30 * DAY]
     open_items = [d for d in items if d["status"] == "open"]
+    from .changes import change_facts
+
     return {
         "devices": out_devices,
         "drift": {"open": len(open_items),
@@ -663,4 +665,5 @@ def compliance_facts(hub: "Hub", now: float | None = None) -> dict[str, Any]:
                   "detected_30d": len(recent), "attributed_30d": sum(1 for d in recent if d["status"] == "attributed"),
                   "acknowledged_30d": sum(1 for d in recent if d["status"] == "acknowledged")},
         "segmentation": segmentation.compliance(hub),
+        "change_management": change_facts(hub),
     }

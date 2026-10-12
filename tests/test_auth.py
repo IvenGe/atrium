@@ -148,6 +148,17 @@ def test_password_policy(password, message):
     ("GET", "/api/self-patches", "viewer"), ("GET", "/api/self-patches/sp_1", "viewer"),
     ("POST", "/api/self-patches", "admin"), ("POST", "/api/self-patches/sp_1/apply", "admin"),
     ("POST", "/api/self-patches/sp_1", "operator"), ("POST", "/api/approvals/ap_1", "operator"),
+    ("GET", "/api/network/devices", "viewer"), ("POST", "/api/network/devices/edge/baseline", "admin"),
+    ("DELETE", "/api/network/devices/edge/baseline", "admin"),
+    ("GET", "/api/network/backups/bk_1/download", "admin"),
+    ("POST", "/api/network/drift/dr_1/ack", "operator"),
+    ("DELETE", "/api/frameworks/cyfun2025/assessments/fa_1", "admin"),
+    ("GET", "/api/frameworks/cyfun2025/assessments/fa_1/audit-pack", "viewer"),
+    ("PATCH", "/api/segmentation/zones/z:edge:lan", "admin"),
+    ("PUT", "/api/segmentation/policy", "admin"),
+    ("POST", "/api/network/windows", "admin"),
+    ("POST", "/api/segmentation/changes/fw_1/emergency", "admin"),
+    ("POST", "/api/segmentation/changes/preview", "operator"),
 ])
 def test_required_role(method, path, role):
     assert required_role(method, path) == role
@@ -198,6 +209,19 @@ def contract_role(method: str, path: str) -> str | None:
                           ("DELETE", "/api/extensions/{ext_id}"), ("POST", "/api/extensions/{ext_id}/rollback"),
                           ("POST", "/api/tools/{tool_id}/extend"), ("POST", "/api/self-patches"),
                           ("POST", "/api/self-patches/{patch_id}/apply")}:
+        return "admin"
+    # a network baseline is the approved configuration; downloading a backup returns the device configuration
+    if (method, path) in {("POST", "/api/network/devices/{tool_id}/baseline"),
+                          ("DELETE", "/api/network/devices/{tool_id}/baseline"),
+                          ("GET", "/api/network/backups/{backup_id}/download")}:
+        return "admin"
+    if method == "DELETE" and path == "/api/frameworks/{framework_id}/assessments/{aid}":
+        return "admin"
+    if (method, path) in {("PATCH", "/api/segmentation/zones/{zone_id}"),
+                          ("PUT", "/api/segmentation/policy"),
+                          ("POST", "/api/network/windows"),
+                          ("DELETE", "/api/network/windows/{window_id}"),
+                          ("POST", "/api/segmentation/changes/{change_id}/emergency")}:
         return "admin"
     return "viewer" if method in ("GET", "HEAD") else "operator"
 

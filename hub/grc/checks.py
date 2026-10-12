@@ -385,6 +385,22 @@ def check_network_rules(s: Snapshot) -> Result:
     return "pass", f"No any-to-any pass rule; all {total} pass rule(s) are described.", evidence
 
 
+def check_network_change_management(s: Snapshot) -> Result:
+    facts = s.network.get("change_management") or {}
+    if not facts:
+        return "manual", "Network change controls have not been evaluated.", []
+    evidence = [f"{facts.get('applied', 0)} applied change(s)",
+                f"{facts.get('emergencies', 0)} emergency apply(ies)",
+                f"{facts.get('rollbacks', 0)} rollback(s)"]
+    if not facts.get("second_person") or not facts.get("backup"):
+        return "fail", "Network changes can be applied without a second person or without a configuration backup.", evidence
+    if not facts.get("maintenance_window"):
+        return "partial", "Network changes do not wait for a maintenance window.", evidence
+    if facts.get("emergencies"):
+        return "partial", f"{facts['emergencies']} network change(s) were applied as emergencies.", evidence
+    return "pass", "Network changes need a second person, a backup and a maintenance window.", evidence
+
+
 CHECKS: dict[str, Callable[[Snapshot], Result]] = {
     "assets_inventory": check_assets_inventory,
     "assets_owned": check_assets_owned,
@@ -410,6 +426,7 @@ CHECKS: dict[str, Callable[[Snapshot], Result]] = {
     "network_backups": check_network_backups,
     "network_rules": check_network_rules,
     "framework_assessment": check_framework_assessment,
+    "network_change_management": check_network_change_management,
 }
 
 

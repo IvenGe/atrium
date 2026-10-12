@@ -339,6 +339,7 @@ async def propose(hub: "Hub", *, title: str, rationale: str, changes: list[FileC
 def approval_payload(patch: SelfPatch) -> dict[str, Any]:
     tests = patch.tests or {}
     return {"self_patch_id": patch.id, "title": patch.title, "branch": patch.branch, "base_branch": patch.base_branch,
+            "commit": patch.commit, "proposed_by": patch.requested_by,
             "files": patch.files, "tool_id": patch.tool_id, "mode": patch.mode, "mode_reason": patch.mode_reason,
             "tests": {k: tests.get(k) for k in ("ok", "exit_code", "timed_out", "duration", "command", "tail")}}
 
