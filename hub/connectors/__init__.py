@@ -7,6 +7,7 @@ directly.
 from __future__ import annotations
 
 import importlib
+import os
 from typing import TYPE_CHECKING, Any
 
 import httpx
@@ -25,6 +26,8 @@ REGISTRY: dict[str, str | type[Connector]] = {
     "scim": "hub.connectors.scim:ScimConnector",
     "generic_rest": "hub.connectors.generic_rest:GenericRestConnector",
 }
+if os.environ.get("HUB_DEV_FAKE_DEVICES") == "1":  # an in-memory firewall to try the Network app (never in production)
+    REGISTRY["fake_firewall"] = "hub.connectors.fake_firewall:FakeFirewallConnector"
 
 __all__ = ["REGISTRY", "Connector", "ConnectorError", "ConnectorField", "build", "catalog", "connector_class", "detect"]
 

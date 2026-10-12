@@ -12,7 +12,8 @@ import httpx
 
 from ..bus import Message
 from ..connectors.base import ConnectorError, check, normalize, redact
-from ..integration import connections
+from ..connectors.netmodel import RESERVED_ACTIONS
+from ..integration import connections, network
 from ..integration.analyzer import analyze_repo, analyze_saas, list_files, readme_summary
 from ..models import AGENT_PERMISSIONS, Manifest, Tool
 from . import teams
@@ -186,8 +187,11 @@ class ToolSupervisor(BaseAgent):
                       for c in result.get("checks") or [] if isinstance(c, dict)]
             domains = {str(d): sorted({str(o) for o in ops if o in ("read", "write")})
                        for d, ops in (result.get("domains") or {}).items() if isinstance(ops, (list, set, tuple))}
-            return {"ok": bool(result.get("ok")), "detail": redact(result.get("detail", ""), connector.secrets),
-                    "checks": checks, "domains": {d: ops for d, ops in domains.items() if ops}}
+            out = {"ok": bool(result.get("ok")), "detail": redact(result.get("detail", ""), connector.secrets),
+                   "checks": checks, "domains": {d: ops for d, ops in domains.items() if ops}}
+            if "network" in out["domains"]:  # what this device and credential allow (never more than declared)
+                out["network_write"] = network.narrow_write(connector, result.get("network_write", ...))
+            return out
 
         result = await self._connector("test", run, body.get("config"))
         if "failure" in result:
@@ -241,12 +245,32 @@ class ToolSupervisor(BaseAgent):
         name, params = str(body.get("name")), dict(body.get("params") or {})
 
         async def run(connector):
+            if name in RESERVED_ACTIONS:  # device changes and backups only go through the network change path
+                raise ConnectorError(f"'{name}' is not a connector action: device changes need an approved change")
             if name not in connector.actions:
                 raise ConnectorError(f"{connector.title} has no action '{name}'")
             result = await connector.action(name, params)
             return {"result": result if isinstance(result, dict) else {"value": result}}
 
         return await self._connector("action", run)
+
+    # -- network devices: configuration backups (device changes: see hub/integration/network.py) ---------------
+
+    async def on_network_backup(self, body: dict[str, Any], msg: Message) -> dict[str, Any]:
+        """Take a configuration backup and store it encrypted (collection device_backups). Only the Network
+        Supervisor asks; the reply carries the backup's metadata - the content never travels on the bus."""
+        if msg.sender != "module:network":
+            raise ValueError("Device backups are taken by the Network Supervisor")
+
+        async def run(connector):
+            if not connector.implements("backup"):
+                raise ConnectorError(f"{connector.title} cannot take configuration backups")
+            taken = await connector.backup()
+            meta = network.store_backup(self.hub, self.tool_id, taken, reason=str(body.get("reason") or "manual"),
+                                        actor=str(body.get("actor") or msg.sender), change_id=body.get("change_id"))
+            return {"backup": meta}
+
+        return await self._connector("backup", run)
 
     # -- internals -------------------------------------------------------------------
 

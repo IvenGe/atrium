@@ -259,7 +259,9 @@ def test_agent_guardrails_control():
     assert status(scans_need_approval=False, team_requires_approval=False).status == "pass"
     control = CONTROLS_BY_ID["HB-AC-6"]
     assert control.title == "AI agent guardrails are enforced"
-    assert control.refs == {"ISO27001": "A.8.2 / A.8.32", "SOC2": "CC6.1 / CC8.1", "NIS2": "21(2)(i)"}
+    assert control.refs == {"ISO27001": "A.8.2 / A.8.32", "SOC2": "CC6.1 / CC8.1", "NIS2": "21(2)(i)",
+                            "CyFun2025": "ID.RA-01.5 / ID.RA-01.4 / PR.AA-05.7",
+                            "CyFun2023": "DE.CM-8.1 / ID.RA-1.3 / PR.AC-4.7"}
     assert control.risk == ("AI agents operate without guardrails", 3, 5)
 
 

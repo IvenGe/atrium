@@ -12,6 +12,11 @@ Flow rules, from each connection's capabilities (its last successful test, else 
 - writes controls -> push the hub's controls with their evidence; reads risks -> pull them into the risk register;
 - reads people (a directory: Okta, Keycloak, SCIM, HR) -> pull them into the People app; reads accounts -> pull the
   tool's user accounts into the People app (linked to people; leavers with active accounts fail HB-AC-7);
+- reads network (a firewall, router, switch or host firewall) -> pull its configuration into the Network app every
+  15 minutes (snapshots, drift, segmentation); device changes never go through flows;
+- reads frameworks (a GRC tool: CISO Assistant) -> pull its loaded frameworks and assessments into the Compliance hub
+  (read-only); writes assessments (an administrator switched it on in the connection) -> push the hub's CyFun
+  self-assessment results to it. Two domains, so the pull and the push are not a loop;
 - reads an enabled extension domain ("x:alerts") -> pull it into that domain's app; only writes it -> push to it.
 
 Proposals become approvals of kind "flow" (enabled straight away in autonomous mode).
@@ -19,6 +24,7 @@ Proposals become approvals of kind "flow" (enabled straight away in autonomous m
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from .. import connectors
@@ -33,14 +39,31 @@ ADAPTER_STRATEGIES = {"api_adapter", "event_adapter", "health_probe", "health_en
 BUILTIN_SCORE = 50  # a detected built-in connector at least this sure is offered instead of generating one
 
 
-def proposals(hub: "Hub") -> list[Flow]:
-    """Flows the rules call for that do not exist yet (in any state: a rejected proposal stays rejected)."""
+@dataclass(frozen=True)
+class Move:
+    """One data-flow the planner knows about. `blocked` is set for directions the rules refuse (shown in connect
+    options, never proposed). `recommended` is the direction the planner would actually create."""
+
+    domain: str
+    source: str
+    target: str
+    action: str | None
+    reason: str
+    recommended: bool = True
+    blocked: str | None = None
+    strategy: str = "connector"
+
+
+def moves(hub: "Hub", tool_id: str | None = None) -> list[Move]:
+    """Every data-flow the rules consider, including blocked alternatives. Shared by proposals() and the map's
+    connect_options so they cannot disagree."""
     from ..extensions import registry
 
-    existing = {flows.key(f) for f in flows.all_flows(hub)}
     extension_domains = registry.active_domains(hub)
-    out: list[Flow] = []
+    out: list[Move] = []
     for conn in connections.all_connections(hub):
+        if tool_id and conn.id != tool_id:
+            continue
         tool = hub.get_tool(conn.id)
         try:
             cls = connectors.connector_class(conn.kind)
@@ -58,10 +81,9 @@ def proposals(hub: "Hub") -> list[Flow]:
         def writes(domain: str) -> bool:
             return "write" in domains.get(domain, [])
 
-        def add(domain: str, source: str, target: str, action: str | None, reason: str) -> None:
-            if (domain, source, target, action) not in existing:
-                existing.add((domain, source, target, action))
-                out.append(flows.make(hub, domain, source, target, action, reason=reason, strategy=strategy))
+        def add(domain: str, source: str, target: str, action: str | None, reason: str, *,
+                recommended: bool = True, blocked: str | None = None) -> None:
+            out.append(Move(domain, source, target, action, reason, recommended, blocked, strategy))
 
         name = tool.name
         if "scan" in cls.actions:
@@ -79,6 +101,9 @@ def proposals(hub: "Hub") -> list[Flow]:
                 + ": its assets are merged into Hub Assets (matched by address, hostname or serial).")
         if writes("assets") and not sor:
             add("assets", "hub", end, None, f"{name} keeps its own asset list: it receives Hub Assets, the canonical list.")
+        elif writes("assets") and sor:
+            add("assets", "hub", end, None, "", recommended=False,
+                blocked=f"{name} is the system of record for assets; the hub never pushes assets to it.")
         if writes("controls"):
             add("controls", "hub", end, None,
                 f"{name} manages compliance: it receives the hub's controls with their automated evidence.")
@@ -92,6 +117,18 @@ def proposals(hub: "Hub") -> list[Flow]:
             add("accounts", end, "hub", None,
                 f"{name} has user accounts: they are linked to people in the People app, so leavers who can still "
                 "sign in are found.")
+        if reads("network") and not conn.generated:
+            add("network", end, "hub", None,
+                f"{name} is a network device: its interfaces, zones and rules are read into the Network app, where "
+                "changes made outside Atrium show up as drift and the segmentation map and compliance checks use them.")
+        if reads("frameworks") and not conn.generated:
+            add("frameworks", end, "hub", None,
+                f"{name} holds compliance frameworks and assessments: they are shown read-only in the Compliance hub "
+                "(frameworks, requirement trees, its assessment results), next to Atrium's own CyFun assessments.")
+        if writes("assessments") and not conn.generated:
+            add("assessments", "hub", end, None,
+                f"An administrator allowed sending the hub's CyFun self-assessments to {name}: each one's results and "
+                "maturity scores are written into a compliance assessment there.")
         for key, (defn, _) in extension_domains.items():
             domain, what = f"x:{key}", defn.title.lower()
             if reads(domain):
@@ -99,6 +136,19 @@ def proposals(hub: "Hub") -> list[Flow]:
                                               "extension), linked to assets and people.")
             elif writes(domain):
                 add(domain, "hub", end, None, f"{name} can take {what}: it receives the hub's {defn.title} records.")
+    return out
+
+
+def proposals(hub: "Hub") -> list[Flow]:
+    """Flows the rules call for that do not exist yet (in any state: a rejected proposal stays rejected)."""
+    existing = {flows.key(f) for f in flows.all_flows(hub)}
+    out: list[Flow] = []
+    for move in moves(hub):
+        if move.blocked or (move.domain, move.source, move.target, move.action) in existing:
+            continue
+        existing.add((move.domain, move.source, move.target, move.action))
+        out.append(flows.make(hub, move.domain, move.source, move.target, move.action, reason=move.reason,
+                              strategy=move.strategy))
     return out
 
 

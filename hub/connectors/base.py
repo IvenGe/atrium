@@ -21,6 +21,14 @@ normalises them with ``normalize``; unknown keys are dropped, timestamps are POS
                      email, then login
 ``accounts``         external_id, login, email, display_name, active (bool), last_login, app (the application, for a
                      directory that lists app assignments) - user accounts in a tool; linked to persons by email/login
+``network``          read only: ONE record describing the device the connection reaches - firewall, router, switch or
+                     host firewall (device facts, interfaces, zones, aliases, rules, default policy). The shape, its
+                     validation and the helpers are in ``netmodel.py``; text in it is untrusted device text
+``frameworks``       read only: one record per compliance framework a GRC tool has loaded, with its requirement tree,
+                     the tool's assessments of it (results and scores per requirement) and its mapping sets. The shape
+                     and its validation are in ``grcmodel.py``; requirement text in it is the tool's (untrusted) text
+``assessments``      write only: the hub's framework self-assessments (CyFun), one record per assessment with the
+                     result and both maturity scores per requirement (shape in ``grcmodel.py``)
 ``x:<key>``          a data type an enabled extension pack adds (hub/extensions, e.g. ``x:alerts``): external_id plus
                      the domain's fields by name (scalars or lists of scalars); the hub types them against the
                      domain's field definitions
@@ -48,6 +56,58 @@ or "interrupted" marks the scan failed.
 
 Errors: raise ``ConnectorError`` with a message a person can act on; ``self.error()`` / ``self.raise_for_status()``
 build one with the HTTP status and a response excerpt, both with every secret value masked.
+
+Network devices (firewalls, routers, switches, host firewalls) - the device connector contract
+---------------------------------------------------------------------------------------------
+Reading: declare ``capabilities = {"network": {"read"}}`` and return ``[record]`` from ``pull("network")`` (shape in
+``netmodel.py``). ``test()`` should be useful to a person checking a real device: one check per step - reachability,
+TLS (certificate verified or the configured CA file), authentication, privileges (say when the credential can WRITE
+although device changes are off: "a read-only key is recommended until device changes are enabled"), product and
+version (and whether this connector supports it), and the API features it relies on. ``test()`` may add
+``"network_write": {...} | None`` to its result: what this device and credential actually allow (it can only narrow
+the class declaration below, e.g. a version without savepoints, or a read-only key -> None).
+
+Writing (only where the product has a safe mechanism): declare the class attribute
+``network_write = {"ops": ["allow", "disable_rules"], "rollback": <mode>, "window_s": <seconds>}`` and implement the
+six methods below. Rollback modes (``netmodel.ROLLBACK_MODES``): ``savepoint`` (the device reverts by itself unless
+confirmed within window_s), ``commit_confirm`` (a confirmed commit that reverts by itself), ``deadman`` (a revert job
+the connector arms on the device before writing and disarms on confirm), ``backup_restore`` (no device-side timer:
+rollback_change undoes the change with recorded inverse operations or by restoring the backup), ``none`` (not
+writable). These methods are NEVER connector actions: a class whose ``actions`` names one of them (or another name in
+``netmodel.RESERVED_ACTIONS``) is refused when it is defined, and ``connector.action`` refuses them, so they are only
+reached through the hub's change path (approval bound to the revision and ops hash, backup first, verification).
+Generated / generic connectors are never write-capable. Every call opens its own connection (the hub verifies a
+change through a NEW connector instance, i.e. a new connection, so a surviving session proves nothing).
+
+``backup()`` -> ``{"content": bytes | str (the full configuration), "format": "xml" | "json" | "text" | ...,
+    "device_backup_id": the device's own reference or None, "revision": the config revision it holds or None,
+    "sha256": optional (verified when given)}``. The hub encrypts the content (``hub/secrets.py``), stores it with its
+    SHA-256 and size and only ever hands it back as ``netmodel.Backup``. Never log it or put it in an error.
+``preview_change(ops, snapshot)`` -> ``{"steps": [{"op": index, "kind": "add_rule" | "disable_rule", "position":
+    "top of LAN rules", "detail": "..."}], "notes": [...], "problems": [...]}``. No side effects (it may read the
+    device). ``ops`` are ``netmodel.parse_ops`` canonical dicts, ``snapshot`` the hub's current normalised record;
+    ``problems`` (e.g. ``netmodel.management_guard``, a zone the device does not have) refuse the change.
+``apply_change(ops, base_revision, backup)`` -> ``{"token": str (opaque, JSON-safe, no secrets, <= 4096 chars),
+    "rollback_until": epoch seconds when the device reverts by itself (None for backup_restore), "revision": the new
+    revision or None, "created": [{"op": index, "id", "vendor_ref"}], "disabled": [vendor_ref, ...], "notes": [...]}``.
+    It must: re-read and compare the revision with ``base_revision`` (``ChangeError(code="stale", state="unchanged")``
+    on a mismatch), run the management-path guard (``code="lockout"``), arm the rollback mechanism BEFORE writing,
+    write exactly the ops (one rule per allow, marked ``op["marker"]``), and apply. ``backup`` is the hub's
+    pre-change backup (``netmodel.Backup``, or None when the hub's backup guardrail is off) for backup_restore.
+``confirm_change(token)`` -> ``{"confirmed": True, "revision": ..., "notes": [...]}``: cancel the timer / confirm the
+    commit / persist (only now, where the product separates running and persisted config).
+``rollback_change(token, backup)`` -> ``{"rolled_back": True, "method": "savepoint" | "commit_confirm" | "deadman" |
+    "inverse_ops" | "backup_restore", "notes": [...]}``: undo now. The hub re-reads the device to prove it.
+``restore_backup(backup)`` -> ``{"restored": True, "revision": ..., "notes": [...]}``: put an Atrium-managed backup
+    back (an approved "restore" change - the hub never restores without one).
+
+Failures raise ``netmodel.ChangeError(message, code=..., state=...)``: ``state`` says what the device holds now
+(unchanged, rolled_back, applied or unknown - the hub then restores its own backup and alerts). The token must let a
+NEW connector instance confirm or roll back (it may be used after a hub restart).
+
+SSH-based connectors (host firewalls, CLI-only devices) use ``self.ssh(target)`` - one connection per session,
+stdout / stderr / exit status kept apart, scripts on stdin, no silent truncation (see ``execution/runner.py``); tests
+pass a fake SSH transport (``execution/sshfake.py``) as the connector's ``transport``.
 """
 
 from __future__ import annotations
@@ -64,8 +124,11 @@ from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
 if TYPE_CHECKING:
     from ..models import Tool
 
-Domain = Literal["assets", "vulnerabilities", "risks", "controls", "people", "accounts"]
-DOMAINS: tuple[str, ...] = ("assets", "vulnerabilities", "risks", "controls", "people", "accounts")
+Domain = Literal["assets", "vulnerabilities", "risks", "controls", "people", "accounts", "network", "frameworks",
+                 "assessments"]
+DOMAINS: tuple[str, ...] = ("assets", "vulnerabilities", "risks", "controls", "people", "accounts", "network",
+                            "frameworks", "assessments")
+WRITE_METHODS = ("backup", "preview_change", "apply_change", "confirm_change", "rollback_change", "restore_backup")
 EXTENSION_DOMAIN = re.compile(r"^x:[a-z][a-z0-9_]{1,31}$")  # a data type an extension pack adds, e.g. "x:alerts"
 FIELD_NAME = re.compile(r"^[a-z][a-z0-9_]{0,39}$")
 FieldKind = Literal["text", "url", "secret", "select", "number", "bool", "json"]
@@ -487,6 +550,23 @@ def normalize(domain: str, records: list[dict[str, Any]]) -> tuple[list[dict[str
             except ValueError as exc:
                 errors.append(f"record {record.get('external_id', index) if isinstance(record, dict) else index}: {exc}")
         return valid, errors
+    if domain == "frameworks":
+        from .grcmodel import normalize_frameworks
+
+        return normalize_frameworks(records)
+    if domain == "network":
+        from .netmodel import normalize_record
+
+        valid, errors = [], []
+        for index, record in enumerate(records[:1]):  # one device per connection
+            try:
+                valid.append(normalize_record(record))
+            except ValueError as exc:
+                errors.append(f"record {index}: {exc}")
+        if len(records) > 1:
+            errors.append(f"the connection returned {len(records)} device records; only the first is used "
+                          "(one connection per device)")
+        return valid, errors
     model = RECORD_MODELS.get(domain)
     if model is None:
         raise ConnectorError(f"Unknown data domain '{domain}'")
@@ -556,8 +636,20 @@ class Connector:
     actions: ClassVar[set[str]] = set()  # e.g. {"scan", "scan_status"}
     system_of_record: ClassVar[set[str]] = set()  # domains this product is authoritative for (never pushed to)
     timeout: ClassVar[float] = 30.0
+    # device changes (see the module docstring): {"ops": [...], "rollback": mode, "window_s": seconds}; None = read-only
+    network_write: ClassVar[dict[str, Any] | None] = None
 
-    def __init__(self, config: dict[str, Any], secrets: dict[str, str], transport: httpx.AsyncBaseTransport | None = None):
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        super().__init_subclass__(**kwargs)
+        from .netmodel import RESERVED_ACTIONS, validate_write_spec
+
+        reserved = sorted(set(cls.actions) & RESERVED_ACTIONS)
+        if reserved:
+            raise TypeError(f"{cls.__name__}: {', '.join(reserved)} cannot be connector actions - device changes go "
+                            "through the network change path only")
+        validate_write_spec(cls.network_write)  # a bad declaration fails at import, not during a change
+
+    def __init__(self, config: dict[str, Any], secrets: dict[str, str], transport: Any = None):
         self.config = {**self.defaults(), **{k: v for k, v in (config or {}).items() if v is not None}}
         self.secrets = {k: v for k, v in (secrets or {}).items() if v}
         self.transport = transport
@@ -570,12 +662,20 @@ class Connector:
 
     @classmethod
     def describe(cls) -> dict[str, Any]:
+        from .netmodel import validate_write_spec
+
         return {
             "kind": cls.kind, "title": cls.title, "description": cls.description,
             "fields": [f.model_dump(mode="json") for f in cls.fields],
             "capabilities": {d: sorted(ops) for d, ops in cls.capabilities.items()},
             "actions": sorted(cls.actions), "system_of_record": sorted(cls.system_of_record),
+            "network_write": validate_write_spec(cls.network_write), "can_backup": cls.implements("backup"),
         }
+
+    @classmethod
+    def implements(cls, method: str) -> bool:
+        """Whether this connector overrides one of the device methods (``WRITE_METHODS``)."""
+        return method in WRITE_METHODS and getattr(cls, method) is not getattr(Connector, method)
 
     @classmethod
     def validate_config(cls, config: dict[str, Any]) -> dict[str, Any]:
@@ -618,6 +718,49 @@ class Connector:
     async def action(self, name: str, params: dict[str, Any]) -> dict[str, Any]:
         raise ConnectorError(f"{self.title or self.kind} has no action '{name}'")
 
+    # -- network devices: backups and guarded changes (never actions; see the module docstring) --------------
+
+    def write_capability(self) -> dict[str, Any] | None:
+        """This connection's write capability: the class declaration, narrowed by the settings (a connector with a
+        "read only" setting returns None). The hub narrows it further by what test() reported."""
+        from .netmodel import validate_write_spec
+
+        if not all(self.implements(m) for m in WRITE_METHODS if m != "restore_backup"):
+            return None
+        return validate_write_spec(self.network_write)
+
+    async def backup(self) -> dict[str, Any]:
+        raise self._unsupported("take configuration backups")
+
+    async def preview_change(self, ops: list[dict[str, Any]], snapshot: dict[str, Any]) -> dict[str, Any]:
+        raise self._unsupported("change rules")
+
+    async def apply_change(self, ops: list[dict[str, Any]], base_revision: str, backup: Any) -> dict[str, Any]:
+        raise self._unsupported("change rules")
+
+    async def confirm_change(self, token: str) -> dict[str, Any]:
+        raise self._unsupported("change rules")
+
+    async def rollback_change(self, token: str, backup: Any) -> dict[str, Any]:
+        raise self._unsupported("change rules")
+
+    async def restore_backup(self, backup: Any) -> dict[str, Any]:
+        raise self._unsupported("restore backups")
+
+    def _unsupported(self, what: str) -> ConnectorError:
+        from .netmodel import ChangeError
+
+        return ChangeError(f"{self.title or self.kind} cannot {what}", code="unsupported", state="unchanged")
+
+    def ssh(self, target: Any):
+        """An SSH session to `target` (``execution.runner.SshTarget``), as an async context manager: one connection
+        for the whole session. Uses ``self.transport`` when it is an SSH transport (tests pass
+        ``execution.sshfake.FakeSshTransport``), else the real one (asyncssh)."""
+        from ..execution import runner
+
+        transport = self.transport if hasattr(self.transport, "session") else runner.SSH
+        return transport.session(target)
+
     # -- helpers for subclasses ----------------------------------------------------
 
     def redact(self, text: Any) -> str:
@@ -631,7 +774,7 @@ class Connector:
         """An HTTP client for the tool's API. Redirects are not followed (they could carry credentials elsewhere)."""
         kwargs: dict[str, Any] = {"base_url": base_url, "headers": headers or {}, "auth": auth,
                                   "timeout": timeout or self.timeout, "follow_redirects": False}
-        if self.transport is not None:
+        if isinstance(self.transport, httpx.AsyncBaseTransport):
             kwargs["transport"] = self.transport
         else:
             kwargs["verify"] = verify
