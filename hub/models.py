@@ -112,6 +112,7 @@ class Tool(BaseModel):
     manifest: Manifest | None = None
     report: CompatibilityReport | None = None
     running: bool = False
+    launch_error: str | None = None  # why the last start failed, kept so the portal can show it
     health: dict[str, Any] | None = None
     created_at: float = Field(default_factory=now)
 

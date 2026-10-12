@@ -1,4 +1,4 @@
-import { del, get, post } from "../api.js";
+import { del, get, patch, post } from "../api.js";
 import { mountConnection } from "../connection.js";
 import { openExtend } from "../extensions.js";
 import { loadIdentity, openProviderPicker, runRegistration, statusBadge } from "../sso.js";
@@ -179,6 +179,11 @@ async function renderDetail(el, ctx, id, initialTab) {
             <div class="row"><h1>${tool.name}</h1>${badge(tool.status)}${tool.report ? badge(tool.report.level) : ""}${running ? badge("running", "ok") : ""}</div>
             <p class="muted" style="margin-top:4px">${m?.description || (busy ? "The supervisor is analysing this tool..." : "No description.")}</p>
             <p class="faint mono" style="font-size:12px;margin-top:6px;overflow-wrap:anywhere">${icon(SOURCE_ICON[tool.source_type])} ${tool.source}</p>
+            ${m?.ui?.url ? html`<form class="remote-form" style="margin-top:12px;padding:0;border:0;background:transparent" data-min-role="operator">
+              ${field("Server where this app runs", html`<div class="row"><input name="portal-url" value="${m.ui.url}" spellcheck="false" autocomplete="off" placeholder="https://ciso.example.com or http://10.0.0.8:6333"><button type="button" class="btn" data-act="portal">${icon("link")}Connect</button></div>`,
+                "Leave the local address, or point the portal at another server that already runs the app.")}
+            </form>` : ""}
+            ${tool.launch_error ? html`<div class="notice warn" style="margin-top:10px">${icon("alert")}<div>${tool.launch_error}</div></div>` : ""}
             ${tool.error ? html`<div class="notice warn" style="margin-top:10px">${icon("alert")}<div>${tool.error}</div></div>` : ""}
             ${tool.notes?.length ? html`<ul class="muted" style="font-size:12.5px;margin:8px 0 0;padding-left:18px">${tool.notes.map((n) => html`<li>${n}</li>`)}</ul>` : ""}
           </div>
@@ -228,11 +233,25 @@ async function renderDetail(el, ctx, id, initialTab) {
     const row = idp?.tools.find((t) => t.tool_id === id);
     if (idp?.providers.length) openProviderPicker({ toolId: id, toolName, data: idp, current: row?.choice || row?.pending?.provider || row?.connected_to || row?.selected, done: draw });
   };
+  el.addEventListener("submit", (event) => {
+    if (!(event.target instanceof HTMLFormElement) || !event.target.classList.contains("remote-form")) return;
+    event.preventDefault();
+    event.target.querySelector("[data-act=portal]")?.click();
+  });
   actions(el, {
     tab: (d) => { tab = d.tab; history.replaceState(null, "", `#/tools/${encodeURIComponent(id)}/${tab}`); draw(); },
     async start() {
       const r = await post(`/tools/${id}/start`).catch((e) => toast(e.message, "bad"));
-      if (r) toast(r.status === "pending_approval" ? "Waiting for approval" : r.status === "denied" ? r.reason : "Started", r.status === "denied" ? "bad" : "ok");
+      if (!r) return;
+      const failed = r.status === "denied" || r.status === "failed";
+      toast(r.status === "pending_approval" ? "Waiting for approval" : failed ? (r.reason || "Could not start") : "Started", failed ? "bad" : "ok");
+    },
+    async portal() {
+      const url = String(el.querySelector("[name=portal-url]")?.value || "").trim();
+      if (!url) { toast("Enter the address of the server", "bad"); return; }
+      const updated = await patch(`/tools/${id}/portal`, { url }).catch((e) => toast(e.message, "bad"));
+      if (updated) toast(`Portal opens ${updated.manifest.ui.url}`, "ok");
+      draw();
     },
     async stop() {
       const r = await post(`/tools/${id}/stop`).catch((e) => toast(e.message, "bad"));

@@ -27,7 +27,8 @@ from .extensions import registry as ext_registry
 from .extensions import selfpatch
 from .grc.baseline import POLICY_TEMPLATES
 from .grc.checks import framework_scores
-from .integration import connections, flows, identity, importer, strategies
+from .execution.runtime import runtime_problem
+from .integration import connections, flows, identity, importer, portal, strategies
 from .integration.compatibility import suite_matrix
 from .integration.identity import SSO_STRATEGIES
 from .models import (OPEN_STATES, SEVERITY_ORDER, AgentPermission, Asset, ControlState, Host, PersonStatus, Policy, Risk,
@@ -48,6 +49,12 @@ class CommandBody(BaseModel):
     target: str = "local"
     cwd: str | None = None
     timeout: float = Field(120, gt=0, le=3600)
+
+
+class PortalBody(BaseModel):
+    """Where the tool's web interface is served. This machine, or a remote server that already runs it."""
+
+    url: str = Field(min_length=1, max_length=500)
 
 
 class ChatBody(BaseModel):
@@ -334,10 +341,16 @@ def build_router(hub: Hub) -> APIRouter:
         tool = hub.get_tool(tool_id)
         if tool is None:
             raise not_found("Tool")
+        data = tool.model_dump(mode="json")
+        process = hub.processes.status(tool_id)
+        ui = tool.manifest.ui.url if tool.manifest is not None else None
+        if (not data.get("launch_error") and not process.get("running")
+                and tool.manifest is not None and not portal.is_remote(ui)):
+            data["launch_error"] = runtime_problem(tool.manifest.launch.command)
         return {
-            **tool.model_dump(mode="json"),
+            **data,
             "patches": [p.model_dump(mode="json") for p in sorted(hub.patches(tool_id), key=lambda p: -p.created_at)],
-            "process": hub.processes.status(tool_id),
+            "process": process,
         }
 
     @router.delete("/tools/{tool_id}")
@@ -378,6 +391,22 @@ def build_router(hub: Hub) -> APIRouter:
     @router.post("/tools/{tool_id}/start")
     async def start_tool(tool_id: str, p: CurrentPrincipal) -> dict[str, Any]:
         return await ask(p, "operator", "launch", {"tool_id": tool_id})
+
+    @router.patch("/tools/{tool_id}/portal")
+    async def set_portal(tool_id: str, body: PortalBody, p: CurrentPrincipal) -> dict[str, Any]:
+        """Point the portal at this machine or at a server that already runs the app."""
+        tool = hub.get_tool(tool_id)
+        if tool is None or tool.manifest is None:
+            raise not_found("Tool")
+        try:
+            address = portal.apply_portal_url(tool.manifest, body.url)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        if portal.is_remote(address):
+            tool.launch_error = None
+        hub.save_tool(tool)
+        hub.activity(p.actor, "info", f"Pointed {tool.name} at {address}")
+        return tool.model_dump(mode="json")
 
     @router.post("/tools/{tool_id}/stop")
     async def stop_tool(tool_id: str, p: CurrentPrincipal) -> dict[str, Any]:
