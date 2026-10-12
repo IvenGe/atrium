@@ -17,7 +17,7 @@ Configuration backups are encrypted at rest. The list shows metadata. Only an ad
 | MikroTik | RouterOS v7 REST. Values are strings. | A scheduler dead-man. There is no safe mode over REST. |
 | FortiGate | REST token | Only when workspace transactions exist (FortiOS 7.4.1 and later). Otherwise read-only. Rollback is the inverse operation. |
 | PAN-OS | XML API key | Candidate config, a saved `atrium-pre-<id>.xml`, then a partial commit. |
-| IOS-XE | RESTCONF | NETCONF confirmed commit only when the device advertises it. Otherwise read-only. |
+| IOS-XE | RESTCONF (ACLs, VLANs, SVIs, interfaces) | Read-only. A confirmed-commit write needs a tested NETCONF session, which this connector does not open. |
 | Linux host firewall | SSH. nftables, ufw or firewalld, detected on the host. | An Atrium-owned nft table and a systemd-run dead-man. Persist only after confirm. |
 | Windows Defender Firewall | OpenSSH and PowerShell | A scheduled task dead-man. Persist only after confirm. |
 

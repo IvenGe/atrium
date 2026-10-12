@@ -295,7 +295,7 @@ patches the real checkout.
 
 - A visual management panel: an integration canvas (drag to connect proposes a data flow) and a network segmentation
   view
-- Remaining vendor connectors (FortiGate, PAN-OS, IOS-XE, host firewalls) where a safe write path is verified
+- Windows Defender Firewall connector, host-firewall tests, and a tested IOS-XE NETCONF confirmed commit (reads work; writes stay off)
 - Sandboxed test runs for self-patches (a container or a separate user)
 - Pull requests for patches to GitHub-hosted tools (self-patches of Atrium already use them)
 - Matching tool versions against security advisories, and backup orchestration
