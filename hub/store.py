@@ -7,6 +7,7 @@ Append-only streams (agent messages, activity, command history) live in ``log``.
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import threading
 import time
@@ -40,6 +41,11 @@ class Store:
     def __init__(self, path: Path | str):
         self._lock = threading.RLock()
         self._db = sqlite3.connect(str(path), check_same_thread=False)
+        if str(path) != ":memory:":
+            for suffix in ("", "-wal", "-shm"):
+                file = Path(str(path) + suffix)
+                if file.exists():
+                    os.chmod(file, 0o600)
         with self._lock:
             if str(path) != ":memory:":
                 self._db.execute("PRAGMA journal_mode=WAL")

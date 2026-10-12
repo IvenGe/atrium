@@ -3,6 +3,7 @@ import { flowsTable, planFlows, wireFlows } from "../flows.js";
 import { identityCard, loadIdentity, openProviderPicker, wireIdentity } from "../sso.js";
 import { STRATEGY_IDS, STRATEGY_TITLES, stateBadge, strategyAction, wireStrategies } from "../strategies.js";
 import { actions, badge, colorFor, emptyState, html, icon, ring, setHTML, timeAgo, toast } from "../ui.js";
+import { mountMap } from "../canvas/maps.js";
 import { openImport } from "./tools.js";
 
 const LINK_COLORS = { capability: "#8b5cf6", identity: "#22c55e", event: "#f59e0b", flow: "#0ea5e9", failing: "#ef4444" };
@@ -53,12 +54,21 @@ function strategiesTable(data) {
     })}</tbody></table></div>`;
 }
 
+function tabBar(tab) {
+  return html`<div class="seg" role="tablist" aria-label="Integration views" style="margin-bottom:14px">
+    ${[["overview", "Overview"], ["map", "Map"], ["segmentation", "Segmentation"]].map(([id, label]) =>
+      html`<button type="button" role="tab" class="${tab === id ? "active" : ""}" aria-selected="${tab === id ? "true" : "false"}" data-act="tab" data-tab="${id}">${label}</button>`)}</div>`;
+}
+
 export async function render(el, ctx) {
+  let tab = ctx.params[0] === "map" || ctx.params[0] === "segmentation" ? ctx.params[0] : "overview";
+  let mapHandle = null;
   let identity = { providers: [], tools: [], default: null, needs_choice: false };
   let flowFilter = "all";
   let flows = [];
   let names = {};
   const draw = async () => {
+    if (tab !== "overview") return;
     const [data, idp, strategies] = await Promise.all([get("/integration"), loadIdentity(), get("/integration/strategies")]);
     identity = idp;
     flows = data.flows || [];
@@ -68,6 +78,7 @@ export async function render(el, ctx) {
       .sort((a, b) => ({ proposed: 0, enabled: 1, disabled: 2 }[a.status] - { proposed: 0, enabled: 1, disabled: 2 }[b.status]) || a.title.localeCompare(b.title));
     const failing = flows.filter((f) => f.status === "enabled" && f.last_result?.ok === false);
     setHTML(el, html`
+      ${tabBar(tab)}
       <div class="page-head"><div><h1>Integration hub</h1><p class="muted">How your tools fit together: shared capabilities, single sign-on, events, data flows and conflicts.</p></div>
         <div class="row" data-min-role="operator"><button class="btn" data-act="plan">${icon("flow")}Plan data flows</button>
           <button class="btn" data-act="evaluate">${icon("refresh")}Re-evaluate suite</button></div></div>
@@ -123,7 +134,22 @@ export async function render(el, ctx) {
     if (identity.providers.length) openProviderPicker({ toolId, toolName: t?.name || names[toolId] || toolId, data: identity, current: t?.choice || t?.pending?.provider || t?.connected_to || t?.selected, done: refresh });
     else openImport();
   };
+  const openTab = async (next) => {
+    tab = next;
+    history.replaceState(null, "", next === "overview" ? "#/integration" : `#/integration/${next}`);
+    mapHandle?.destroy();
+    mapHandle = null;
+    el._cleanup = null;
+    if (tab === "overview") { await draw(); return; }
+    setHTML(el, html`${tabBar(tab)}<div class="page-head"><div><h1>${tab === "map" ? "Integration map" : "Segmentation map"}</h1>
+      <p class="muted">${tab === "map" ? "Tools and hub apps. Drag a card to remember its place. The list is the same map for a keyboard." : "Zones from the latest firewall snapshot. Propose a change from the side panel. Applying it needs the device-changes guardrail and a second administrator."}</p></div></div>
+      <div id="map-host"></div>`);
+    mapHandle = await mountMap(el.querySelector("#map-host"), tab === "map" ? "integration" : "segmentation", ctx);
+    el._cleanup = () => mapHandle?.destroy();
+  };
+
   actions(el, {
+    tab: (d) => openTab(d.tab),
     async evaluate() { await post("/integration/evaluate"); toast("Suite re-evaluated", "ok"); draw(); },
     plan: () => planFlows(refresh),
     "flows-filter": (d) => { flowFilter = d.f; draw(); },
@@ -131,6 +157,10 @@ export async function render(el, ctx) {
   wireFlows(el, { find: (id) => flows.find((f) => f.id === id), refresh, names: () => names });
   wireStrategies(el, { refresh, handlers: { choose_provider: pickProvider, connect_sso: pickProvider, import_provider: () => openImport() } });
   wireIdentity(el, () => identity, refresh);
-  await draw();
-  ctx.live(["tool", "tool_removed", "toolbus", "patch", "approval", "flow", "flow_removed", "connection"], draw, 600);
+  if (tab === "overview") {
+    await draw();
+    ctx.live(["tool", "tool_removed", "toolbus", "patch", "approval", "flow", "flow_removed", "connection"], draw, 600);
+  } else {
+    await openTab(tab);
+  }
 }

@@ -368,7 +368,7 @@ async function route() {
     live(types, fn, wait = 350) { disposers.push(onEvent(types, debounce(fn, wait))); },
     crumb(text) { currentCrumb = text; renderSubbar(app, text); document.title = `${text} - Atrium`; },
   };
-  cleanup = () => disposers.forEach((off) => off());
+  cleanup = () => { disposers.forEach((off) => off()); main._cleanup?.(); };
   document.title = `${app.name} - Atrium`;
   try {
     await app.view.render(main, ctx);

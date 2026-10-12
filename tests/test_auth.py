@@ -608,7 +608,8 @@ def test_self_and_last_admin_guards(client, browser):
 
     second = bot.post("/api/users", json={"username": "second", "password": PASSWORD, "role": "admin"}).json()
     assert bot.patch(url, json={"role": "operator"}).json()["role"] == "operator"
-    assert bot.patch(f"/api/users/{second['id']}", json={"disabled": True}).status_code == 400
+    # the token was created by "admin", who is now an operator, so it cannot keep acting as an administrator
+    assert bot.patch(f"/api/users/{second['id']}", json={"disabled": True}).status_code == 403
     assert client.get("/api/users").status_code == 403  # "admin" was demoted: the new role applies at once
 
 
@@ -652,6 +653,19 @@ def test_api_tokens(client, browser):
     assert ("admin", "Created API token ci (operator)") in texts and ("admin", "Revoked API token ci") in texts
 
 
+def test_token_follows_its_creator(client, browser, sign_in):
+    olga = sign_in("admin", "olga")
+    secret = olga.post("/api/tokens", json={"name": "olga-bot", "role": "admin"}).json()["token"]
+    bot = browser(headers={"Authorization": f"Bearer {secret}"})
+    assert bot.get("/api/users").status_code == 200
+    uid = next(u["id"] for u in client.get("/api/users").json() if u["username"] == "olga")
+    assert client.patch(f"/api/users/{uid}", json={"role": "operator"}).status_code == 200
+    assert bot.get("/api/users").status_code == 403  # the token cannot outrank its creator
+    assert bot.post("/api/grc/evaluate").status_code == 200
+    assert client.patch(f"/api/users/{uid}", json={"disabled": True}).status_code == 200
+    assert bot.get("/api/overview").status_code == 401
+
+
 def test_integration_tokens_only_publish_events(client, browser):
     secret = client.post("/api/tokens", json={"name": "crm", "role": "integration"}).json()["token"]
     bot = browser(headers={"Authorization": f"Bearer {secret}"})
@@ -673,8 +687,12 @@ def test_people_run_commands_but_tokens_are_automation(client, browser, sign_in)
     assert approval["payload"]["origin"] == "token:ci"
 
     olga = sign_in("operator", "olga")
-    assert olga.post("/api/commands", json={"command": command}).json()["status"] == "done"
+    assert olga.post("/api/commands", json={"command": "uname"}).json()["status"] == "done"
     assert client.get("/api/commands").json()[-1]["origin"] == "user:olga"
+    held = olga.post("/api/commands", json={"command": command}).json()
+    assert held["status"] == "pending_approval"  # local state-changing commands need an administrator
+    assert olga.post(f"/api/approvals/{held['approval_id']}", json={"approve": True}).status_code == 403
+    assert client.post(f"/api/approvals/{held['approval_id']}", json={"approve": True}).json()["status"] == "approved"
     decided = olga.post(f"/api/approvals/{queued['approval_id']}", json={"approve": False}).json()
     assert decided["decided_by"] == "olga" and decided["status"] == "rejected"
 

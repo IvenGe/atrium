@@ -244,8 +244,14 @@ Tools exchange data through the hub's built-in apps, which are the canonical dat
   (`integration/strategies.py`) as approvals of kind `flow`, and run by the agent that owns their domain through the
   tool's supervisor (`agents/fabric.py`). `Hub.tick_flows` runs due flows every `HUB_FLOW_INTERVAL` seconds.
 - **Repairs**: after three consecutive failures the Patch Agent proposes a fix (approval kind `repair`).
+- **Maps** (`integration/canvas.py`, `api_canvas.py`): `GET /api/integration/map` and `GET /api/integration/map/options`,
+  layouts at `/api/layouts/{view}` (`integration` or `segmentation`), and `POST /api/flows`. A layout change publishes
+  SSE event `canvas_layout`. The segmentation read model is `GET /api/segmentation` (`integration/segmentation.py`).
 - **Vulnerabilities** (collection `vulnerabilities`): scans of in-scope assets (approval kind `scan`), SLA deadlines,
   risks for overdue critical findings.
+- **Network devices** (`integration/network.py`, `api_network.py`, `integration/changes.py`): snapshots, drift, backups
+  and guarded firewall changes. Connectors include OPNsense, pfSense, MikroTik, FortiGate, PAN-OS, IOS-XE (read-only),
+  Linux host firewalls and Windows Defender Firewall. Details in [NETWORK.md](NETWORK.md).
 
 Details in [INTEGRATIONS.md](INTEGRATIONS.md).
 
@@ -273,12 +279,15 @@ worktree, tested, approved by an admin, then a pull request or a local merge). D
 - **blocked** patterns are refused for everyone (while the `block_catastrophic_commands` guardrail is on; off, they
   are `change` commands),
 - anything with shell chaining/redirection is never read-only,
-- **read-only** commands come from an allowlist (`uname`, `df`, `git status`, `docker ps`,
-  `systemctl status`, `kubectl get`, ...).
+- **read-only** commands come from an allowlist (`uname`, `df`, `git status`, `git branch` without a delete,
+  `docker ps`, `systemctl status`, `kubectl get`, ...). `git branch -D` and `git tag -d` are state-changing.
+  A command that names `secret.key`, `hub.db` or `.hub` is blocked.
 
-Commands from agents and API tokens then follow the autonomy level; commands a signed-in person
-(sender `user:<name>`, role operator or above) types in the Operator console run directly. Team agents
-(`agent:<slug>`) follow the autonomy level too, unless an admin switched `team_actions_need_approval` off.
+Commands from agents and API tokens then follow the autonomy level. A signed-in person (sender `user:<name>`) runs
+read-only commands immediately. An administrator also runs state-changing commands immediately. An operator's
+state-changing command **on this machine** waits for an administrator, because the console runs as the hub user.
+Commands on a remote host still run as the person who typed them. Team agents (`agent:<slug>`) follow the autonomy
+level too, unless an admin switched `team_actions_need_approval` off.
 
 ## Approvals
 
@@ -331,13 +340,14 @@ any control worse, never better, and add their evidence ([AGENTS.md](AGENTS.md#w
 | `agents`, `agent_defs`, `llm_providers` | core agent settings, team agents, local model providers (API keys encrypted) |
 | `extensions`, `x:<key>`, `self_patches` | extension packs with their versions, records of extension apps, self-patches |
 | `settings` | preferences (autonomy, model, SLA days, guardrails, identity provider choices) and the Sign-in & SSO settings |
+| `canvas_layouts` | saved lane order for the integration and segmentation maps |
 | `users`, `sessions`, `tokens` | accounts and credentials (hashes only) |
 | `messages`, `activity`, `toolbus` | logs: agent messages, the activity log, tool events |
 
 | Path under the data directory | Holds |
 | --- | --- |
-| `hub.db` | the SQLite database |
-| `secret.key` | the encryption key for stored credentials, unless `HUB_SECRET_KEY` is set (back it up separately) |
+| `hub.db` | the SQLite database (mode `0600`; the data directory is `0700`) |
+| `secret.key` | the encryption key for stored credentials, unless `HUB_SECRET_KEY` is set (back it up separately; mode `0600`) |
 | `workspace/tools/` | cloned repositories |
 | `workspace/patches/<id>/` | worktrees of patches to tools |
 | `workspace/adapters/<tool id>/` | adapters: health probes, SSO configuration and provider registration, event pollers |

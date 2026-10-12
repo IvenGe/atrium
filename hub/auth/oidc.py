@@ -234,8 +234,9 @@ class OidcClient:
         if not isinstance(id_token, str):
             raise OidcError("The identity provider did not return an ID token. Check that the openid scope is allowed.")
         claims = await self._validate(id_token, config, pending.nonce)
+        email = _email(claims.get("email")) if claims.get("email_verified") is True else None
         return OidcIdentity(issuer=claims["iss"], subject=claims["sub"], username=_username(claims),
-                            email=_email(claims.get("email")), name=_display_name(claims), role=self.role_for(claims),
+                            email=email, name=_display_name(claims), role=self.role_for(claims),
                             claims=claims)
 
     async def check(self) -> dict[str, Any]:

@@ -39,6 +39,11 @@ class Hub:
         self.settings = settings
         settings.data_dir.mkdir(parents=True, exist_ok=True)
         settings.workspace.mkdir(parents=True, exist_ok=True)
+        try:
+            settings.data_dir.chmod(0o700)
+            settings.workspace.chmod(0o700)
+        except OSError:
+            pass
         self.store = Store(settings.db_path)
         self.bus = Bus(self.store)
         self.secrets = SecretBox.for_settings(settings)

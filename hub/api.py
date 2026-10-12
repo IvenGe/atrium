@@ -850,6 +850,9 @@ def build_router(hub: Hub) -> APIRouter:
         if pending is not None and pending.kind == "firewall" and p.role != "admin":
             raise HTTPException(403, {"code": "admin_required",
                                      "message": "Only an administrator can approve a network change."})
+        if pending is not None and pending.kind == "command" and pending.payload.get("local_change") and p.role != "admin":
+            raise HTTPException(403, {"code": "admin_required",
+                                     "message": "Only an administrator can approve a state-changing command on this machine."})
         if pending is not None and pending.status == "pending":
             if network_changes.approval_expired(hub, pending):
                 raise HTTPException(409, {"code": "expired", "message": "This approval has expired."})

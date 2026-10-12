@@ -293,8 +293,7 @@ patches the real checkout.
 
 ## Roadmap
 
-- A visual management panel: an integration canvas (drag to connect proposes a data flow) and a network segmentation
-  view
+- Dragging one map node onto another to propose a data flow (the Integration map already shows the flows)
 - A tested IOS-XE NETCONF confirmed commit (reads work; writes stay off)
 - Sandboxed test runs for self-patches (a container or a separate user)
 - Pull requests for patches to GitHub-hosted tools (self-patches of Atrium already use them)

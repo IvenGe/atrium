@@ -125,8 +125,8 @@ class FakeIdP:
         query = {k: v[0] for k, v in parse_qs(urlsplit(url).query).items()}
         now = time.time()
         base = {"iss": self.issuer, "sub": SUBJECT, "aud": CLIENT_ID, "azp": CLIENT_ID, "exp": now + 300, "iat": now,
-                "nonce": query["nonce"], "preferred_username": "ada", "email": "ada@example.com", "name": "Ada Lovelace",
-                "groups": ["atrium-operators"]}
+                "nonce": query["nonce"], "preferred_username": "ada", "email": "ada@example.com",
+                "email_verified": True, "name": "Ada Lovelace", "groups": ["atrium-operators"]}
         code = secrets.token_urlsafe(16)
         self.grants[code] = {"query": query, "claims": {k: v for k, v in {**base, **(claims or {})}.items() if v is not None},
                              "alg": alg, "kid": kid, "key": key if key is not None else KEYS.get(kid or "rsa"),
@@ -389,6 +389,13 @@ def test_display_name_and_email_from_the_identity(idp):
     identity = sign_in(client_for(idp), idp, claims={"name": None, "given_name": "Grace", "family_name": "Hopper",
                                                      "email": "not an email"})
     assert (identity.name, identity.email) == ("Grace Hopper", None)
+
+
+def test_unverified_email_is_not_accepted(idp):
+    missing = sign_in(client_for(idp), idp, claims={"email_verified": None})
+    refused = sign_in(client_for(idp), idp, claims={"email_verified": False})
+    assert missing.email is None and refused.email is None
+    assert missing.username == "ada"
 
 
 @pytest.mark.parametrize("overrides, claims, role", [
