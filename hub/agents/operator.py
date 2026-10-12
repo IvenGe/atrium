@@ -8,6 +8,7 @@ from .. import guardrails
 from ..bus import Message
 from ..execution import policy
 from ..execution.runner import CommandResult, run_local, run_ssh
+from ..execution.runtime import runtime_problem
 from .base import BaseAgent
 
 # Built-in, read-only host discovery script used by the Asset Supervisor.
@@ -181,6 +182,13 @@ class OperatorAgent(BaseAgent):
         env = dict(launch.env)
         if launch.port:
             env.setdefault("PORT", str(launch.port))
+        problem = runtime_problem(launch.command)
+        if problem:
+            tool.launch_error = problem
+            self.hub.save_tool(tool)
+            return {"status": "failed", "reason": problem}
+        tool.launch_error = None
+        self.hub.save_tool(tool)
         return await self.hub.processes.start(tool.id, launch.command, cwd=cwd, env=env)
 
     def _host_label(self, host_id: str) -> str:

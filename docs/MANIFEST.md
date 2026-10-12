@@ -42,7 +42,8 @@ events:
   webhook_url: http://localhost:4000/hub/events
 
 ui:
-  url: http://localhost:4000               # opened from Portals
+  url: http://localhost:4000               # opened from Portals; an address on another server works too
+                                           # (https://ciso.example.com or http://10.0.0.8:6333)
   icon: C                                  # a letter or emoji
   color: "#0d9488"
   embed: true

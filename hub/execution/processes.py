@@ -10,6 +10,9 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from .runner import kill_tree, new_group_kwargs
+from .runtime import runtime_problem
+
+_KEEP = object()
 
 if TYPE_CHECKING:
     from ..core import Hub
@@ -90,11 +93,18 @@ class ProcessManager:
                 break
             mp.lines.append(line.decode("utf-8", errors="replace").rstrip())
         mp.exit_code = await mp.proc.wait()
-        self._set_running(mp.tool_id, False)
+        # get_tool returns a fresh copy, so the error has to be written on the object that is saved.
+        error: str | None = None
+        if mp.exit_code:
+            tail = "\n".join(list(mp.lines)[-8:]).strip()
+            error = runtime_problem(mp.command) or tail or f"The process exited with code {mp.exit_code}."
+        self._set_running(mp.tool_id, False, error)
         self.hub.activity(f"tool:{mp.tool_id}", "info", f"Process exited with code {mp.exit_code}")
 
-    def _set_running(self, tool_id: str, running: bool) -> None:
+    def _set_running(self, tool_id: str, running: bool, launch_error: str | None | object = _KEEP) -> None:
         tool = self.hub.get_tool(tool_id)
         if tool:
             tool.running = running
+            if launch_error is not _KEEP:
+                tool.launch_error = launch_error  # type: ignore[assignment]
             self.hub.save_tool(tool)

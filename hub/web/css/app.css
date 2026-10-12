@@ -432,6 +432,12 @@ body.signed-in .auth-root { display: none; }
 .legend i { display: inline-block; width: 18px; height: 3px; border-radius: 2px; vertical-align: middle; margin-right: 6px; }
 .portal-frame { display: flex; flex-direction: column; height: calc(100vh - 60px - 46px - 48px); min-height: 420px; }
 .portal-frame iframe { flex: 1; width: 100%; border: 1px solid var(--border); border-radius: 12px; background: #fff; }
+.portal-offline { flex: 1; display: flex; align-items: center; justify-content: center; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); padding: 28px; }
+.portal-offline .panel { width: min(640px, 100%); }
+.portal-offline pre.code { margin-top: 12px; max-height: 180px; }
+.remote-form { margin-bottom: 12px; padding: 14px 16px; }
+.remote-form .row input { flex: 1; width: auto; min-width: 0; }
+.remote-form .field { margin: 0; }
 .policy-body { font-size: 13.5px; }
 .policy-body h1, .policy-body h2 { font-size: 15px; margin: 12px 0 6px; }
 .policy-body ul, .policy-body ol { padding-left: 20px; margin: 4px 0; }
