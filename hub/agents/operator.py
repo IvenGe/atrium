@@ -45,9 +45,11 @@ class OperatorAgent(BaseAgent):
         command = str(body.get("command", "")).strip()
         target = body.get("target") or "local"
         trusted = bool(body.get("discovery")) and command == DISCOVERY_SCRIPT
-        decision = self._decide(command, msg.sender, trusted)
+        local_limited = target == "local" and from_person(msg.sender) and not self._sender_is_admin(msg.sender)
+        decision = self._decide(command, msg.sender, trusted, person_may_change=not local_limited)
         request = {"command": command, "target": target, "cwd": body.get("cwd"), "timeout": body.get("timeout", 120),
-                   "reason": body.get("reason", ""), "origin": msg.sender}
+                   "reason": body.get("reason", ""), "origin": msg.sender,
+                   "local_change": bool(local_limited and decision.action == "approve")}
         if decision.action == "deny":
             self.log("warn", f"Refused command from {msg.sender}: {command}", reason=decision.reason)
             return {"status": "denied", "reason": decision.reason, "risk": decision.risk}
@@ -134,12 +136,19 @@ class OperatorAgent(BaseAgent):
 
     # -- execution -------------------------------------------------------------------
 
-    def _decide(self, command: str, sender: str, trusted: bool = False) -> policy.Decision:
+    def _sender_is_admin(self, sender: str) -> bool:
+        if not from_person(sender):
+            return False
+        user = next((u for u in self.hub.auth.users() if u.username == sender.split(":", 1)[1]), None)
+        return user is not None and user.role == "admin" and not user.disabled
+
+    def _decide(self, command: str, sender: str, trusted: bool = False, person_may_change: bool = True) -> policy.Decision:
         """The command policy for `sender`, with the guardrails: team agents ("agent:<slug>") follow the autonomy
         level unless team_actions_need_approval is off, and blocked patterns stay refused while
         block_catastrophic_commands is on."""
         return policy.decide(command, guardrails.effective_autonomy(self.hub, sender), from_person=from_person(sender),
-                             trusted=trusted, block_catastrophic=bool(guardrails.value(self.hub, "block_catastrophic_commands")))
+                             trusted=trusted, person_may_change=person_may_change,
+                             block_catastrophic=bool(guardrails.value(self.hub, "block_catastrophic_commands")))
 
     def _now_blocked(self, command: str) -> str | None:
         """Why an approved command is refused after all - the block_catastrophic_commands guardrail as it is now (it

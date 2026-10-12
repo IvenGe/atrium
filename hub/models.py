@@ -135,7 +135,8 @@ class Host(BaseModel):
 
 class Approval(BaseModel):
     id: str
-    kind: Literal["command", "patch", "process", "flow", "scan", "repair", "agent_team", "extension", "self_patch"]
+    kind: Literal["command", "patch", "process", "flow", "scan", "repair", "agent_team", "extension", "self_patch",
+                  "firewall"]
     title: str
     detail: str = ""
     payload: dict[str, Any] = {}

@@ -64,6 +64,17 @@ ADMIN_ROUTES = (
     ("POST", re.compile(r"/api/tools/[^/]+/extend")),
     ("POST", re.compile(r"/api/self-patches")),
     ("POST", re.compile(r"/api/self-patches/[^/]+/apply")),
+    # Network: a baseline is the approved configuration; a backup download is the device's configuration.
+    ("POST", re.compile(r"/api/network/devices/[^/]+/baseline")),
+    ("DELETE", re.compile(r"/api/network/devices/[^/]+/baseline")),
+    ("GET", re.compile(r"/api/network/backups/[^/]+/download")),
+    # Deleting a compliance self-assessment is administration; scoring it is an operator change.
+    ("DELETE", re.compile(r"/api/frameworks/[^/]+/assessments/[^/]+")),
+    ("PATCH", re.compile(r"/api/segmentation/zones/[^/]+")),
+    ("PUT", re.compile(r"/api/segmentation/policy")),
+    ("POST", re.compile(r"/api/network/windows")),
+    ("DELETE", re.compile(r"/api/network/windows/[^/]+")),
+    ("POST", re.compile(r"/api/segmentation/changes/[^/]+/emergency")),
 )
 # Reads that act on a tool with its stored credentials, so they need operator.
 OPERATOR_READS = (

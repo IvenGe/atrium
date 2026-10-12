@@ -148,6 +148,17 @@ def test_password_policy(password, message):
     ("GET", "/api/self-patches", "viewer"), ("GET", "/api/self-patches/sp_1", "viewer"),
     ("POST", "/api/self-patches", "admin"), ("POST", "/api/self-patches/sp_1/apply", "admin"),
     ("POST", "/api/self-patches/sp_1", "operator"), ("POST", "/api/approvals/ap_1", "operator"),
+    ("GET", "/api/network/devices", "viewer"), ("POST", "/api/network/devices/edge/baseline", "admin"),
+    ("DELETE", "/api/network/devices/edge/baseline", "admin"),
+    ("GET", "/api/network/backups/bk_1/download", "admin"),
+    ("POST", "/api/network/drift/dr_1/ack", "operator"),
+    ("DELETE", "/api/frameworks/cyfun2025/assessments/fa_1", "admin"),
+    ("GET", "/api/frameworks/cyfun2025/assessments/fa_1/audit-pack", "viewer"),
+    ("PATCH", "/api/segmentation/zones/z:edge:lan", "admin"),
+    ("PUT", "/api/segmentation/policy", "admin"),
+    ("POST", "/api/network/windows", "admin"),
+    ("POST", "/api/segmentation/changes/fw_1/emergency", "admin"),
+    ("POST", "/api/segmentation/changes/preview", "operator"),
 ])
 def test_required_role(method, path, role):
     assert required_role(method, path) == role
@@ -198,6 +209,19 @@ def contract_role(method: str, path: str) -> str | None:
                           ("DELETE", "/api/extensions/{ext_id}"), ("POST", "/api/extensions/{ext_id}/rollback"),
                           ("POST", "/api/tools/{tool_id}/extend"), ("POST", "/api/self-patches"),
                           ("POST", "/api/self-patches/{patch_id}/apply")}:
+        return "admin"
+    # a network baseline is the approved configuration; downloading a backup returns the device configuration
+    if (method, path) in {("POST", "/api/network/devices/{tool_id}/baseline"),
+                          ("DELETE", "/api/network/devices/{tool_id}/baseline"),
+                          ("GET", "/api/network/backups/{backup_id}/download")}:
+        return "admin"
+    if method == "DELETE" and path == "/api/frameworks/{framework_id}/assessments/{aid}":
+        return "admin"
+    if (method, path) in {("PATCH", "/api/segmentation/zones/{zone_id}"),
+                          ("PUT", "/api/segmentation/policy"),
+                          ("POST", "/api/network/windows"),
+                          ("DELETE", "/api/network/windows/{window_id}"),
+                          ("POST", "/api/segmentation/changes/{change_id}/emergency")}:
         return "admin"
     return "viewer" if method in ("GET", "HEAD") else "operator"
 
@@ -584,7 +608,8 @@ def test_self_and_last_admin_guards(client, browser):
 
     second = bot.post("/api/users", json={"username": "second", "password": PASSWORD, "role": "admin"}).json()
     assert bot.patch(url, json={"role": "operator"}).json()["role"] == "operator"
-    assert bot.patch(f"/api/users/{second['id']}", json={"disabled": True}).status_code == 400
+    # the token was created by "admin", who is now an operator, so it cannot keep acting as an administrator
+    assert bot.patch(f"/api/users/{second['id']}", json={"disabled": True}).status_code == 403
     assert client.get("/api/users").status_code == 403  # "admin" was demoted: the new role applies at once
 
 
@@ -628,6 +653,19 @@ def test_api_tokens(client, browser):
     assert ("admin", "Created API token ci (operator)") in texts and ("admin", "Revoked API token ci") in texts
 
 
+def test_token_follows_its_creator(client, browser, sign_in):
+    olga = sign_in("admin", "olga")
+    secret = olga.post("/api/tokens", json={"name": "olga-bot", "role": "admin"}).json()["token"]
+    bot = browser(headers={"Authorization": f"Bearer {secret}"})
+    assert bot.get("/api/users").status_code == 200
+    uid = next(u["id"] for u in client.get("/api/users").json() if u["username"] == "olga")
+    assert client.patch(f"/api/users/{uid}", json={"role": "operator"}).status_code == 200
+    assert bot.get("/api/users").status_code == 403  # the token cannot outrank its creator
+    assert bot.post("/api/grc/evaluate").status_code == 200
+    assert client.patch(f"/api/users/{uid}", json={"disabled": True}).status_code == 200
+    assert bot.get("/api/overview").status_code == 401
+
+
 def test_integration_tokens_only_publish_events(client, browser):
     secret = client.post("/api/tokens", json={"name": "crm", "role": "integration"}).json()["token"]
     bot = browser(headers={"Authorization": f"Bearer {secret}"})
@@ -649,8 +687,12 @@ def test_people_run_commands_but_tokens_are_automation(client, browser, sign_in)
     assert approval["payload"]["origin"] == "token:ci"
 
     olga = sign_in("operator", "olga")
-    assert olga.post("/api/commands", json={"command": command}).json()["status"] == "done"
+    assert olga.post("/api/commands", json={"command": "uname"}).json()["status"] == "done"
     assert client.get("/api/commands").json()[-1]["origin"] == "user:olga"
+    held = olga.post("/api/commands", json={"command": command}).json()
+    assert held["status"] == "pending_approval"  # local state-changing commands need an administrator
+    assert olga.post(f"/api/approvals/{held['approval_id']}", json={"approve": True}).status_code == 403
+    assert client.post(f"/api/approvals/{held['approval_id']}", json={"approve": True}).json()["status"] == "approved"
     decided = olga.post(f"/api/approvals/{queued['approval_id']}", json={"approve": False}).json()
     assert decided["decided_by"] == "olga" and decided["status"] == "rejected"
 

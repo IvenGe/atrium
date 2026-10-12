@@ -29,7 +29,7 @@ export function setHTML(el, content) {
   return el;
 }
 
-const ICONS = {
+export const ICONS = {
   home: '<path d="M3 11 12 4l9 7"/><path d="M5 10v10h14V10"/><path d="M10 20v-5h4v5"/>',
   grid: '<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>',
   search: '<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>',
@@ -270,8 +270,9 @@ export function toast(message, tone = "info") {
  * Opens a modal. `body` is html``; returns {el, close}. onSubmit receives FormData when the form is submitted.
  * `minRole`: below that role the body is read-only and the submit button hidden. `sticky`: only the buttons close it.
  */
-export function modal({ title, body, submit = "Save", cancel = "Cancel", wide = false, onSubmit, footer, minRole, sticky = false }) {
+export function modal({ title, body, submit = "Save", cancel = "Cancel", wide = false, onSubmit, footer, minRole, sticky = false, onClose }) {
   const readOnly = !can(minRole);
+  const opener = document.activeElement;
   const backdrop = document.createElement("div");
   backdrop.className = "backdrop";
   const foot = footer ?? html`${cancel ? html`<button type="button" class="btn" data-close>${readOnly && cancel === "Cancel" ? "Close" : cancel}</button>` : ""}
@@ -281,7 +282,12 @@ export function modal({ title, body, submit = "Save", cancel = "Cancel", wide = 
     <div class="body">${readOnly ? html`<fieldset class="plain" disabled>${body}</fieldset>` : body}</div>
     <footer>${foot}</footer></form>`);
   const form = backdrop.querySelector("form");
-  const close = () => { backdrop.remove(); document.removeEventListener("keydown", onKey); };
+  const close = () => {
+    backdrop.remove();
+    document.removeEventListener("keydown", onKey);
+    if (opener instanceof HTMLElement) opener.focus();
+    if (onClose) onClose();
+  };
   const onKey = (e) => { if (e.key === "Escape" && !sticky) close(); };
   document.addEventListener("keydown", onKey);
   backdrop.addEventListener("mousedown", (e) => { if (e.target === backdrop && !sticky) close(); });

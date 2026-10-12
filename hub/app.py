@@ -20,6 +20,28 @@ from .auth.service import AuthError, bearer_token
 from .config import Settings
 from .core import Hub
 
+class FrameDenialMiddleware:
+    """Stop the UI being embedded in another site (clickjacking). Safe for the event stream: it only adds headers."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        async def send_wrap(message):
+            if message["type"] == "http.response.start":
+                headers = list(message.get("headers") or [])
+                headers.append((b"x-frame-options", b"DENY"))
+                headers.append((b"content-security-policy", b"frame-ancestors 'none'"))
+                message = {**message, "headers": headers}
+            await send(message)
+
+        await self.app(scope, receive, send_wrap)
+
+
 WEB_DIR = Path(__file__).parent / "web"
 SAFE_METHODS = ("GET", "HEAD", "OPTIONS")
 
@@ -68,6 +90,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return await call_next(request)
 
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=settings.allowed_hosts)
+    app.add_middleware(FrameDenialMiddleware)
 
     @app.exception_handler(AuthError)
     async def auth_error(request: Request, exc: AuthError) -> JSONResponse:

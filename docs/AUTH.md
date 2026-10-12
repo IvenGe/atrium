@@ -241,13 +241,18 @@ curl -H "Authorization: Bearer $HUB_TOKEN" http://127.0.0.1:8710/api/tools
 
 - A request with a Bearer token is judged by that token alone; a session cookie on the same request
   is ignored. An unknown, revoked or expired token gets `401` on protected endpoints.
+- A token stops when the account that created it is disabled or deleted. If that account is demoted,
+  the token's role drops to the creator's new role. An `integration` token keeps working only while
+  its creator is still an administrator.
 - Bearer requests do not need the `X-Hub-Request` header (browsers never add `Authorization`
   headers on their own, so there is no cross-site request to guard against).
 - A token acts with its role. On the agent bus and in the activity log it appears as
   `token:<name>`.
 - Tokens are automation, not people: commands a token sends to the Operator Agent follow the
   autonomy level exactly like agent commands (in `assisted`, only known read-only commands run
-  without approval). Commands a signed-in person types run directly.
+  without approval). A signed-in administrator runs other commands directly. An operator runs
+  read-only commands directly; a state-changing command on this machine waits for an administrator.
+- Single sign-on stores an email only when the ID token says `email_verified` is true.
 - Tokens cannot use the self-service endpoints (passwords, sessions).
 
 ### Integration tokens for tools that publish events

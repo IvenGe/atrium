@@ -1,4 +1,5 @@
 import { get, post } from "../api.js";
+import { session } from "../auth.js";
 import { DESIGNER_LABEL, jsonView, modeView, packHref, packItems, safeUrl, summaryChips, testsView } from "../extensions.js";
 import { domainInfo, endName, scheduleLabel } from "../flows.js";
 import { loadIdentity, openProviderPicker } from "../sso.js";
@@ -7,9 +8,11 @@ import { proposedMember } from "./agents.js";
 import { ssoPlan } from "./tools.js";
 
 const KIND_ICON = { command: "terminal", patch: "wrench", process: "play", flow: "flow", scan: "radar", repair: "wrench", agent_team: "users",
+  firewall: "shield",
   extension: "puzzle", self_patch: "branch" };
-const KIND_LABEL = { flow: "data flow", agent_team: "agent team", self_patch: "change to Atrium" };
-const APPROVE_LABEL = { flow: "Enable flow", scan: "Start scan", agent_team: "Create team", extension: "Enable extension" };
+const KIND_LABEL = { flow: "data flow", agent_team: "agent team", self_patch: "change to Atrium", firewall: "network change" };
+const APPROVE_LABEL = { flow: "Enable flow", scan: "Start scan", agent_team: "Create team", extension: "Enable extension",
+  firewall: "Approve change" };
 // changes to Atrium itself and new agents: only administrators decide them (the server enforces it)
 const ADMIN_KINDS = new Set(["extension", "self_patch", "agent_team"]);
 const DESIGNER = { templates: "templates", claude: "designed by Claude", auto: "automatic" };
@@ -108,9 +111,20 @@ function selfPatchDetails(a, names) {
 let providerNames = {};
 let selfPatching = {};
 
+function firewallDetails(a) {
+  const p = a.payload || {};
+  const violations = p.violations || [];
+  return html`<p class="faint" style="font-size:12.5px">Proposed by <b>${p.proposed_by || "unknown"}</b>
+    ${p.justification ? html` · ${p.justification}` : ""}</p>
+    ${violations.length ? html`<div class="notice bad">${icon("alert")}<div><b>Violates ${violations.map((v) => v.control || "policy").join(", ")}</b></div></div>` : ""}
+    ${p.diff ? diffView(p.diff) : ""}`;
+}
+
 function pendingCard(a, names) {
   const p = a.patch;
   const admin = ADMIN_KINDS.has(a.kind);
+  const firewallOwn = a.kind === "firewall" && session.user && a.payload?.proposed_by === session.user.username;
+  const firewallBlocked = a.kind === "firewall" && (!can("admin") || firewallOwn);
   const tests = a.self_patch?.tests || a.payload.tests;
   const blocked = a.kind === "self_patch" && selfPatching.requires_tests && !tests?.ok;
   const approveLabel = a.kind === "repair" ? (a.payload.change ? "Apply" : "Approve & retry")
@@ -132,6 +146,7 @@ function pendingCard(a, names) {
     ${a.kind === "agent_team" ? teamDetails(a.payload, names) : ""}
     ${a.kind === "extension" ? extensionDetails(a, names) : ""}
     ${a.kind === "self_patch" ? selfPatchDetails(a, names) : ""}
+    ${a.kind === "firewall" ? firewallDetails(a) : ""}
     ${p ? html`<div class="row" style="margin:6px 0 10px;gap:6px"><span class="badge">${p.target}</span><span class="badge">${p.strategy.replace(/_/g, " ")}</span>
         ${p.target === "repo" ? html`<span class="faint" style="font-size:12px">applied on a new git branch in a separate worktree - your checkout is not touched</span>` : ""}
         ${p.sso ? html`<span class="spacer"></span><button class="btn sm" data-act="sso-change" data-tool="${a.payload.tool_id}" data-provider="${p.sso.provider}"
@@ -141,9 +156,11 @@ function pendingCard(a, names) {
     <div class="row" style="margin-top:12px" data-min-role="${admin ? "admin" : "operator"}">
       <input placeholder="Note (optional)" data-note="${a.id}" style="flex:1;min-width:180px" aria-label="Note">
       <button class="btn" data-act="reject" data-id="${a.id}">${icon("x")}Reject</button>
-      <button class="btn ok" data-act="approve" data-id="${a.id}" ${blocked ? "disabled" : ""}
-        title="${blocked ? "The tests failed: it cannot be approved while the guardrail \"Self-patches must pass the tests\" is on" : ""}">${icon("check")}${approveLabel}</button>
+      ${firewallBlocked ? "" : html`<button class="btn ok" data-act="approve" data-id="${a.id}" ${blocked ? "disabled" : ""}
+        title="${blocked ? "The tests failed: it cannot be approved while the guardrail \"Self-patches must pass the tests\" is on" : ""}">${icon("check")}${approveLabel}</button>`}
     </div>
+    ${a.kind === "firewall" && !can("admin") ? html`<p class="faint" style="margin-top:8px;font-size:12.5px">Only an administrator can approve a network change.</p>` : ""}
+    ${firewallOwn ? html`<p class="faint" style="margin-top:8px;font-size:12.5px">You proposed this change. Someone else has to approve it.</p>` : ""}
     ${admin && !can("admin") ? html`<p class="faint" style="margin-top:12px;font-size:12.5px">${a.kind === "agent_team"
       ? "Only administrators decide new agent teams (they create agent definitions)."
       : "Only administrators decide changes to Atrium itself (extensions and self-patches)."}</p>` : ""}</section>`;

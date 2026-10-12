@@ -14,7 +14,8 @@ import time
 from typing import Any
 
 from ..bus import AgentError, Message
-from ..integration import flows, network, segmentation
+from ..store import new_id
+from ..integration import changes, flows, network, segmentation
 from ..models import Flow
 from .fabric import FlowFailure, FlowOwner
 
@@ -115,6 +116,78 @@ class NetworkSupervisor(FlowOwner):
         return {"started": started, "skipped": skipped,
                 "results": [{"ok": r.get("ok"), "detail": r.get("detail"), "error": r.get("failure"),
                              "flow_id": (r.get("flow") or {}).get("id")} for r in results]}
+
+    async def _device(self, tool_id: str, subject: str, body: dict[str, Any]) -> dict[str, Any]:
+        try:
+            return await self.ask(f"tool:{tool_id}", subject, body, timeout=900)
+        except AgentError as exc:
+            return {"failure": {"message": str(exc), "code": "failed"}}
+
+    async def on_change_preview(self, body: dict[str, Any], msg: Message) -> dict[str, Any]:
+        role = str(body.get("role") or "operator")
+        try:
+            ops = changes.build_ops(self.hub, body, "preview")
+        except changes.ChangeError as exc:
+            return {"ok": False, "http_status": exc.status, **exc.body()}
+        device = await self._device(str(body.get("firewall")), "network.preview", {"ops": ops})
+        shown = None if device.get("failure") else device
+        preview = changes.preview_view(self.hub, body, "preview", ops, shown, role)
+        if device.get("failure"):
+            preview["problems"] = [*preview["problems"], device["failure"].get("message") or "preview failed"]
+            preview["writable"] = False
+        return {"ok": True, "preview": preview}
+
+    async def on_change_propose(self, body: dict[str, Any], msg: Message) -> dict[str, Any]:
+        actor = str(body.get("actor") or msg.sender)
+        role = str(body.get("role") or "operator")
+        change_id = new_id("fw_")
+        body = {**body, "change_id": change_id}
+        try:
+            ops = changes.build_ops(self.hub, body, change_id)
+            device = await self._device(str(body.get("firewall")), "network.preview", {"ops": ops})
+            if device.get("failure"):
+                raise changes.ChangeError(device["failure"].get("message") or "The device could not be previewed",
+                                          "invalid", 422)
+            preview = changes.preview_view(self.hub, body, change_id, ops, device, role)
+            changes.check_submit(self.hub, body, preview, role)
+            if network.in_flight(self.hub, str(body["firewall"])):
+                raise changes.ChangeError("Another change for this device is already in progress.",
+                                          "change_in_flight", 409)
+            return {"ok": True, **changes.propose(self.hub, body, preview, actor)}
+        except changes.ChangeError as exc:
+            return {"ok": False, "http_status": exc.status, **exc.body()}
+
+    async def on_approval_decided(self, body: dict[str, Any], msg: Message) -> dict[str, Any]:
+        approval = self.hub.approvals.get(str(body.get("approval_id") or ""))
+        if approval is None or approval.kind != "firewall":
+            return {"ok": True, "ignored": True}
+        change = changes.mark_decided(self.hub, approval, bool(body.get("approved")),
+                                      str(body.get("decided_by") or msg.sender))
+        if change is None or not body.get("approved"):
+            return {"ok": True, "change": changes.public(change) if change else None}
+        try:
+            applied = await changes.execute(self.hub, change["id"], self._device)
+        except changes.ChangeError as exc:
+            return {"ok": False, "http_status": exc.status, **exc.body()}
+        return {"ok": True, "change": applied}
+
+    async def on_change_sweep(self, body: dict[str, Any], msg: Message) -> dict[str, Any]:
+        expired = changes.sweep(self.hub)
+        applied = []
+        for change in self.hub.store.list(changes.CHANGES):
+            if change.get("status") in ("approved", "scheduled"):
+                result = await changes.execute(self.hub, change["id"], self._device)
+                applied.append({"id": change["id"], "status": result.get("status")})
+        return {"expired": expired, "applied": applied}
+
+    async def on_change_emergency(self, body: dict[str, Any], msg: Message) -> dict[str, Any]:
+        try:
+            changes.emergency(self.hub, str(body.get("change_id")), str(body.get("actor") or msg.sender),
+                              str(body.get("justification") or ""))
+            applied = await changes.execute(self.hub, str(body.get("change_id")), self._device)
+        except changes.ChangeError as exc:
+            return {"ok": False, "http_status": exc.status, **exc.body()}
+        return {"ok": True, "change": applied}
 
     def _name(self, tool_id: str) -> str:
         tool = self.hub.get_tool(tool_id)

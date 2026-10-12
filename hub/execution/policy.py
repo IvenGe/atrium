@@ -46,7 +46,10 @@ READ_ONLY = [
         r"^(ls|dir|pwd|whoami|hostname|uname|uptime|id|date|df|free|nproc|lscpu|lsblk|lsb_release|ver|systeminfo|ipconfig|ifconfig)(\s+-{0,2}[\w=/.-]+)*$",
         r"^ip\s+(a|addr|address|r|route|link)(\s+show)?$",
         r"^cat\s+/(etc/os-release|etc/hostname|proc/cpuinfo|proc/meminfo|proc/loadavg|proc/version)$",
-        r"^git\s+(status|log|diff|branch|show|remote\s+-v|rev-parse|describe|tag)(\s+[\w=./:@^~-]+)*$",
+        r"^git\s+(status|log|diff|show|rev-parse|describe)(\s+[\w=./:@^~-]+)*$",
+        r"^git\s+remote\s+-v$",
+        r"^git\s+branch(\s+(-a|-r|-v|-vv|--list))*(\s+[\w./-]+)?$",
+        r"^git\s+tag(\s+(-l|-n|--list))*(\s+[\w./@-]+)?$",
         r"^docker\s+(ps|images|version|info|stats\s+--no-stream)(\s+-{1,2}[\w=-]+)*$",
         r"^docker\s+compose\s+(ps|ls|config\s+--services)(\s+-{1,2}[\w=-]+)*$",
         r"^(systemctl|service)\s+status(\s+[\w@.-]+)*$",
@@ -60,6 +63,10 @@ READ_ONLY = [
 
 # Shell metacharacters that can chain or redirect - never "read-only".
 METACHARS = re.compile(r"[;&|`<>]|\$\(|\r|\n")
+
+# The hub's own database and key. A command that names them is refused for everyone: the Operator console
+# runs as the hub user, so a "read-only" or person-typed command must not be a way to read or edit them.
+HUB_PRIVATE = re.compile(r"(secret\.key|hub\.db(?:-wal|-shm)?|(?:^|[\s/'\"])\.hub(?:/|\b)|HUB_DATA_DIR|HUB_SECRET_KEY)", re.IGNORECASE)
 
 
 @dataclass
@@ -78,6 +85,8 @@ def classify(command: str, *, block_catastrophic: bool = True) -> tuple[Risk, st
             if block_catastrophic:
                 return "blocked", why
             return "change", f"{why} - not blocked because the block_catastrophic_commands guardrail is off"
+    if HUB_PRIVATE.search(cmd):
+        return "blocked", "names the hub's own database or encryption key"
     if METACHARS.search(cmd):
         return "change", "uses shell chaining or redirection"
     if any(p.match(cmd) for p in READ_ONLY):
@@ -86,15 +95,19 @@ def classify(command: str, *, block_catastrophic: bool = True) -> tuple[Risk, st
 
 
 def decide(command: str, autonomy: str, *, from_person: bool, trusted: bool = False,
-           block_catastrophic: bool = True) -> Decision:
+           block_catastrophic: bool = True, person_may_change: bool = True) -> Decision:
     """``trusted`` marks hub-defined commands (e.g. the built-in discovery script); ``block_catastrophic`` is the
-    guardrail of that name."""
+    guardrail of that name. ``person_may_change`` is false for a non-admin's command on this machine: that command
+    can read the hub's files, so a state-changing one waits for an administrator."""
     risk, why = classify(command, block_catastrophic=block_catastrophic)
     if risk == "blocked":
         return Decision("deny", risk, f"Blocked: {why}. Run it yourself if you really mean it.")
     if trusted and risk == "change":
         risk, why = "read_only", "built-in hub read-only script"
     if from_person:
+        if not person_may_change and risk == "change":
+            return Decision("approve", risk, "A state-changing command on this machine needs an administrator. "
+                            "The Operator console runs as the hub user.")
         return Decision("run", risk, "Requested by a person in the Operator console.")
     if autonomy == "autonomous":
         return Decision("run", risk, f"Autonomous mode ({why}).")

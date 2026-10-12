@@ -501,6 +501,19 @@ class AuthService:
         self.store.delete("tokens", token_id)
         self.hub.activity(principal.actor, "info", f"Revoked API token {token.name}", token_id=token_id)
 
+    def token_role(self, token: ApiToken) -> str | None:
+        """The role a token may use now. A disabled or deleted creator stops the token. A demotion caps it at the
+        creator's current role. Integration tokens keep working only while their creator is still an administrator."""
+        user = next((u for u in self.users() if u.username == token.created_by), None)
+        if user is None or user.disabled:
+            return None
+        if token.role == "integration":
+            return "integration" if user.role == "admin" else None
+        rank = {"viewer": 1, "operator": 2, "admin": 3}
+        if rank[user.role] < rank.get(token.role, 0):
+            return user.role
+        return token.role
+
     def token_principal(self, value: str) -> Principal | None:
         if not value.startswith(TOKEN_PREFIX):
             return None
@@ -511,11 +524,14 @@ class AuthService:
             token = ApiToken.model_validate(doc)
             if token.expires_at is not None and token.expires_at <= now:
                 return None
+            role = self.token_role(token)
+            if role is None:
+                return None
             if token.last_used is None or now - token.last_used >= TOUCH_INTERVAL:
                 token.last_used = now
                 self.store.put("tokens", token.model_dump(mode="json"))
             actor = f"token:{token.name}"
-            return Principal(kind="token", id=token.id, name=token.name, role=token.role, actor=actor, bus_id=actor)
+            return Principal(kind="token", id=token.id, name=token.name, role=role, actor=actor, bus_id=actor)
         return None
 
     # -- per request -----------------------------------------------------------------
@@ -533,7 +549,13 @@ class AuthService:
         now = time.time()
         if principal.kind == "token":
             doc = self.store.get("tokens", principal.id)
-            return doc is not None and (doc.get("expires_at") is None or doc["expires_at"] > now)
+            if doc is None or (doc.get("expires_at") is not None and doc["expires_at"] <= now):
+                return False
+            try:
+                token = ApiToken.model_validate(doc)
+            except Exception:
+                return False
+            return self.token_role(token) is not None
         session = self.store.get("sessions", principal.session_id or "")
         user = self.get_user(principal.id)
         return session is not None and self._session_live(session, now) and user is not None and not user.disabled

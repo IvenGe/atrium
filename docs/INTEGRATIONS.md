@@ -306,6 +306,23 @@ as a disabled flow and is not proposed again. Planning runs after a successful c
 connector is approved, when extension packs change, and on demand (**Plan data flows** in the Integration hub,
 `POST /api/flows/plan`).
 
+### Maps
+
+The Integration hub has three tabs.
+
+- **Overview** is the score, conflicts, data-flow table and strategy grid.
+- **Map** (`#/integration/map`, `GET /api/integration/map`) draws tools and the hub apps (Assets, Vulnerabilities,
+  Compliance, People, Network) with data flows, single sign-on, events and shared capabilities. Operators can drag a
+  card to a lane; the new order is saved with `PATCH /api/layouts/integration` and broadcast as `canvas_layout`.
+  Viewer responses do not include webhook URLs, connection settings or event payloads.
+- **Segmentation** (`#/integration/segmentation`, `GET /api/segmentation`) draws zones from the latest firewall
+  snapshot. The side panel previews and proposes an allow rule (`POST /api/segmentation/changes/preview` and
+  `POST /api/segmentation/changes`). Applying it still needs the device-changes guardrail and a second administrator.
+  See [NETWORK.md](NETWORK.md).
+
+Both maps can switch to a list of the same items. Keyboard: arrows move the selection, `+` and `-` zoom, `F` fits,
+`L` opens the list. Device and tool text is escaped.
+
 ### Running
 
 A flow is run by the agent that owns its domain (table at the top), which asks the tool's supervisor for

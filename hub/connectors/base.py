@@ -634,6 +634,9 @@ class Connector:
     fields: ClassVar[list[ConnectorField]] = []
     capabilities: ClassVar[dict[str, set[str]]] = {}  # domain -> {"read", "write"}
     actions: ClassVar[set[str]] = set()  # e.g. {"scan", "scan_status"}
+    # actions that change the tool. The tool supervisor refuses them from anyone except a person or the agent that
+    # owns that action's approval path (OpenVAS "scan" -> module:vulns). Reads such as scan_status stay open.
+    side_effects: ClassVar[set[str]] = set()
     system_of_record: ClassVar[set[str]] = set()  # domains this product is authoritative for (never pushed to)
     timeout: ClassVar[float] = 30.0
     # device changes (see the module docstring): {"ops": [...], "rollback": mode, "window_s": seconds}; None = read-only

@@ -24,7 +24,33 @@ viewer, operator or admin - that decides what they may do.
 
 ## Screenshots
 
-<!-- screenshots -->
+Home, the app launcher, agents, approvals, the operator console, assets, the risk register, users, and the same home page in the light theme. More shots (Network, the Integration map, frameworks, guardrails, a phone-width menu) are in [docs/screenshots](docs/screenshots).
+
+![Home](docs/screenshots/home.png)
+
+![Portals](docs/screenshots/portals.png)
+
+![Agents](docs/screenshots/agents.png)
+
+![Approvals](docs/screenshots/approvals.png)
+
+![Operator](docs/screenshots/operator.png)
+
+![Assets](docs/screenshots/assets.png)
+
+![Risk register](docs/screenshots/compliance-risks.png)
+
+![Users and access](docs/screenshots/users.png)
+
+![Home, light theme](docs/screenshots/home-light.png)
+
+![Network app](docs/screenshots/network-empty.png)
+
+![Integration map](docs/screenshots/integration-map.png)
+
+![Compliance frameworks](docs/screenshots/compliance-frameworks.png)
+
+![Network change guardrails](docs/screenshots/settings-network-guardrails.png)
 
 ## What's inside
 
@@ -33,13 +59,14 @@ viewer, operator or admin - that decides what they may do.
 | **Portals** | App launcher (top bar) for the built-in apps and every imported tool. Tools open inside the hub. |
 | **Apps** | Import from GitHub / local folder / SaaS URL (+ OpenAPI spec). Each tool gets a manifest, an integration score, health checks, start/stop, logs, its own supervisor agent and a **Connection** to its API. |
 | **Integration hub** | Map of how tools connect - shared capabilities, single sign-on, event routes, data flows - plus port conflicts and missing dependencies. The **Identity** card lists the suite's identity providers (Keycloak, authentik, Zitadel, Authelia, ...) and each tool's single sign-on: the Patch Agent connects tools to the chosen provider natively (Grafana, Gitea, Forgejo, MinIO, BookStack, Outline, Nextcloud, Wazuh, CISO Assistant, Snipe-IT, Zammad, ...) and registers them there. **Data flows** move assets, vulnerabilities, controls and evidence, risks, people and accounts between tools and the hub's apps through built-in connectors (Snipe-IT, CISO Assistant, OpenVAS / Greenbone, Okta, Keycloak, SCIM 2.0) or a generic REST mapping, on a schedule, with a repair proposal after three failures. |
+| **Network** | Snapshots of firewalls, routers, switches and host firewalls: rules, drift, encrypted backups and approved changes. Device changes are off until an administrator turns them on. See [docs/NETWORK.md](docs/NETWORK.md). |
 | **Agents** | Manage the agents, chat with the Hub Supervisor or any team agent, and watch agent-to-agent messages live. Each tool's supervisor can lead an **agent team** - proposed from templates for what the tool is (SIEM, GRC, asset inventory, vulnerability scanner, plus a maintainer) or designed by Claude - and admins create, edit and remove team agents running on Claude, on a **local model** (Ollama, LM Studio, vLLM, llama.cpp - any OpenAI-compatible server) or on rules, with permissions, a schedule and a standing task. |
-| **Approvals** | Review and approve or reject agent commands, patches, data flows, scans, repairs, agent teams, extension packs and changes to Atrium itself, with diffs and test results. Full audit history. |
+| **Approvals** | Review and approve or reject agent commands, patches, data flows, scans, repairs, agent teams, extension packs, network changes and changes to Atrium itself, with diffs and test results. A network change needs a different administrator from the one who proposed it. Full audit history. |
 | **Operator** | Run commands locally or over SSH, manage hosts, discover host facts. |
 | **Assets** | Asset register kept in sync automatically (tools, SaaS services, hosts, inventories such as Snipe-IT - merged by address, hostname or serial) plus manual assets, owner and user (people), criticality and vulnerability-scan scope. |
 | **People** | The workforce directory merged from Okta, Keycloak and SCIM (by email, then login), the accounts people hold in the tools, the assets they own or use, and a person page with a relationship map. **Leavers** who still have access or devices are flagged, with one-click actions. |
 | **Vulnerabilities** | Findings from scanners and other tools: scans of in-scope assets (with approval), severity, CVEs, remediation deadlines per severity (SLA), automatic "fixed" when a rescan no longer finds them, and risks for critical findings past their deadline. |
-| **Compliance hub** | GRC: 22 controls evaluated against live hub state, mapped to ISO/IEC 27001:2022, SOC 2 and NIS2; risk register with heatmap (risks open and close automatically); policies with templates. |
+| **Compliance hub** | GRC controls evaluated against live hub state, mapped to ISO/IEC 27001:2022, SOC 2, NIS2 and CyFun; CyFun 2025 and 2023 self-assessments with an audit pack; risk register with heatmap; policies with templates. See [docs/COMPLIANCE.md](docs/COMPLIANCE.md). |
 | **Extensions** | Packs that add data types (alerts, tickets, incidents, ...) with their own apps, connector mappings, SSO recipes, compliance rules and team templates - data only, versioned, enabled without a restart. Generated after an import from templates or by Claude, and approved by an admin. When only code can help, a **self-patch** of Atrium is tested on its own branch and opened as a pull request after approval. |
 | **Settings** | Autonomy level, default model, vulnerability deadlines, **Agent guardrails**, **AI providers** (local models) and **Sign-in & SSO** (presets for Okta, Microsoft Entra ID, Google, Keycloak, authentik). |
 | **Users & access** | Admins only. Accounts (local passwords or single sign-on), roles, password resets, API tokens for scripts and tools, and the person each account belongs to. Everyone can change their password and sign out other sessions from the user menu. |
@@ -221,7 +248,8 @@ More detail in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 - **Patches** to source code land on a new branch in a separate worktree.
 - **Web hardening**: binds to `127.0.0.1` by default, rejects unknown `Host` headers
   (DNS rebinding), uses `HttpOnly`, `SameSite=Lax` session cookies, and requires an
-  `X-Hub-Request: 1` header on every state-changing browser call (cross-site request forgery). If
+  `X-Hub-Request: 1` header on every state-changing browser call (cross-site request forgery).
+  Responses send `X-Frame-Options: DENY` and `frame-ancestors 'none'` so the UI cannot be embedded. If
   other people reach the hub over a network, put a TLS reverse proxy in front and set
   `HUB_PUBLIC_URL`, `HUB_ALLOWED_HOSTS` and `HUB_COOKIE_SECURE=1`.
 
@@ -235,6 +263,8 @@ More detail in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 | [docs/AGENTS.md](docs/AGENTS.md) | agents, team agents and teams, local models, guardrails, extensions, self-patching |
 | [docs/PEOPLE.md](docs/PEOPLE.md) | the People app, directories, accounts, person-asset links, leavers |
 | [docs/MANIFEST.md](docs/MANIFEST.md) | the hub manifest of a tool, capabilities, events |
+| [docs/NETWORK.md](docs/NETWORK.md) | devices, connectors, drift, backups and the change safety model |
+| [docs/COMPLIANCE.md](docs/COMPLIANCE.md) | CyFun assessments, the audit pack and the hub controls |
 
 ## Project layout
 
@@ -283,12 +313,8 @@ patches the real checkout.
 
 ## Roadmap
 
-- Compliance frameworks: CyFun 2025 and 2023 built in, an audit-pack export, and framework sync with CISO Assistant
-- Network and devices, read-only first (OPNsense, pfSense, MikroTik, FortiGate, PAN-OS, Cisco IOS-XE, host
-  firewalls), with drift detection and compliance evidence; changes later, behind a guardrail that is off by default
-- A visual management panel: an integration canvas (drag to connect proposes a data flow) and a network segmentation
-  view
-- Two-person approval, and approvals bound to the exact revision they approved
+- Dragging one map node onto another to propose a data flow (the Integration map already shows the flows)
+- A tested IOS-XE NETCONF confirmed commit (reads work; writes stay off)
 - Sandboxed test runs for self-patches (a container or a separate user)
 - Pull requests for patches to GitHub-hosted tools (self-patches of Atrium already use them)
 - Matching tool versions against security advisories, and backup orchestration

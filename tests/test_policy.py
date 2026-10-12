@@ -36,6 +36,15 @@ def test_people_run_directly_but_never_blocked_commands():
     assert decide("rm -rf /", "manual", from_person=True).action == "deny"
 
 
+def test_git_deletes_and_hub_files_are_not_read_only():
+    assert classify("git branch -D feature")[0] == "change"
+    assert classify("git tag -d v1")[0] == "change"
+    assert classify("git branch -vv")[0] == "read_only"
+    assert classify("git show .hub/secret.key")[0] == "blocked"
+    assert classify("cat .hub/hub.db")[0] == "blocked"
+    assert decide("python3 -c 'print(1)'", "manual", from_person=True, person_may_change=False).action == "approve"
+
+
 def test_trusted_hub_scripts_count_as_read_only():
     script = "echo a; uname -a"
     assert decide(script, "assisted", from_person=False).action == "approve"

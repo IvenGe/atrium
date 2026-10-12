@@ -27,7 +27,8 @@ from .extensions import registry as ext_registry
 from .extensions import selfpatch
 from .grc.baseline import POLICY_TEMPLATES
 from .grc.checks import framework_scores
-from . import api_canvas
+from . import api_canvas, api_changes, api_frameworks, api_network
+from .integration import changes as network_changes
 from .integration import connections, flows, identity, importer, strategies
 from .integration.compatibility import suite_matrix
 from .integration.identity import SSO_STRATEGIES
@@ -697,6 +698,9 @@ def build_router(hub: Hub) -> APIRouter:
         return {"ok": True}
 
     api_canvas.add_routes(router, hub)
+    api_network.add_routes(router, hub)
+    api_frameworks.add_routes(router, hub)
+    api_changes.add_routes(router, hub)
 
     @router.post("/bus/publish")
     async def bus_publish(body: PublishBody) -> dict[str, Any]:
@@ -843,6 +847,31 @@ def build_router(hub: Hub) -> APIRouter:
         if pending is not None and pending.kind in ADMIN_APPROVALS and p.role != "admin":
             raise HTTPException(403, "Only administrators decide changes to Atrium itself and new agents "
                                      "(extensions, self-patches and agent teams)")
+        if pending is not None and pending.kind == "firewall" and p.role != "admin":
+            raise HTTPException(403, {"code": "admin_required",
+                                     "message": "Only an administrator can approve a network change."})
+        if pending is not None and pending.kind == "command" and pending.payload.get("local_change") and p.role != "admin":
+            raise HTTPException(403, {"code": "admin_required",
+                                     "message": "Only an administrator can approve a state-changing command on this machine."})
+        if pending is not None and pending.status == "pending":
+            if network_changes.approval_expired(hub, pending):
+                raise HTTPException(409, {"code": "expired", "message": "This approval has expired."})
+            if pending.kind == "self_patch" and pending.payload.get("commit"):
+                bound = selfpatch.get(hub, str(pending.payload.get("self_patch_id") or ""))
+                head = bound.commit if bound else ""
+                if bound and bound.worktree:
+                    import subprocess
+                    try:
+                        head = subprocess.check_output(["git", "-C", bound.worktree, "rev-parse", "HEAD"],
+                                                       text=True, stderr=subprocess.DEVNULL).strip()
+                    except Exception:
+                        head = bound.commit
+                if head and head != pending.payload["commit"]:
+                    raise HTTPException(409, {"code": "stale",
+                                             "message": "This self-patch approval was bound to a different commit."})
+            code = network_changes.same_person_blocked(hub, pending.kind, pending.payload, pending.requested_by, p.actor)
+            if code:
+                raise HTTPException(403, {"code": code, "message": "You proposed this. Someone else has to decide it."})
         try:
             approval = await hub.approvals.decide(approval_id, body.approve, body.note, p.actor, sender=p.bus_id)
         except KeyError as exc:
@@ -1234,6 +1263,8 @@ def build_router(hub: Hub) -> APIRouter:
                 hub.update_prefs(p.actor, **values)
             if body.guardrails:
                 guardrails.update(hub, p.actor, body.guardrails)
+                if body.guardrails.get("device_changes") is False:
+                    network_changes.block_unapproved(hub, p.actor)
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
         if body.vuln_sla_days:
@@ -1248,6 +1279,8 @@ def build_router(hub: Hub) -> APIRouter:
             raise HTTPException(400, "Send at least one guardrail")
         try:
             guardrails.update(hub, p.actor, body)
+            if body.get("device_changes") is False:
+                network_changes.block_unapproved(hub, p.actor)
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
         await hub.bus.tell(p.bus_id, "module:grc", "evaluate")

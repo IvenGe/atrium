@@ -97,6 +97,13 @@ CONTROLS: list[Control] = [
             "tools_manifest", {"ISO27001": "A.8.9", "SOC2": "CC7.1",
                                "CyFun2025": "PR.PS-01.1 / ID.AM-03.2",
                                "CyFun2023": "ID.AM-3.2 / PR.IP-1.1"}, None),
+    Control("HB-CM-3", "Change management", "Network device changes are controlled",
+            "Firewall and host-firewall changes need a second person, a configuration backup, and a maintenance "
+            "window unless an administrator records an emergency. Turning those protections off is reflected here.",
+            "network_change_management",
+            {"ISO27001": "A.8.9 / A.8.32", "SOC2": "CC8.1", "NIS2": "21(2)(e)",
+             "CyFun2025": "PR.PS-01.1", "CyFun2023": "PR.IP-3.1"},
+            ("An unreviewed firewall change opens the network", 3, 4)),
     Control("HB-CM-2", "Change management", "Changes to tools are reviewed",
             "Patches to tools are proposed on branches or adapters and applied only after review; changes to Atrium "
             "itself - generated extension packs and self-patches of its code - are reviewed too, and its code only "

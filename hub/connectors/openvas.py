@@ -285,6 +285,7 @@ class OpenVasConnector(Connector):
     ]
     capabilities = {"vulnerabilities": {"read"}}
     actions = {"scan", "scan_status"}
+    side_effects = {"scan"}
 
     @classmethod
     def detect(cls, tool) -> int:
