@@ -126,16 +126,16 @@ export function createCanvas(container, options) {
   function paint() {
     if (destroyed) return;
     const lanes = layoutLanes();
-    rects = laneRects(lanes);
+    rects = laneRects(lanes, 12, 36);
     const byId = new Map(rects.map((r) => [r.id, r]));
     gItems.replaceChildren();
     for (const lane of state.lanes || []) {
       const title = el("g", { "data-hit": "lane", "data-id": lane.id });
       title.append(el("rect", {
-        x: lane.x, y: 0, width: lane.width, height: Math.max(280, ...rects.filter((r) => r.lane === lane.id).map((r) => r.y + r.h + 24), 0),
+        x: lane.x, y: 0, width: lane.width, height: Math.max(320, ...rects.filter((r) => r.lane === lane.id).map((r) => r.y + r.h + 24), 0),
         class: "lane-bg", rx: 12,
       }));
-      text(title, lane.title || lane.id, { x: lane.x + 16, y: 0, class: "lane-title" });
+      text(title, lane.title || lane.id, { x: lane.x + 16, y: 22, class: "lane-title" });
       gItems.append(title);
     }
     for (const rect of rects) {

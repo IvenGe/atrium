@@ -24,9 +24,11 @@ viewer, operator or admin - that decides what they may do.
 
 ## Screenshots
 
-The Network app with no devices connected yet, the Compliance frameworks tab, and the network-change guardrails.
+The Network app with no devices connected yet, the Integration map, the Compliance frameworks tab, and the network-change guardrails.
 
 ![Network app](docs/screenshots/network-empty.png)
+
+![Integration map](docs/screenshots/integration-map.png)
 
 ![Compliance frameworks](docs/screenshots/compliance-frameworks.png)
 

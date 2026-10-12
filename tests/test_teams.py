@@ -216,7 +216,10 @@ def test_guardrail_settings_are_admin_only_validated_and_logged(client, sign_in,
         "scans_need_approval": True, "team_requires_approval": True,
         # extensions and self-patching (EXTEND_SPEC)
         "allow_extensions": True, "extensions_need_approval": True, "allow_self_patching": True,
-        "self_patch_requires_tests": True, "self_patch_requires_approval": True, "self_patch_via_pull_request": True}
+        "self_patch_requires_tests": True, "self_patch_requires_approval": True, "self_patch_via_pull_request": True,
+        "device_changes": False, "device_changes_need_second_person": True,
+        "device_changes_need_maintenance_window": True, "device_changes_need_backup": True,
+        "approval_expiry_hours": 24, "approvals_need_second_person": False}
     catalog = {g["key"]: g for g in settings["guardrail_catalog"]}
     assert catalog["block_catastrophic_commands"]["risk"] and catalog["max_team_size"]["max"] == 50
     assert not any(g["relaxed"] for g in catalog.values())
