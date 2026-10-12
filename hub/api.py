@@ -27,6 +27,7 @@ from .extensions import registry as ext_registry
 from .extensions import selfpatch
 from .grc.baseline import POLICY_TEMPLATES
 from .grc.checks import framework_scores
+from . import api_canvas
 from .integration import connections, flows, identity, importer, strategies
 from .integration.compatibility import suite_matrix
 from .integration.identity import SSO_STRATEGIES
@@ -580,14 +581,18 @@ def build_router(hub: Hub) -> APIRouter:
     # -- integration ---------------------------------------------------------------------
 
     @router.get("/integration")
-    async def integration() -> dict[str, Any]:
+    async def integration(p: CurrentPrincipal) -> dict[str, Any]:
         all_flows = [flows.public(hub, f) for f in flows.all_flows(hub)]
         flow_links = [{"source": "hub" if f["source"] == "hub" else f["source"].split(":", 1)[1],
                        "target": "hub" if f["target"] == "hub" else f["target"].split(":", 1)[1],
                        "type": "flow", "via": f["domain"] + (f" ({f['action']})" if f["action"] else ""),
                        "flow_id": f["id"], "status": f["status"], "failing": bool(f["failures"])} for f in all_flows]
-        return {**suite_matrix(hub.tools()), "routes": hub.toolbus.routes(), "deliveries": hub.toolbus.recent(30),
+        data = {**suite_matrix(hub.tools()), "routes": hub.toolbus.routes(), "deliveries": hub.toolbus.recent(30),
                 "flows": all_flows, "flow_links": flow_links}
+        if p.role == "viewer":
+            data["routes"] = [{**r, "webhook": bool(r.get("webhook"))} for r in data["routes"]]
+            data["deliveries"] = [{k: v for k, v in d.items() if k != "payload"} for d in data["deliveries"]]
+        return data
 
     @router.post("/integration/evaluate")
     async def reevaluate(p: CurrentPrincipal) -> dict[str, Any]:
@@ -637,6 +642,13 @@ def build_router(hub: Hub) -> APIRouter:
             changes.append(f"every {body.schedule_minutes} min" if body.schedule_minutes else "manual only")
         pending = flow.approval_id if flow.status == "proposed" else None
         if body.status and body.status != flow.status:
+            if body.status == "enabled":
+                other = flows.loop_conflict(hub, flow.domain, flow.source, flow.target, flow.action,
+                                            ignore_id=flow.id)
+                if other is not None:
+                    raise HTTPException(409, {"code": "flow_conflict",
+                                              "message": "A pull and a push of the same domain for the same tool would loop.",
+                                              "flow_id": other.id})
             flow.status, flow.approval_id = body.status, None
             changes.append(body.status)
         flows.save(hub, flow)
@@ -683,6 +695,8 @@ def build_router(hub: Hub) -> APIRouter:
         flow = flows.remove(hub, flow_or_404(flow_id).id, p.actor)
         hub.activity(p.actor, "info", f"Removed data flow {flow.title if flow else flow_id}", flow_id=flow_id)
         return {"ok": True}
+
+    api_canvas.add_routes(router, hub)
 
     @router.post("/bus/publish")
     async def bus_publish(body: PublishBody) -> dict[str, Any]:

@@ -266,6 +266,33 @@ def check_policy(category: str) -> Callable[[Snapshot], Result]:
     return check
 
 
+ASSESSMENT_STALE = 365 * 24 * 3600
+
+
+def check_framework_assessment(s: Snapshot) -> Result:
+    """HB-PO-3: a CyFun self-assessment exists, was scored within 12 months, and its key measures meet the target."""
+    items = list(s.frameworks or [])
+    if not items:
+        return "manual", "No compliance framework self-assessment yet.", []
+    current = max(items, key=lambda a: a.get("assessed_at") or a.get("updated_at") or 0)
+    evidence = [f"{current.get('framework_name') or current.get('framework')} '{current.get('name')}' "
+                f"(target {current.get('target_name') or current.get('target_level')})"]
+    below = list(current.get("key_measures_below") or [])
+    assessed_at = current.get("assessed_at")
+    now = time.time()
+    stale = assessed_at is None or (now - float(assessed_at)) > ASSESSMENT_STALE
+    problems = []
+    if stale:
+        problems.append("last scored more than 12 months ago" if assessed_at else "no requirement has been scored yet")
+    if below:
+        problems.append(f"{len(below)} key measure(s) below the target: {_shown(below)}")
+    if problems:
+        prefix = "Self-assessment is not current: " if stale else "Self-assessment is current, but "
+        return "partial", prefix + "; ".join(problems) + ".", evidence
+    return "pass", (f"{current.get('framework_name') or current.get('framework')} self-assessment "
+                    f"'{current.get('name')}' is current and its key measures meet the target."), evidence
+
+
 # -- network security (HB-NW-*): device text never reaches details or evidence, only ids and counts -----------------
 
 BACKUP_WINDOW = 7 * 24 * 3600
@@ -382,6 +409,7 @@ CHECKS: dict[str, Callable[[Snapshot], Result]] = {
     "network_management": check_network_management,
     "network_backups": check_network_backups,
     "network_rules": check_network_rules,
+    "framework_assessment": check_framework_assessment,
 }
 
 

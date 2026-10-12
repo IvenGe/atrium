@@ -9,6 +9,7 @@ from ..bus import Message
 from ..extensions import controls as extension_controls
 from ..grc.baseline import CONTROLS, CONTROLS_BY_ID
 from ..grc.checks import Snapshot, evaluate_controls, framework_scores
+from ..grc.frameworks import assessments as framework_assessments
 from ..integration import flows
 from ..integration import network as network_app
 from .. import people
@@ -42,6 +43,7 @@ class GrcSupervisor(FlowOwner):
             vulnerabilities=hub.all("vulnerabilities", Vulnerability), guardrails=hub.prefs["guardrails"],
             people=people.all_people(hub), accounts=people.all_accounts(hub),
             extension_results=extension_controls.evaluate(hub), network=self._network_facts(),
+            frameworks=self._framework_facts(),
         )
 
     def _network_facts(self) -> dict[str, Any]:
@@ -50,6 +52,13 @@ class GrcSupervisor(FlowOwner):
         except Exception as exc:  # the other controls must still be evaluated
             self.log("warn", f"Network compliance facts unavailable: {exc.__class__.__name__}: {exc}")
             return {}
+
+    def _framework_facts(self) -> list[dict[str, Any]]:
+        try:
+            return framework_assessments.control_summaries(self.hub)
+        except Exception as exc:
+            self.log("warn", f"Framework assessment facts unavailable: {exc.__class__.__name__}: {exc}")
+            return []
 
     # -- data flows ------------------------------------------------------------------
 

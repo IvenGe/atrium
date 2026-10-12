@@ -166,6 +166,19 @@ class HubSupervisor(BaseAgent):
 
     # -- data flows --------------------------------------------------------------------
 
+    async def on_flows_create(self, body: dict[str, Any], msg: Message) -> dict[str, Any]:
+        """A person asked for one data flow (the integration map). requested_by stays this supervisor so
+        on_approval_decided still applies it."""
+        try:
+            result = flows.create_explicit(
+                self.hub, domain=str(body.get("domain") or ""), source=str(body.get("source") or ""),
+                target=str(body.get("target") or ""), action=body.get("action"),
+                actor=str(body.get("actor") or msg.sender),
+                schedule_minutes=body.get("schedule_minutes"), options=body.get("options"))
+        except flows.FlowError as exc:
+            return {"ok": False, "http_status": exc.status, **exc.body()}
+        return {"ok": True, "flow": flows.public(self.hub, result["flow"]), "approval_id": result["approval_id"]}
+
     async def on_flows_plan(self, body: dict[str, Any], msg: Message) -> dict[str, Any]:
         """Propose the data flows the connections make possible (see integration/strategies.py)."""
         created = strategies.propose(self.hub, self.id)

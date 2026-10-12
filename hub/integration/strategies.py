@@ -24,6 +24,7 @@ Proposals become approvals of kind "flow" (enabled straight away in autonomous m
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from .. import connectors
@@ -38,14 +39,31 @@ ADAPTER_STRATEGIES = {"api_adapter", "event_adapter", "health_probe", "health_en
 BUILTIN_SCORE = 50  # a detected built-in connector at least this sure is offered instead of generating one
 
 
-def proposals(hub: "Hub") -> list[Flow]:
-    """Flows the rules call for that do not exist yet (in any state: a rejected proposal stays rejected)."""
+@dataclass(frozen=True)
+class Move:
+    """One data-flow the planner knows about. `blocked` is set for directions the rules refuse (shown in connect
+    options, never proposed). `recommended` is the direction the planner would actually create."""
+
+    domain: str
+    source: str
+    target: str
+    action: str | None
+    reason: str
+    recommended: bool = True
+    blocked: str | None = None
+    strategy: str = "connector"
+
+
+def moves(hub: "Hub", tool_id: str | None = None) -> list[Move]:
+    """Every data-flow the rules consider, including blocked alternatives. Shared by proposals() and the map's
+    connect_options so they cannot disagree."""
     from ..extensions import registry
 
-    existing = {flows.key(f) for f in flows.all_flows(hub)}
     extension_domains = registry.active_domains(hub)
-    out: list[Flow] = []
+    out: list[Move] = []
     for conn in connections.all_connections(hub):
+        if tool_id and conn.id != tool_id:
+            continue
         tool = hub.get_tool(conn.id)
         try:
             cls = connectors.connector_class(conn.kind)
@@ -63,10 +81,9 @@ def proposals(hub: "Hub") -> list[Flow]:
         def writes(domain: str) -> bool:
             return "write" in domains.get(domain, [])
 
-        def add(domain: str, source: str, target: str, action: str | None, reason: str) -> None:
-            if (domain, source, target, action) not in existing:
-                existing.add((domain, source, target, action))
-                out.append(flows.make(hub, domain, source, target, action, reason=reason, strategy=strategy))
+        def add(domain: str, source: str, target: str, action: str | None, reason: str, *,
+                recommended: bool = True, blocked: str | None = None) -> None:
+            out.append(Move(domain, source, target, action, reason, recommended, blocked, strategy))
 
         name = tool.name
         if "scan" in cls.actions:
@@ -84,6 +101,9 @@ def proposals(hub: "Hub") -> list[Flow]:
                 + ": its assets are merged into Hub Assets (matched by address, hostname or serial).")
         if writes("assets") and not sor:
             add("assets", "hub", end, None, f"{name} keeps its own asset list: it receives Hub Assets, the canonical list.")
+        elif writes("assets") and sor:
+            add("assets", "hub", end, None, "", recommended=False,
+                blocked=f"{name} is the system of record for assets; the hub never pushes assets to it.")
         if writes("controls"):
             add("controls", "hub", end, None,
                 f"{name} manages compliance: it receives the hub's controls with their automated evidence.")
@@ -116,6 +136,19 @@ def proposals(hub: "Hub") -> list[Flow]:
                                               "extension), linked to assets and people.")
             elif writes(domain):
                 add(domain, "hub", end, None, f"{name} can take {what}: it receives the hub's {defn.title} records.")
+    return out
+
+
+def proposals(hub: "Hub") -> list[Flow]:
+    """Flows the rules call for that do not exist yet (in any state: a rejected proposal stays rejected)."""
+    existing = {flows.key(f) for f in flows.all_flows(hub)}
+    out: list[Flow] = []
+    for move in moves(hub):
+        if move.blocked or (move.domain, move.source, move.target, move.action) in existing:
+            continue
+        existing.add((move.domain, move.source, move.target, move.action))
+        out.append(flows.make(hub, move.domain, move.source, move.target, move.action, reason=move.reason,
+                              strategy=move.strategy))
     return out
 
 
