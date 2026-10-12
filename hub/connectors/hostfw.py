@@ -53,6 +53,7 @@ unit ``atrium-fw-revert`` and, for nftables and firewalld, persists. ``revert-no
 
 from __future__ import annotations
 
+import hashlib
 import ipaddress
 import json
 import re
@@ -698,8 +699,10 @@ def firewalld_rules(zones: list[dict[str, Any]], disabled: list[dict[str, Any]])
             order += 1
             parsed = _rich_rule(name, line, order)
             if parsed:
-                parsed["id"] = f"fw:{name}:rich:{order}"
-                parsed["vendor_ref"] = f"fw:{name}:rich:{order}"
+                # Positional numbers shift when a rich rule is removed, so the id is a hash of the rule text.
+                digest = hashlib.sha256(f"{name}\n{line}".encode()).hexdigest()[:12]
+                parsed["id"] = f"fw:{name}:rich:{digest}"
+                parsed["vendor_ref"] = parsed["id"]
                 rules.append(parsed)
     for item in disabled:
         if isinstance(item, dict) and item.get("id"):
@@ -1586,7 +1589,10 @@ class HostFirewallConnector(Connector):
         for index, op in enumerate(ops):
             if op["op"] == "allow":
                 mid = find_marker(op["marker"])
-                rule = next(rule for rule in record.get("rules") or [] if rule.get("marker") == mid)
+                rule = next((rule for rule in record.get("rules") or [] if rule.get("marker") == mid), None)
+                if rule is None:
+                    raise ChangeError(f"the rule marked {op['marker']} is not on the device after the write",
+                                      code="failed", state="unknown")
                 created.append({"op": index, "id": rule["id"], "vendor_ref": rule["vendor_ref"]})
             elif op["op"] == "disable_rules":
                 disabled.extend(str(ref.get("vendor_ref") or ref["id"]) for ref in op["rules"])
@@ -1653,7 +1659,7 @@ class HostFirewallConnector(Connector):
         except (ValueError, UnicodeError) as exc:
             raise ChangeError("the backup is not a host-firewall configuration", code="invalid", state="unchanged") from exc
         if not isinstance(saved, dict) or saved.get("manager") not in {"nftables", "ufw", "firewalld"}:
-            raise ChangeError("the backup is not a host-firewall configuration", code="invalid", state="unchanged") from exc
+            raise ChangeError("the backup is not a host-firewall configuration", code="invalid", state="unchanged")
         if "flush ruleset" in json.dumps(saved):
             raise ChangeError("the backup contains flush ruleset and was refused", code="invalid", state="unchanged")
         change_id = "restore-" + derived_revision(saved.get("manager"))[2:10]

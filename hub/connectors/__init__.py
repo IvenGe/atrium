@@ -32,6 +32,7 @@ REGISTRY: dict[str, str | type[Connector]] = {
     "panos": "hub.connectors.panos:PanOsConnector",
     "cisco_iosxe": "hub.connectors.cisco_iosxe:CiscoIosXeConnector",
     "hostfw": "hub.connectors.hostfw:HostFirewallConnector",
+    "windows_firewall": "hub.connectors.windows_firewall:WindowsFirewallConnector",
 }
 if os.environ.get("HUB_DEV_FAKE_DEVICES") == "1":  # an in-memory firewall to try the Network app (never in production)
     REGISTRY["fake_firewall"] = "hub.connectors.fake_firewall:FakeFirewallConnector"
