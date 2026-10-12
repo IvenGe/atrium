@@ -18,8 +18,8 @@ Configuration backups are encrypted at rest. The list shows metadata. Only an ad
 | FortiGate | REST token | Only when workspace transactions exist (FortiOS 7.4.1 and later). Otherwise read-only. Rollback is the inverse operation. |
 | PAN-OS | XML API key | Candidate config, a saved `atrium-pre-<id>.xml`, then a partial commit. |
 | IOS-XE | RESTCONF (ACLs, VLANs, SVIs, interfaces) | Read-only. A confirmed-commit write needs a tested NETCONF session, which this connector does not open. |
-| Linux host firewall | SSH. nftables, ufw or firewalld, detected on the host. | An Atrium-owned nft table and a systemd-run dead-man. Persist only after confirm. |
-| Windows Defender Firewall | OpenSSH and PowerShell | A scheduled task dead-man. Persist only after confirm. |
+| Linux host firewall | SSH. nftables, ufw or firewalld, detected on the host. | An Atrium-owned nft table and a systemd-run dead-man. nftables and firewalld stay runtime-only until confirm. ufw writes `user.rules` immediately; the timer restores the saved files until confirm. |
+| Windows Defender Firewall | OpenSSH and PowerShell | A scheduled task dead-man. Rules persist immediately; the task restores the exported store until confirm. |
 
 Unverified third-party details are marked `UNVERIFIED` in the connector source. `test()` checks reachability, TLS, authentication, privileges, version and the API features the connector uses. When the credential can write, the result says a read-only key is preferable until device changes are enabled.
 
