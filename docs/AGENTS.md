@@ -89,7 +89,7 @@ Patch Agent's approval flow and scans through the Vulnerability Supervisor, alwa
 | `flows` | `run_flow`, `plan_flows`, `request_scan` |
 | `assets_write` | `update_asset`, `set_scan_scope`, `sync_assets` |
 | `grc_write` | `create_risk`, `update_risk`, `update_vulnerability`, `evaluate_controls` |
-| `agents` | `propose_team`, `create_team_member` |
+| `agents` | `ask_agent`, `propose_team`, `create_team_member` |
 
 The Hub Supervisor's chat gets every tool. The Claude loop goes through `hub.llm.create`, so the default model
 (`claude-opus-5-5`) and the hub's request options apply.
@@ -160,7 +160,9 @@ Team agents can run on any server with an OpenAI-compatible API (`hub/llm_provid
 `llm_providers`). Add one under **Settings > AI providers** (admin).
 
 The default is chosen under **Settings > AI model**: Claude, ChatGPT, Grok, a local provider, or rules, plus the
-model name. New team agents use that provider. The Hub Supervisor's chat uses it too. Code patches, extension packs
+model name. New team agents use that provider. The Hub Supervisor's chat uses it too, and the chat badge names that
+provider. A message about a fix, a bug or a patch is handed to the Patch Agent first (up to five tools that need a
+patch) and the reply says which agent took the work. Code patches, extension packs
 and self-patches still call Claude, and they stay on rules when no Claude key is set. A team agent can still name
 its own provider and model.
 

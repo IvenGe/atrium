@@ -503,6 +503,18 @@ class FakeLocalServer:
         return httpx.Response(404, json={"error": "not found"})
 
 
+def test_the_supervisor_hands_a_fix_to_the_patch_agent(client):
+    tool = add_tool(client, "flask", "Flask")
+    tool.status = "needs_patch"
+    client.app.state.hub.save_tool(tool)
+    reply = client.post("/api/chat", json={"text": "fix bugs"}).json()
+    assert reply["mode"] == "team"
+    assert "Patch Agent" in reply["reply"] and "Flask" in reply["reply"]
+    assert reply["delegated"] == ["patcher:flask"]
+    supervisor = agent(client, "supervisor")
+    assert supervisor["provider_label"] == "Rules" and supervisor["model"] == ""
+
+
 def test_chatgpt_and_grok_presets(client):
     view = client.get("/api/llm/providers").json()
     presets = {p["id"]: p for p in view["presets"]}

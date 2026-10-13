@@ -21,7 +21,8 @@ const ROLE_ICON = { supervisor: "bot", patcher: "wrench", operator: "terminal", 
 const MODULE_ICON = { "module:assets": "box", "module:people": "contact", "module:vulns": "bug" };
 const agentIcon = (a) => MODULE_ICON[a.id] || ROLE_ICON[a.role] || "bot";
 const PROVIDER_ICON = { anthropic: "bot", local: "server", rules: "sliders" };
-const MODE = { llm: "Claude", local: "local model", rules: "rules" };
+const MODE = { llm: "Claude", local: "the model", rules: "rules", team: "the team" };
+const AGENT_NAME = { patcher: "Patch Agent", operator: "Operator", supervisor: "Hub Supervisor" };
 const DESIGNERS = [
   ["auto", "Automatic", "Claude designs the team when it is connected; otherwise the templates for this kind of tool."],
   ["templates", "Templates", "Roles proven for this kind of tool (SIEM, GRC, inventory, scanner) plus a maintainer."],
@@ -34,7 +35,7 @@ function providerBadge(a) {
   const kind = a.provider_kind || (a.uses_llm ? "anthropic" : "rules");
   const usable = kind === "rules" || a.llm_active;
   const tone = !usable ? "warn" : kind === "anthropic" ? "accent" : kind === "local" ? "info" : "";
-  const text = kind === "local" ? `Local: ${a.provider_label}` : kind === "anthropic" ? "Claude" : "Rules";
+  const text = kind === "anthropic" ? "Claude" : kind === "rules" ? "Rules" : (a.provider_label || "Model");
   const tip = !usable ? (kind === "anthropic" ? "Claude is not connected - the agent cannot use a model"
     : "This provider has not passed a test yet (Settings > AI providers)") : a.model || text;
   return html`<span class="badge ${tone}" title="${tip}">${icon(PROVIDER_ICON[kind] || "bot")}${text}</span>`;
@@ -111,24 +112,24 @@ function teamCard(t) {
         <button class="btn sm" data-act="new" data-team="${t.team}" data-min-role="admin" ${full ? html`disabled title="The team is at its maximum size (guardrail)"` : ""}>${icon("plus")}Add</button></span></header>
     ${t.lead ? leadRow(t.lead) : ""}
     ${t.members.length ? html`<div class="members">${t.members.map((m) => memberRow(m, t.lead?.id))}</div>`
-      : html`<p class="faint" style="font-size:12.5px">No team agents yet.${t.suggested?.length ? ` Suggested for this tool: ${t.suggested.join(", ")}.` : ""}</p>`}
+      : html`<p class="faint" style="font-size:12.5px">${t.kind === "hub" ? "No extra members yet. The lead still sends fixes to the Patch Agent and each tool's supervisor." : `No team agents yet.${t.suggested?.length ? ` Suggested for this tool: ${t.suggested.join(", ")}.` : ""}`}</p>`}
   </section>`;
 }
 
 function groupsView(agents, overview) {
-  const teams = overview.teams.filter((t) => t.kind === "tool" || t.size || t.pending_approval);
+  const teams = overview.teams.filter((t) => t.kind === "hub" || t.kind === "tool" || t.size || t.pending_approval);
   return html`${GROUPS.map(([title, test]) => {
       const list = agents.filter(test);
       return list.length ? html`<div><h3 class="muted" style="margin:0 0 10px">${title}</h3><div class="grid cols-3">${list.map(agentCard)}</div></div>` : "";
     })}
     <div><h3 class="muted" style="margin:0 0 4px">Agent teams</h3>
-      <p class="faint" style="font-size:12.5px;margin-bottom:10px">Each tool's supervisor leads its team. Team agents run on Claude, ChatGPT, Grok, a local model or rules, with only the permissions they are given.</p>
-      ${teams.length ? html`<div class="team-grid">${teams.map(teamCard)}</div>` : html`<p class="faint">Import a tool to give it a team.</p>`}</div>`;
+      <p class="faint" style="font-size:12.5px;margin-bottom:10px">The Hub Supervisor leads the hub team and hands work to the Patch Agent, the Operator and each tool's supervisor. A tool supervisor leads that tool's own team. Team agents run on Claude, ChatGPT, Grok, a local model or rules.</p>
+      ${teams.length ? html`<div class="team-grid">${teams.map(teamCard)}</div>` : html`<p class="faint">The hub team appears here.</p>`}</div>`;
 }
 
 function greeting(a) {
   if (!a || a.id === "supervisor") {
-    return "Hi! I'm the **Hub Supervisor**. I coordinate the other agents. Try `status`, `import owner/repo`, `run df -h`, `compliance`, or just describe what you want.";
+    return "Hi! I'm the **Hub Supervisor**, the lead of the hub team. Say `fix bugs` and I send the work to the Patch Agent. I can also `status`, `import owner/repo`, `patch <tool>`, `run df -h`, and `compliance`.";
   }
   const rules = a.provider_kind === "rules" ? " I run on rules: I can check health, run data flows and summarize the state." : "";
   return `Hi! I'm **${a.name}**, ${a.title} in the ${a.team_name || a.team} team.${rules}`;
@@ -147,7 +148,7 @@ function chatView(agents) {
     ${a ? html`<div class="row" style="gap:6px;margin-bottom:8px;font-size:12px">${providerBadge(a)}${a.model ? html`<span class="faint mono">${a.model}</span>` : ""}
       ${off ? badge(a.kind === "custom" ? "disabled" : "paused", "warn") : ""}${a.outside_guardrails ? badge("held", "warn") : ""}</div>` : ""}
     <div class="msgs" id="chat-msgs">${log.length ? html`${log.map((m) => html`<div class="bubble ${m.me ? "me" : "bot"}">${m.me ? m.text : md(m.text)}
-        ${!m.me && m.mode && m.mode !== "llm" ? html`<div class="faint" style="font-size:11px;margin-top:4px">via ${MODE[m.mode] || m.mode}</div>` : ""}</div>`)}
+        ${!m.me && m.mode ? html`<div class="faint" style="font-size:11px;margin-top:4px">via ${MODE[m.mode] || m.mode}${m.delegated?.length ? ` — ${[...new Set(m.delegated.map((id) => AGENT_NAME[id.split(":")[0]] || id.split(":")[0]))].join(", ")}` : ""}</div>` : ""}</div>`)}
         ${busy ? html`<div class="bubble bot faint">Thinking${a.id === "supervisor" ? " and asking the other agents" : ""}...</div>` : ""}`
       : html`<div class="bubble bot">${md(greeting(a))}</div>`}</div>
     <form id="chat-form" data-min-role="operator"><input name="text" placeholder="Message ${a?.name || "the agent"}..." autocomplete="off" aria-label="Message" ${busy || off ? "disabled" : ""}>
@@ -223,7 +224,7 @@ export async function render(el, ctx) {
     drawChat();
     try {
       const reply = await post(`/agents/${enc(id)}/chat`, { text });
-      log.push({ me: false, text: reply.reply, mode: reply.mode });
+      log.push({ me: false, text: reply.reply, mode: reply.mode, delegated: reply.delegated || [] });
     } catch (err) {
       log.push({ me: false, text: `Error: ${err.message}` });
     } finally {

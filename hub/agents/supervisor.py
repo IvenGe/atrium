@@ -40,8 +40,10 @@ Your team:
   Vulnerability Supervisor - scans of in-scope assets, findings and their remediation deadlines.
 - Data flows move assets, vulnerabilities, controls and risks between tools (through their connectors) and the
   hub's apps; you propose them, the module supervisors run them.
-- Agent teams: a Tool Supervisor can lead a team of custom agents for its tool (propose_team); team agents act
-  through the same policies and approvals, within the guardrails an administrator sets.
+- Agent teams: you lead the hub team. For a fix, a bug or a patch, the chat already hands the work to the
+  Patch Agent and the tool supervisors before you speak. When you do answer, use ask_agent to give a task to
+  another agent (the Patch Agent, a tool supervisor, a module supervisor, or a team member) and report what
+  they did. Do not invent a diagnosis they did not return.
 
 How to work:
 - Use the tools to look at real state before answering; do not guess tool ids, host ids or scores.
@@ -60,6 +62,21 @@ class HubSupervisor(BaseAgent):
     description = ("Orchestrates the hub. Imports tools, assigns a supervisor to each, scores how well the suite "
                    "fits together, sends gaps to the Patch Agent, and plans multi-step work from chat.")
     default_instructions = SYSTEM
+
+    def record(self) -> dict[str, Any]:
+        """The chat badge follows the model the suite is actually using, not a hardcoded Claude label."""
+        data = super().record()
+        chosen = teams.saved_provider(self.hub)
+        if chosen and chosen not in ("anthropic",):
+            provider = llm_providers.get(self.hub, chosen)
+            data.update(provider="rules" if chosen == "rules" else chosen,
+                        provider_kind="rules" if chosen == "rules" else ("hosted" if provider and provider.preset else "local"),
+                        provider_label="Rules" if chosen == "rules" else (provider.name if provider else chosen),
+                        model="" if chosen == "rules" else (self.hub.prefs.get("model") or (provider.default_model if provider else "")),
+                        llm_active=provider is not None and chosen != "rules")
+        elif not self.hub.llm.available:
+            data.update(provider="rules", provider_kind="rules", provider_label="Rules", model="", llm_active=False)
+        return data
 
     def __init__(self, hub):
         super().__init__(hub, "supervisor", "Hub Supervisor")
@@ -254,6 +271,9 @@ class HubSupervisor(BaseAgent):
 
     async def on_chat(self, body: dict[str, Any], msg: Message) -> dict[str, Any]:
         text = str(body.get("text", "")).strip()
+        team = await self._team_reply(text)
+        if team is not None:
+            return team
         chosen = teams.saved_provider(self.hub)
         if chosen and chosen not in ("anthropic", "rules"):
             provider = llm_providers.get(self.hub, chosen)
@@ -270,6 +290,34 @@ class HubSupervisor(BaseAgent):
                 note = f"(Claude unavailable: {exc.__class__.__name__}. Falling back to built-in commands.)\n\n"
                 return {"reply": note + await self._rules_chat(text), "mode": "rules"}
         return {"reply": await self._rules_chat(text), "mode": "rules"}
+
+    async def _team_reply(self, text: str) -> dict[str, Any] | None:
+        """A fix request is work for the team, not a solo answer. The Patch Agent proposes the patches."""
+        low = text.lower()
+        if not any(word in low for word in ("fix", "bug", "patch", "broken", "repair")):
+            return None
+        waiting = [t for t in self.hub.tools() if t.status in ("needs_patch", "error") or (
+            t.report and any(c.status != "pass" and c.fix for c in t.report.checks))]
+        waiting.sort(key=lambda t: (t.status not in ("needs_patch", "error"), t.name.lower()))
+        chosen, rest = waiting[:5], waiting[5:]
+        lines = ["I handed this to the team."]
+        delegated: list[str] = []
+        if not chosen:
+            lines.append("Nothing is waiting on the Patch Agent. Say `patch <tool>` to send one tool anyway.")
+            return {"reply": "\n\n".join(lines), "mode": "team", "delegated": delegated}
+        for tool in chosen:
+            try:
+                result = await self.ask("patcher", "propose", {"tool_id": tool.id}, timeout=90)
+                count = len(result.get("patches") or [])
+                lines.append(f"- **Patch Agent** — {tool.name}: "
+                             + (f"{count} patch(es) waiting in Approvals." if count else
+                                "no new patch. One may already be waiting in Approvals."))
+            except Exception as exc:
+                lines.append(f"- **Patch Agent** — {tool.name}: {exc}")
+            delegated.append(f"patcher:{tool.id}")
+        if rest:
+            lines.append(f"{len(rest)} more tools still need a look. Say `patch <name>` for one of them.")
+        return {"reply": "\n".join(lines), "mode": "team", "delegated": delegated}
 
     async def on_chat_reset(self, body: dict[str, Any], msg: Message) -> dict[str, Any]:
         async with self._chat_lock:
