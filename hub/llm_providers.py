@@ -1,5 +1,6 @@
-"""Local model providers: servers with an OpenAI-compatible API - Ollama, LM Studio, vLLM, llama.cpp's server - that
-custom agents can run on instead of Claude.
+"""Model providers with an OpenAI-compatible API that custom agents can run on instead of Claude.
+
+Local servers: Ollama, LM Studio, vLLM, llama.cpp's server. Hosted presets: ChatGPT (OpenAI) and Grok (xAI).
 
 The hub calls GET {base_url}/models to list models and POST {base_url}/chat/completions with "tools" for the agent
 loop. Checked against the vendors' documentation (October 2026): Ollama serves this API at http://localhost:11434/v1,
@@ -32,6 +33,33 @@ if TYPE_CHECKING:
 COLLECTION = "llm_providers"
 DEFAULT_BASE_URL = "http://localhost:11434/v1"
 RESERVED = {"anthropic", "rules", "claude", "local"}
+# Hosted presets. Checked against the vendors' docs in October 2026: both still serve
+# POST /v1/chat/completions and GET /v1/models. The default model is a current flagship; Test lists
+# whatever the key can actually call, and the admin can pick another.
+PRESETS: tuple[dict[str, Any], ...] = (
+    {
+        "id": "chatgpt",
+        "name": "ChatGPT",
+        "vendor": "OpenAI",
+        "base_url": "https://api.openai.com/v1",
+        "default_model": "gpt-5.6-terra",
+        "suggested_models": ["gpt-5.6-terra", "gpt-5.6-sol", "gpt-4o"],
+        "requires_key": True,
+        "tools": True,
+        "note": "OpenAI Chat Completions. Create a key at platform.openai.com.",
+    },
+    {
+        "id": "grok",
+        "name": "Grok",
+        "vendor": "xAI",
+        "base_url": "https://api.x.ai/v1",
+        "default_model": "grok-4.7",
+        "suggested_models": ["grok-4.7", "grok-4.6", "grok-4.5"],
+        "requires_key": True,
+        "tools": True,
+        "note": "xAI Chat Completions. Create a key in the xAI console.",
+    },
+)
 MAX_TURNS = 12
 MAX_RESULT = 20_000
 ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,39}$")
@@ -83,6 +111,16 @@ def _slug(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")[:40] or "local"
 
 
+def preset_by_id(preset_id: str | None) -> dict[str, Any] | None:
+    if not preset_id:
+        return None
+    return next((p for p in PRESETS if p["id"] == preset_id), None)
+
+
+def public_presets() -> list[dict[str, Any]]:
+    return [dict(p) for p in PRESETS]
+
+
 def save(hub: "Hub", provider_id: str | None, values: dict[str, Any], actor: str) -> tuple[LlmProvider, bool]:
     """Create (provider_id None) or update a provider. `api_key`: a value sets it, None or "" keeps the stored one
     - while the endpoint stays the same; `clear_api_key` removes it. Returns the provider and whether the key changed."""
@@ -90,11 +128,28 @@ def save(hub: "Hub", provider_id: str | None, values: dict[str, Any], actor: str
     if provider_id and current is None:
         raise KeyError(provider_id)
     data = current.model_dump() if current else {}
+    preset = preset_by_id(values.get("preset"))
+    if values.get("preset") and preset is None:
+        raise ValueError(f"Unknown preset '{values.get('preset')}'. Use one of: "
+                         + ", ".join(p["id"] for p in PRESETS))
     for key in ("name", "default_model", "tools", "timeout"):
         if values.get(key) is not None:
             data[key] = values[key].strip() if isinstance(values[key], str) else values[key]
-    if values.get("base_url") is not None or current is None:
-        data["base_url"] = clean_base_url(values.get("base_url") or DEFAULT_BASE_URL)
+    if current is None and preset is not None:
+        data["preset"] = preset["id"]
+        if not (data.get("name") or "").strip():
+            data["name"] = preset["name"]
+        if not (data.get("default_model") or "").strip():
+            data["default_model"] = preset["default_model"]
+        if values.get("tools") is None:
+            data["tools"] = preset["tools"]
+        if preset["requires_key"] and not values.get("api_key"):
+            raise ValueError(f"{preset['name']} needs an API key")
+    if not (data.get("name") or "").strip():
+        raise ValueError("Give the provider a name")
+    if values.get("base_url") or (current is None and not data.get("base_url")):
+        fallback = preset["base_url"] if preset is not None else DEFAULT_BASE_URL
+        data["base_url"] = clean_base_url(values.get("base_url") or data.get("base_url") or fallback)
     if current is None:
         wanted = _slug(values.get("id") or data.get("name") or "local")
         if not ID_RE.match(wanted) or wanted in RESERVED:

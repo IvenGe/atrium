@@ -188,7 +188,11 @@ class VulnerabilitySupervisor(FlowOwner):
             self._set_job(flow.id, None)
             if job.get("approval_id"):
                 self.hub.approvals.complete(job["approval_id"], False, {"job_id": job["job_id"], "status": state})
-            raise FlowFailure(f"The scan {state} in the scanner (job {job['job_id']}).")
+            detail = " ".join(str(status.get("detail") or "").split())
+            text = f"The scan {state} in the scanner (job {job['job_id']})."
+            if detail:
+                text = f"{text} {detail}"
+            raise FlowFailure(text)
         if not status.get("done"):
             job.update({"progress": status.get("progress"), "scanner_status": status.get("status")})
             self._set_job(flow.id, job)

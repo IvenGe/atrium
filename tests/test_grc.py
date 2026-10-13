@@ -2,7 +2,8 @@ import time
 
 from hub.grc.baseline import CONTROLS, CONTROLS_BY_ID, FRAMEWORKS
 from hub.grc.checks import Snapshot, evaluate_controls, framework_scores
-from hub.models import Asset, ControlState, Host, Manifest, Policy, Tool, User, Vulnerability
+from hub.integration import flows
+from hub.models import Asset, ControlState, Flow, Host, Manifest, Policy, Tool, User, Vulnerability
 
 
 def snapshot(**overrides) -> Snapshot:
@@ -145,3 +146,64 @@ def test_vulnerability_sla_control():
     assert failing.status == "fail" and "1 critical/high finding(s) past their SLA" in failing.detail
     assert vuln("critical", -1).overdue and not vuln("critical", -1, "accepted").overdue and not vuln("low", 1).overdue
     assert CONTROLS_BY_ID["HB-VM-3"].risk == ("Known critical vulnerabilities remain exploitable", 4, 5)
+
+
+def test_a_blank_requirement_status_does_not_drop_the_framework():
+    from hub.connectors.grcmodel import normalize_frameworks
+    records, errors = normalize_frameworks([{
+        "external_id": "fw", "urn": "urn:x", "name": "CRA",
+        "assessments": [{"external_id": "a1", "requirements": [
+            {"urn": "u", "ref_id": "R1", "status": None, "result": "compliant"}]}],
+    }])
+    assert errors == []
+    assert records[0]["assessments"][0]["requirements"][0]["status"] == ""
+    assert records[0]["name"] == "CRA"
+
+
+def test_the_grc_supervisor_runs_framework_flows_without_an_agent_error(client):
+    hub = client.app.state.hub
+    grc = hub.agents.get("module:grc")
+    before = grc.errors
+    hub.save_tool(Tool(id="ciso", name="CISO Assistant", source_type="saas", source="https://ciso.example",
+                       status="ready", manifest=Manifest(id="ciso", name="CISO Assistant", kind="saas")))
+
+    async def pull_records(flow, since=None):
+        return [{
+            "external_id": "fw-cra", "urn": "urn:example:risk:framework:cra", "ref_id": "CRA",
+            "name": "Cyber Resilience Act", "description": "Imported", "provider": "EU",
+            "requirements": [], "assessments": [],
+        }], {"dropped": 0, "errors": []}
+
+    grc.pull_records = pull_records
+    pull = flows.save(hub, Flow(id="flow_fw", domain="frameworks", source="tool:ciso", target="hub", status="enabled",
+                                title="Pull frameworks from CISO Assistant"))
+    result = client.post(f"/api/flows/{pull.id}/run").json()
+    assert result["ok"] is True, result
+    assert result["counts"]["created"] == 1
+    docs = hub.store.list("external_frameworks")
+    assert len(docs) == 1 and docs[0]["name"] == "Cyber Resilience Act" and docs[0]["tool_id"] == "ciso"
+    assert grc.errors == before
+
+    created = client.post("/api/frameworks/cyfun2025/assessments", json={"name": "Q4", "target_level": "B"})
+    assert created.status_code == 201, created.text
+    sent = []
+
+    async def push_records(flow, records, label=None):
+        sent.extend(records)
+        return {"total": len(records), "created": len(records), "updated": 0, "skipped": 0, "failed": 0}
+
+    grc.push_records = push_records
+    push = flows.save(hub, Flow(id="flow_as", domain="assessments", source="hub", target="tool:ciso", status="enabled",
+                                title="Push assessments to CISO Assistant"))
+    pushed = client.post(f"/api/flows/{push.id}/run").json()
+    assert pushed["ok"] is True, pushed
+    assert pushed["counts"]["created"] == 1
+    assert sent and sent[0]["framework"] == "cyfun2025" and sent[0]["name"].startswith("Atrium:")
+    assert grc.errors == before
+
+    wrong = flows.save(hub, Flow(id="flow_bad", domain="frameworks", source="hub", target="tool:ciso", status="enabled",
+                                 title="Push frameworks the wrong way"))
+    refused = client.post(f"/api/flows/{wrong.id}/run").json()
+    assert refused["ok"] is False
+    assert "cannot push frameworks" in refused["error"]["message"]
+    assert grc.errors == before

@@ -372,12 +372,13 @@ class AgentDef(BaseModel):
 
 
 class LlmProvider(BaseModel):
-    """A local model server with an OpenAI-compatible API (Ollama, LM Studio, vLLM, llama.cpp server).
+    """An OpenAI-compatible model API: a local server, or a hosted preset (ChatGPT, Grok).
     Stored in "llm_providers"; the API key is Fernet-encrypted and never returned."""
 
     id: str
     name: str = Field(min_length=1, max_length=80)
     kind: Literal["openai_compatible"] = "openai_compatible"
+    preset: str | None = None  # "chatgpt" or "grok" when added from a hosted preset
     base_url: str
     default_model: str = Field("", max_length=200)
     api_key: str | None = None  # Fernet token

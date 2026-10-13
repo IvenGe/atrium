@@ -54,6 +54,13 @@ class CommandBody(BaseModel):
 
 class ChatBody(BaseModel):
     text: str
+    client_id: str | None = Field(None, max_length=80, pattern=r"^[A-Za-z0-9_-]+$")
+
+
+class StopBody(BaseModel):
+    """The same client_id as the chat this button belongs to, so an early Stop cannot cancel the next message."""
+
+    client_id: str | None = Field(None, max_length=80, pattern=r"^[A-Za-z0-9_-]+$")
 
 
 class AgentPatch(BaseModel):
@@ -103,8 +110,9 @@ class TeamRequest(BaseModel):
 
 class ProviderCreate(BaseModel):
     name: str = Field(min_length=1, max_length=80)
+    preset: str | None = Field(None, max_length=40)  # "chatgpt" or "grok": fills the base URL and default model
     id: str | None = Field(None, max_length=40)
-    base_url: str = Field(llm_providers.DEFAULT_BASE_URL, max_length=500)
+    base_url: str | None = Field(None, max_length=500)
     default_model: str = Field("", max_length=200)
     api_key: str | None = Field(None, max_length=4096)
     tools: bool = True
@@ -123,7 +131,8 @@ class ProviderPatch(BaseModel):
 
 class SettingsPatch(BaseModel):
     autonomy: Literal["manual", "assisted", "autonomous"] | None = None
-    model: str | None = None
+    model: str | None = Field(None, max_length=200)
+    model_provider: str | None = Field(None, max_length=40)  # anthropic, rules, or a configured provider id
     vuln_sla_days: SlaDays | None = None  # days to fix a finding, per severity (merged into the current values)
     guardrails: dict[str, bool | int] | None = None  # see hub/guardrails.py (also PATCH /api/settings/guardrails)
 
@@ -313,6 +322,7 @@ def build_router(hub: Hub) -> APIRouter:
             "extension_domains": len(ext_registry.active_domains(hub)),
             "restart_required": hub.restart_required is not None,
             "llm": hub.llm.status(),
+            "model": teams.suite_model(hub),
             "autonomy": hub.prefs["autonomy"],
         }
 
@@ -769,25 +779,40 @@ def build_router(hub: Hub) -> APIRouter:
         await teams.remove(hub, agent_id, p.actor)
         return {"ok": True}
 
-    @router.post("/agents/{agent_id}/chat")
-    async def chat_with_agent(agent_id: str, body: ChatBody, p: CurrentPrincipal) -> dict[str, Any]:
-        """Chat with the Hub Supervisor or any team agent (Claude, a local model, or rules)."""
+    def chat_agent(agent_id: str):
         agent = agent_or_404(agent_id)
-        if agent_id != "supervisor" and agent.kind != "custom":
-            raise HTTPException(400, f"{agent.name} does not chat - chat with the Hub Supervisor or a team agent")
-        if agent.paused:
-            raise HTTPException(409, f"{agent.name} is {'disabled' if agent.kind == 'custom' else 'paused'}")
-        if not body.text.strip():
-            raise HTTPException(400, "Say something")
-        return {**await ask(p, agent_id, "chat", {"text": body.text}, timeout=900), "agent_id": agent_id}
-
-    @router.post("/agents/{agent_id}/chat/reset")
-    async def reset_agent_chat(agent_id: str, p: CurrentPrincipal) -> dict[str, Any]:
-        agent = agent_or_404(agent_id)
-        if agent_id != "supervisor" and agent.kind != "custom":
+        if not agent.record().get("chats", True):
             raise HTTPException(400, f"{agent.name} does not chat")
         if agent.paused:
             raise HTTPException(409, f"{agent.name} is {'disabled' if agent.kind == 'custom' else 'paused'}")
+        return agent
+
+    @router.post("/agents/{agent_id}/chat")
+    async def chat_with_agent(agent_id: str, body: ChatBody, p: CurrentPrincipal) -> dict[str, Any]:
+        """Chat with the Hub Supervisor, a specialist, a tool supervisor, or a team agent."""
+        agent = chat_agent(agent_id)
+        if not body.text.strip():
+            raise HTTPException(400, "Say something")
+        payload: dict[str, Any] = {"text": body.text}
+        if body.client_id:
+            payload["client_id"] = body.client_id
+        try:
+            return {**await ask(p, agent_id, "chat", payload, timeout=900), "agent_id": agent_id}
+        except asyncio.CancelledError:
+            agent.cancel_chat(body.client_id)
+            raise
+
+    @router.post("/agents/{agent_id}/chat/stop")
+    async def stop_agent_chat(agent_id: str, p: CurrentPrincipal, body: StopBody | None = None) -> dict[str, Any]:
+        """Stop the chat this agent is answering, so the person can send something else."""
+        agent = chat_agent(agent_id)
+        client_id = body.client_id if body else None
+        return {"ok": True, "stopped": await agent.cancel_chat_wait(client_id)}
+
+    @router.post("/agents/{agent_id}/chat/reset")
+    async def reset_agent_chat(agent_id: str, p: CurrentPrincipal) -> dict[str, Any]:
+        agent = chat_agent(agent_id)
+        await agent.cancel_chat_wait()
         return await ask(p, agent_id, "chat.reset")
 
     @router.post("/agents/{agent_id}/run")
@@ -1257,6 +1282,17 @@ def build_router(hub: Hub) -> APIRouter:
                 raise HTTPException(400, "SLA days must be between 1 and 3650")
             values["vuln_sla_days"] = {**hub.prefs["vuln_sla_days"], **body.vuln_sla_days}
         try:
+            if body.model_provider is not None:
+                try:
+                    teams.check_provider(hub, body.model_provider)
+                except ValueError as exc:
+                    preset = llm_providers.preset_by_id(body.model_provider)
+                    if preset is not None:
+                        raise ValueError(f"Add {preset['name']} under AI providers and store an API key before "
+                                         "choosing it") from exc
+                    raise
+                if body.model_provider == "anthropic" and body.model is not None and not body.model.strip():
+                    raise ValueError("Choose a Claude model")
             if body.guardrails:
                 guardrails.validate(body.guardrails)  # nothing is stored when any value is invalid
             if any(v is not None for v in values.values()):
@@ -1297,6 +1333,7 @@ def build_router(hub: Hub) -> APIRouter:
     def providers_view() -> dict[str, Any]:
         return {"providers": [llm_providers.public(x) for x in llm_providers.all_providers(hub)],
                 "choices": teams.provider_choices(hub), "anthropic": hub.llm.status(),
+                "presets": llm_providers.public_presets(),
                 "default_base_url": llm_providers.DEFAULT_BASE_URL, "kinds": ["openai_compatible"]}
 
     @router.get("/llm/providers")
@@ -1310,7 +1347,8 @@ def build_router(hub: Hub) -> APIRouter:
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
         key = "; API key set" if provider.api_key else ""
-        hub.activity(p.actor, "info", f"Added the local model provider {provider.name} ({provider.base_url}){key}",
+        kind = f"{provider.preset} " if provider.preset else "local "
+        hub.activity(p.actor, "info", f"Added the {kind}model provider {provider.name} ({provider.base_url}){key}",
                      provider_id=provider.id)
         return llm_providers.public(provider)
 

@@ -106,6 +106,10 @@ class CustomAgent(BaseAgent):
             except Exception:
                 del self._history[before:]  # never keep half a turn
                 raise
+        if msg.sender != "supervisor":
+            await self.tell("supervisor", "team.report", {
+                "agent_id": self.id, "agent": self.name, "text": text[:500], "reply": reply[:2000], "mode": mode,
+            })
         return {"reply": reply, "mode": mode, "agent_id": self.id}
 
     async def on_chat_reset(self, body: dict[str, Any], msg: Message) -> dict[str, Any]:

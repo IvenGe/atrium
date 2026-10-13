@@ -18,16 +18,21 @@ from ..integration.analyzer import analyze_repo, analyze_saas, list_files, readm
 from ..models import AGENT_PERMISSIONS, Manifest, Tool
 from . import teams
 from .base import BaseAgent
+from .patcher import describe_patches
+from .repair import requester_of
 
 PUSH_ACTIONS = ("created", "updated", "skipped", "failed")
 
 
 def _side_effect_allowed(sender: str, name: str) -> bool:
     """A person may start a side-effecting action. A scan is started only by the Vulnerability Supervisor,
-    which is the scan approval path. Every other agent is refused."""
+    which is the scan approval path. Pointing a scanner at its local socket is the Patch Agent's repair.
+    Every other agent is refused."""
     if sender.startswith("user:"):
         return True
-    return name == "scan" and sender == "module:vulns"
+    if name == "scan" and sender == "module:vulns":
+        return True
+    return name == "retarget_scanner" and sender == "patcher"
 
 
 def guardrails_on(hub) -> bool:
@@ -83,6 +88,61 @@ class ToolSupervisor(BaseAgent):
         if tool is None:
             raise ValueError(f"Tool {self.tool_id} no longer exists")
         return tool
+
+    async def direct_chat(self, text: str, msg: Message) -> dict[str, Any]:
+        """A person talking to this tool's supervisor. Changes go to the Operator or the Patch Agent, then up."""
+        tool = self._tool()
+        low = text.lower().strip()
+        if not low or low in ("help", "?", "hi", "hello"):
+            return {"reply": (f"I am the supervisor of **{tool.name}**. Say `health`, `status`, `start`, `stop`, or `fix`. "
+                              "I report what I find to the Hub Supervisor."), "mode": "rules"}
+        if low in ("status", "describe", "report", "overview"):
+            error = tool.error
+            return {"reply": f"**{tool.name}** is {tool.status}." + (f" Error: {error}" if error else " No error."),
+                    "mode": "rules"}
+        if low == "health":
+            health = await self.on_health({}, msg)
+            detail = health.get("detail") or "checked"
+            reply = f"**{tool.name}**: {detail}"
+            if health.get("ok") is False or tool.error:
+                asked = await self._ask_patcher(tool, str(tool.error or detail), msg)
+                reply += "\n\n" + asked
+            return {"reply": reply, "mode": "team" if health.get("ok") is False or tool.error else "rules",
+                    "delegated": [f"patcher:{tool.id}"] if health.get("ok") is False or tool.error else []}
+        if low in ("start", "stop"):
+            result = await (self.on_start if low == "start" else self.on_stop)({}, msg)
+            return {"reply": f"{low.capitalize()} **{tool.name}**: {result.get('status', result)}", "mode": "rules",
+                    "delegated": ["operator"]}
+        if any(word in low for word in ("fix", "error", "patch", "repair", "broken", "bug")):
+            note = tool.error or (str((tool.health or {}).get("detail")) if (tool.health or {}).get("ok") is False else "")
+            return {"reply": await self._ask_patcher(tool, note, msg), "mode": "team",
+                    "delegated": [f"patcher:{tool.id}"]}
+        return {"reply": f"Say `health`, `status`, `start`, `stop`, or `fix` for **{tool.name}**.", "mode": "rules"}
+
+    async def _ask_patcher(self, tool: Tool, error: str, msg: Message) -> str:
+        repair = await self.ask("patcher", "repair",
+                                {"tool_id": tool.id, "error": error, "origin": requester_of(msg)}, timeout=300)
+        if repair.get("fixed"):
+            return str(repair.get("detail") or f"**{tool.name}** is up. The error is fixed.")
+        if repair.get("status") == "not_runtime":
+            fresh = self._tool()
+            if fresh.status not in ("error", "needs_patch") and not fresh.error and (fresh.health or {}).get("ok") is not False:
+                return f"**{fresh.name}** is up. There is no error to fix."
+        result = await self.ask("patcher", "propose", {"tool_id": tool.id, "error": error}, timeout=90)
+        outcome = describe_patches(self.hub, result.get("patches") or [])
+        detail = str(repair.get("detail") or "").strip()
+        if repair.get("status") == "not_runtime":
+            detail = ""
+        if outcome.startswith("no new patch"):
+            if detail:
+                return f"The Patch Agent could not bring **{tool.name}** up. {detail}"
+            fresh = self._tool()
+            if fresh.status not in ("error", "needs_patch") and not fresh.error:
+                return f"**{fresh.name}** is up. There is no error to fix."
+            return f"The Patch Agent has nothing new for **{tool.name}**. One may already be waiting in Approvals."
+        if detail:
+            return f"I asked the Patch Agent to patch **{tool.name}**: {outcome} {detail}"
+        return f"I asked the Patch Agent to patch **{tool.name}**: {outcome}"
 
     # -- requests --------------------------------------------------------------------
 

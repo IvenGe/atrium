@@ -13,7 +13,7 @@ import httpx
 import yaml
 
 from .. import connectors, guardrails
-from ..bus import Message
+from ..bus import AgentError, Message
 from ..connectors import base as connector_sdk
 from ..connectors import generic_rest
 from ..connectors.base import ConnectorError, endpoint_of
@@ -24,10 +24,13 @@ from ..extensions import selfpatch
 from ..integration import connections, flows, identity
 from ..integration.analyzer import list_files
 from ..integration.identity import SSO_STRATEGIES
-from ..integration.patches import apply_patch, attach_sso, plan_patch, safe_relative, selected_provider, sso_code_goal
+from ..integration.patches import (
+    apply_patch, attach_sso, plan_error_repair, plan_patch, safe_relative, selected_provider, sso_code_goal,
+)
 from ..models import FileChange, Flow, Patch, Tool
 from ..store import new_id
 from .base import BaseAgent
+from .repair import fix_down_tool, requester_of
 
 MAX_SPEC = 5_000_000
 SPEC_PROMPT_CHARS = 60_000
@@ -96,6 +99,28 @@ PATCH_SCHEMA = {
 }
 
 
+def _scanner_failure(message: str, status: Any) -> bool:
+    """A scan that died in the scanner, not a refused login or a missing asset."""
+    low = message.lower()
+    if "in the scanner" in low:
+        return True
+    return status == 503 and "scanner" in low
+
+
+def _scanner_host_change(suggestion: dict[str, Any]) -> dict[str, str] | None:
+    """The only scanner change a repair may propose: one local socket path replaced by another."""
+    host = str(suggestion.get("host") or "")
+    previous = str(suggestion.get("previous") or "")
+    scanner_id = str(suggestion.get("scanner_id") or "")
+    if not host.startswith("/") or not previous.startswith("/") or ".." in f"{host}/{previous}".split("/"):
+        return None
+    if any(c in host + previous for c in "\x00\n\r\t <>"):
+        return None
+    if len(scanner_id) < 32 or any(c not in "0123456789abcdefABCDEF-" for c in scanner_id):
+        return None
+    return {"kind": "scanner_socket", "scanner_id": scanner_id, "host": host, "previous": previous}
+
+
 class PatchAgent(BaseAgent):
     role = "patcher"
     title = "Patch Agent"
@@ -129,10 +154,20 @@ class PatchAgent(BaseAgent):
         tool = self._tool(body.get("tool_id"))
         async with self._lock(tool.id):
             tool = self._tool(tool.id)
-            fixes = body.get("fixes") or [c.fix for c in (tool.report.checks if tool.report else []) if c.fix and c.status != "pass"]
+            fixes = list(body.get("fixes") or [c.fix for c in (tool.report.checks if tool.report else []) if c.fix and c.status != "pass"])
             others = [t for t in self.hub.tools() if t.id != tool.id]
             existing = {p.strategy for p in self.hub.patches(tool.id) if p.status in ("proposed", "applied")}
             created: list[Patch] = []
+            error_text = str(body.get("error") or tool.error or "").strip()
+            health_down = (tool.health or {}).get("ok") is False
+            if (error_text or tool.status == "error" or health_down) and "error_repair" not in existing:
+                repair = plan_error_repair(
+                    tool, error_text or str((tool.health or {}).get("detail") or ""), hub_url=self.hub_url)
+                if repair is not None:
+                    created.append(await self._submit(tool, repair, msg.sender))
+                    existing.add("error_repair")
+                    if any(change.path == "health.yaml" for change in repair.changes):
+                        fixes = [fix for fix in fixes if fix not in ("health_probe", "health_endpoint")]
             for fix in dict.fromkeys(fixes):
                 if fix in SSO_STRATEGIES:
                     patch = await self._sso_patch(tool, others, fix)
@@ -152,6 +187,52 @@ class PatchAgent(BaseAgent):
         if created:
             self.log("info", f"Proposed {len(created)} patch(es) for {tool.name}: " + "; ".join(p.title for p in created))
         return {"patches": [p.id for p in created]}
+
+    async def on_repair(self, body: dict[str, Any], msg: Message) -> dict[str, Any]:
+        """Start a tool that is down and clear its error once the health check passes."""
+        tool = self._tool(body.get("tool_id"))
+        async with self._lock(tool.id):
+            tool = self._tool(tool.id)
+            error = str(body.get("error") or tool.error or "")
+            return await fix_down_tool(self, tool, error, requester_of(msg, body))
+
+    async def direct_chat(self, text: str, msg: Message) -> dict[str, Any]:
+        """A person talking to the Patch Agent: start a tool that is down, and patch what cannot be started."""
+        low = text.lower().strip()
+        if not low or low in ("help", "?", "hi", "hello"):
+            return {"reply": ("I am the **Patch Agent**. Say `patch <tool>` or `fix errors`. "
+                              "If a tool is down, I start it and clear the error once it answers. "
+                              "I report the result to the Hub Supervisor."),
+                    "mode": "rules"}
+        named = [t for t in self.hub.tools() if t.id in low or t.name.lower() in low]
+        if not named and any(word in low for word in ("error", "fix", "bug", "patch", "broken", "repair", "fail")):
+            named = [t for t in self.hub.tools() if t.status in ("error", "needs_patch") or t.error
+                     or (t.health or {}).get("ok") is False]
+            named.sort(key=lambda t: (t.status not in ("error", "needs_patch"), t.name.lower()))
+        named = named[:5]
+        if not named:
+            return {"reply": "Name the tool to patch, or say `fix errors`.", "mode": "rules"}
+        lines = ["I am fixing this and I will report it to the Hub Supervisor."]
+        delegated: list[str] = []
+        for tool in named:
+            repair = await self.on_repair({"tool_id": tool.id, "error": tool.error or "", "origin": msg.sender}, msg)
+            delegated.append(f"patcher:{tool.id}")
+            if repair.get("fixed"):
+                lines.append(f"- **{tool.name}**: {repair.get('detail')}")
+                continue
+            healthy = (repair.get("status") == "not_runtime" and tool.status not in ("error", "needs_patch")
+                       and not tool.error and (tool.health or {}).get("ok") is not False)
+            if healthy and any(word in low for word in ("error", "broken", "fail", "down", "refused")):
+                lines.append(f"- **{tool.name}**: it is up. There is no error to fix.")
+                continue
+            result = await self.on_propose({"tool_id": tool.id, "error": tool.error or ""}, msg)
+            outcome = describe_patches(self.hub, result.get("patches") or [])
+            detail = str(repair.get("detail") or "").strip()
+            if detail and repair.get("status") != "not_runtime":
+                lines.append(f"- **{tool.name}**: {detail} {outcome}")
+            else:
+                lines.append(f"- **{tool.name}**: {outcome}")
+        return {"reply": "\n".join(lines), "mode": "rules", "delegated": delegated}
 
     async def on_sso_plan(self, body: dict[str, Any], msg: Message) -> dict[str, Any]:
         """(Re)plan single sign-on for one tool after its provider choice, the suite default or the providers changed.
@@ -301,6 +382,10 @@ class PatchAgent(BaseAgent):
         status, message = error.get("status"), str(error.get("message") or "the flow failed")
         excerpt = error.get("excerpt") or ""
         title = f"Repair: {flow.title}"
+        if flow.direction == "scan" and _scanner_failure(message, status):
+            scanned = await self._scan_repair(flow, tool, message)
+            if scanned is not None:
+                return scanned
         if status in (401, 403):
             return {"diagnosis": "credentials", "title": title, "change": None, "detail": (
                 f"{tool.name} refused the hub's credentials ({message}). An administrator should check the API token "
@@ -334,13 +419,54 @@ class PatchAgent(BaseAgent):
         return {"diagnosis": "unknown", "title": title, "change": None,
                 "detail": f"{tool.name} answered: {message}" + (f"\n\n{excerpt}" if excerpt else "")}
 
+    async def _scan_repair(self, flow: Flow, tool: Tool, message: str) -> dict[str, Any] | None:
+        """A scan that stopped inside the scanner. A missing local socket is a real change; the tool being up is
+        not an 'unreachable' retry."""
+        checked = await self._scanner_check(tool)
+        if checked is None:
+            return None
+        title = f"Repair: {flow.title}"
+        suggestion = checked.get("suggestion") if isinstance(checked.get("suggestion"), dict) else None
+        change = _scanner_host_change(suggestion) if suggestion else None
+        if change:
+            previous, host = change["previous"], change["host"]
+            where = f" at {previous}" if previous else ""
+            return {"diagnosis": "scanner", "title": title, "change": change,
+                    "diff": f"- socket: {previous}\n+ socket: {host}\n",
+                    "detail": f"{tool.name} interrupted the scan because it could not reach its scanner{where}. "
+                              f"The scanner is listening on {host}. Greenbone will not store a socket path, so the "
+                              f"missing name is linked to that socket. Approve to create the link and run the scan again."}
+        reason = str(checked.get("message") or message).strip()
+        where = str(checked.get("host") or "").strip()
+        where_text = f" The scanner record points at {where}." if where else ""
+        if checked.get("online") is False:
+            detail = (f"The scan stopped inside {tool.name}, which answered. {reason}.{where_text} "
+                      "The web interface can be up while the scanner is not. Start the scanner (and its broker if "
+                      "the scanner log says the broker refused the connection), then approve to run the scan again.")
+        else:
+            detail = (f"The scan stopped inside {tool.name}: {message}. The scanner answers a check, so this is not "
+                      "a connection failure. Approve to run the scan again once the cause in the scanner is fixed.")
+        return {"diagnosis": "scanner", "title": title, "change": None, "detail": detail}
+
+    async def _scanner_check(self, tool: Tool) -> dict[str, Any] | None:
+        try:
+            reply = await self.ask(f"tool:{tool.id}", "connector.action",
+                                   {"name": "scanner_check", "params": {}}, timeout=90)
+        except AgentError:
+            return None
+        if reply.get("failure") or not isinstance(reply.get("result"), dict):
+            return None
+        return reply["result"]
+
     async def _submit_repair(self, tool: Tool, proposal: dict[str, Any], flow: Flow | None,
                              error: dict[str, Any]) -> dict[str, Any]:
         conn = connections.get(self.hub, tool.id)
         change = proposal.get("change")
+        diff = str(proposal.get("diff") or "")
+        if not diff and change and isinstance(change.get("config"), dict) and conn and conn.kind == change.get("kind"):
+            diff = config_diff(conn.config, change["config"])
         payload = {"flow_id": flow.id if flow else None, "tool_id": tool.id, "diagnosis": proposal["diagnosis"],
-                   "change": change, "diff": config_diff(conn.config if conn and change and conn.kind == change["kind"] else {},
-                                                         change["config"]) if change else "",
+                   "change": change, "diff": diff,
                    "tried": proposal.get("tried", []), "error": {"message": error.get("message"), "status": error.get("status")}}
         if change and self.hub.prefs["autonomy"] == "autonomous":
             approval = self.hub.approvals.create("repair", proposal["title"], proposal["detail"], payload, self.id)
@@ -362,7 +488,20 @@ class PatchAgent(BaseAgent):
         payload = approval.payload
         flow = flows.get(self.hub, payload.get("flow_id") or "")
         change = payload.get("change")
-        if approved and change:
+        if approved and change and change.get("kind") == "scanner_socket":
+            try:
+                reply = await self.ask(f"tool:{payload['tool_id']}", "connector.action", {
+                    "name": "retarget_scanner",
+                    "params": {"scanner_id": change.get("scanner_id"), "host": change.get("host")},
+                }, timeout=90)
+                failure = reply.get("failure")
+                if failure:
+                    raise ConnectorError(failure.get("message") or "the scanner could not be pointed at its socket")
+            except (AgentError, ConnectorError, ValueError) as exc:
+                self.hub.approvals.complete(approval.id, False, {"error": getattr(exc, "message", None) or str(exc)})
+                self.log("warn", f"Could not apply '{approval.title}': {exc}")
+                approved = False
+        elif approved and change:
             try:
                 connections.update_config(self.hub, payload["tool_id"], change["config"], f"{actor} (repair)",
                                           kind=change["kind"], generated=change.get("generated"))
@@ -371,7 +510,10 @@ class PatchAgent(BaseAgent):
                 self.log("warn", f"Could not apply '{approval.title}': {exc}")
                 approved = False  # nothing changed: the flow keeps its state, and a later repair may be proposed
         if approved:
-            self.hub.approvals.complete(approval.id, True, {"applied": bool(change)})
+            result = {"applied": bool(change)}
+            if change and change.get("kind") == "scanner_socket" and change.get("host"):
+                result["socket"] = change["host"]
+            self.hub.approvals.complete(approval.id, True, result)
         if flow is not None:
             flow.repair, flow.failures = None, 0
             flows.save(self.hub, flow)
@@ -734,6 +876,20 @@ async def load_openapi(tool: Tool) -> tuple[str, str | None]:
     known = (m.api.base_url if m and m.api.base_url else None) or (servers[0] if servers else None) \
         or (tool.source if tool.source_type == "saas" else None)
     return json.dumps(_condense(doc), default=str)[:SPEC_PROMPT_CHARS], known
+
+
+def describe_patches(hub, patch_ids: list[str]) -> str:
+    """What happened to the patches just proposed: applied now, or waiting for a person."""
+    patches = [hub.get_patch(pid) for pid in patch_ids]
+    applied = sum(1 for patch in patches if patch and patch.status == "applied")
+    waiting = sum(1 for patch in patches if patch and patch.status == "proposed")
+    if applied and not waiting:
+        return f"{applied} patch(es) applied."
+    if waiting and not applied:
+        return f"{waiting} patch(es) waiting in Approvals."
+    if applied or waiting:
+        return f"{applied} applied, {waiting} waiting in Approvals."
+    return "no new patch. One may already be waiting in Approvals."
 
 
 def render_diff(tool: Tool, patch: Patch) -> str:

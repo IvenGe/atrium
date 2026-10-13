@@ -224,6 +224,20 @@ def provider_kind(provider: str) -> str:
     return provider if provider in ("anthropic", "rules") else "local"
 
 
+def saved_provider(hub: "Hub") -> str | None:
+    """The provider an administrator chose in Settings, or None when they have not chosen one."""
+    stored = (hub.store.get("settings", "prefs") or {}).get("values", {})
+    value = str(stored.get("model_provider") or "").strip()
+    return value or None
+
+
+def claude_model(hub: "Hub") -> str:
+    """The Claude model core agents call. The Settings model belongs to whichever provider is selected."""
+    if saved_provider(hub) in (None, "anthropic"):
+        return hub.prefs["model"]
+    return hub.settings.model
+
+
 def check_provider(hub: "Hub", provider: str) -> str:
     provider = (provider or "").strip()
     if provider in ("anthropic", "rules") or llm_providers.get(hub, provider) is not None:
@@ -232,19 +246,51 @@ def check_provider(hub: "Hub", provider: str) -> str:
 
 
 def default_provider(hub: "Hub") -> str:
-    """Claude when it is available, else the first local provider, else rules."""
+    """The provider chosen in Settings, else Claude when it is available, else the first configured provider, else rules."""
+    chosen = saved_provider(hub)
+    if chosen == "rules":
+        return "rules"
+    if chosen == "anthropic":
+        return "anthropic"
+    if chosen and llm_providers.get(hub, chosen) is not None:
+        return chosen
     if hub.llm.available:
         return "anthropic"
     local = next((p for p in llm_providers.all_providers(hub) if p.default_model), None)
     return local.id if local else "rules"
 
 
+def suite_model(hub: "Hub") -> dict[str, Any]:
+    """The model the suite is using, for the home page. Plain-language planning follows ChatGPT, Grok or a local
+    provider once it is selected and usable. Claude is a separate path, and only Claude writes code patches."""
+    provider_id = default_provider(hub)
+    claude = hub.llm.available
+    if provider_id == "rules":
+        return {"provider": "rules", "label": "Rules", "model": "", "plain_language": False, "code_patches": claude,
+                "key_set": False}
+    if provider_id == "anthropic":
+        return {"provider": "anthropic", "label": "Claude", "model": claude_model(hub), "plain_language": claude,
+                "code_patches": claude, "key_set": claude}
+    provider = llm_providers.get(hub, provider_id)
+    preset = llm_providers.preset_by_id(provider.preset if provider and provider.preset else None)
+    needs_key = bool(preset and preset.get("requires_key"))
+    key_set = bool(provider and provider.api_key)
+    usable = provider is not None and (key_set or not needs_key)
+    model = ""
+    if provider is not None:
+        chosen_model = hub.prefs.get("model") if saved_provider(hub) == provider.id else ""
+        model = chosen_model or provider.default_model
+    return {"provider": provider_id, "label": provider.name if provider else provider_id, "model": model,
+            "plain_language": usable, "code_patches": claude, "key_set": key_set}
+
+
 def provider_choices(hub: "Hub") -> list[dict[str, Any]]:
     out = [{"id": "anthropic", "label": "Claude", "kind": "anthropic", "available": hub.llm.available,
-            "default_model": hub.prefs["model"], "models": []},
+            "default_model": claude_model(hub), "models": []},
            {"id": "rules", "label": "Rules", "kind": "rules", "available": True, "default_model": "", "models": []}]
     for p in llm_providers.all_providers(hub):
-        out.append({"id": p.id, "label": p.name, "kind": "local", "available": bool(p.last_test and p.last_test.get("ok")),
+        out.append({"id": p.id, "label": p.name, "kind": "hosted" if p.preset else "local",
+                    "available": bool(p.last_test and p.last_test.get("ok")),
                     "default_model": p.default_model, "models": p.models})
     return out
 
@@ -253,6 +299,8 @@ def model_of(hub: "Hub", defn: AgentDef) -> str:
     if defn.model:
         return defn.model
     if defn.provider == "anthropic":
+        return claude_model(hub)
+    if saved_provider(hub) == defn.provider and hub.prefs.get("model"):
         return hub.prefs["model"]
     provider = llm_providers.get(hub, defn.provider)
     return provider.default_model if provider else ""

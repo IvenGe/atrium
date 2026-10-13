@@ -32,7 +32,7 @@ and an optional schedule with a standing task. They are data, not code (collecti
 | `id` | `agent:<slug>` |
 | `name`, `title`, `description` | who it is; the title is its role |
 | `instructions` | its system prompt |
-| `provider` | `anthropic` (Claude), the id of a [local model provider](#local-models), or `rules`. Default: Claude when it is available, else the first local provider with a default model, else rules |
+| `provider` | `anthropic` (Claude), the id of a [ChatGPT, Grok or local provider](#local-and-hosted-models), or `rules`. Default: Claude when it is available, else the first provider with a default model, else rules |
 | `model` | empty: the provider's default model |
 | `permissions` | a subset of the [permissions](#permissions) below (default `read`) |
 | `team`, `parent`, `depth` | see [Teams](#teams) |
@@ -40,13 +40,19 @@ and an optional schedule with a standing task. They are data, not code (collecti
 | `enabled` | a disabled agent is paused |
 
 **Agents page** (admins): **New agent**, **Edit** and **Remove** (with confirmation). Each team agent shows a provider
-badge (Claude, "Local: <provider>", or Rules, amber when that provider cannot be used), its model, effective
+badge (Claude, the provider's name, or Rules, amber when that provider cannot be used), its model, effective
 permissions, a "not granted" badge for permissions its parent lacks, the schedule, the next and the last run. Viewers
 and operators get a read-only details view.
 
-Operators **chat** with any team agent (the chat panel has an agent selector; each agent keeps its own conversation)
-and **run** its standing task now, optionally with a one-off task. A reply says whether it came from a model (`llm`),
-a local model (`local`) or rules (`rules`).
+Operators **chat** with any agent (the Hub Supervisor, the Patch Agent, the Operator, a module supervisor, a tool
+supervisor, or a team agent). The chat panel has an agent selector and each agent keeps its own conversation. A
+specialist does the work and reports it to the Hub Supervisor. With ChatGPT, Grok or a local model selected, a
+maintenance request (a plan, a fix, a patch, or assembling AI teams) comes back as a cycle: the model writes the
+plan, the supervisor dispatches each item, and the chat shows the handoff and that agent's report. **Stop** ends
+the request that is running, and a new instruction stops it too. **New conversation** starts again. A down tool
+(connection refused, a failed health check, or a stored error) is started, and the error is cleared once the check
+passes. **Run** starts a team agent's standing task now, optionally with a one-off task.
+A reply says whether it came from a model (`llm`), a local model (`local`), the team (`team`) or rules (`rules`).
 
 | Endpoint | Role | Purpose |
 | --- | --- | --- |
@@ -55,7 +61,8 @@ a local model (`local`) or rules (`rules`).
 | `POST /api/agents` | admin | create a team agent; the answer lists permissions that were not granted (`clamped`) |
 | `PATCH /api/agents/{id}` | admin | team agents: any field; core agents: only `paused`, `model`, `instructions` |
 | `DELETE /api/agents/{id}` | admin | remove a team agent (its members move to its parent; its pending proposals are withdrawn) |
-| `POST /api/agents/{id}/chat` | operator | `{text}`; the Hub Supervisor or a team agent |
+| `POST /api/agents/{id}/chat` | operator | `{text, client_id?}` to any agent that chats |
+| `POST /api/agents/{id}/chat/stop` | operator | stop the chat in progress (`{client_id}` matches the message) |
 | `POST /api/agents/{id}/chat/reset` | operator | start a new conversation |
 | `POST /api/agents/{id}/run` | operator | `{task?}`: run the standing task (or a one-off task) now |
 
@@ -89,7 +96,7 @@ Patch Agent's approval flow and scans through the Vulnerability Supervisor, alwa
 | `flows` | `run_flow`, `plan_flows`, `request_scan` |
 | `assets_write` | `update_asset`, `set_scan_scope`, `sync_assets` |
 | `grc_write` | `create_risk`, `update_risk`, `update_vulnerability`, `evaluate_controls` |
-| `agents` | `propose_team`, `create_team_member` |
+| `agents` | `ask_agent`, `propose_team`, `create_team_member` |
 
 The Hub Supervisor's chat gets every tool. The Claude loop goes through `hub.llm.create`, so the default model
 (`claude-opus-5-5`) and the hub's request options apply.
@@ -154,16 +161,43 @@ how it was designed, the rationale, and who asked). Only administrators decide i
 (operators may ask for one). Approving it creates the members, checked against the guardrails
 as they are then. In autonomous mode, or with `team_requires_approval` off, the members are created at once.
 
-## Local models
+## Local and hosted models
 
 Team agents can run on any server with an OpenAI-compatible API (`hub/llm_providers.py`, collection
-`llm_providers`). Add one under **Settings > AI providers** (admin): name, base URL (default
-`http://localhost:11434/v1`, Ollama's), default model, optional API key, tool calling on or off, timeout (default 300
-seconds). **Test** lists the server's models (`GET {base_url}/models`); the agent loop sends
-`POST {base_url}/chat/completions` with `tools` (at most 12 turns) and never `tool_choice`.
+`llm_providers`). Add one under **Settings > AI providers** (admin).
+
+The default is chosen under **Settings > AI model**: Claude, ChatGPT, Grok, a local provider, or rules, plus the
+model name. New team agents use that provider. The Hub Supervisor's chat uses it too, and the chat badge names that
+provider. With that model selected, a maintenance request is a cycle. The model returns a JSON plan (agent, goal,
+priority). The supervisor dispatches up to six items and the chat shows each handoff: the GRC Supervisor evaluates
+controls, the Asset Supervisor summarizes assets, a tool supervisor assembles its template team when the request
+asks for a team or for the installed software, and the Patch Agent starts a down tool or files a patch. If the
+selected model does not answer, the same plan is built from the suite and the work still runs. Without a model, a
+message about a fix, a bug, a patch or an error still goes to each tool's supervisor and then to the Patch Agent
+(up to five tools). When the tool is down — connection refused, a failed health check, or a stored error — the
+Patch Agent starts it and clears the error once the check passes. A Python project on disk with no launch command is
+installed into an adapter environment and served from there; the tool's own repository is not changed. A patch is
+filed only when the tool cannot be started. You can talk to
+the Patch Agent, the Operator, a module supervisor or a tool supervisor directly; they do the work and report it to
+the Hub Supervisor. **Stop** ends the request that is running, and **New conversation** starts again. Code patches, extension packs
+and self-patches still call Claude, and they stay on rules when no Claude key is set. The home page says agents are
+in rules mode only when nothing can plan: a selected ChatGPT, Grok or local provider (a hosted one needs its API key)
+is enough, and that notice does not ask for `ANTHROPIC_API_KEY`. A team agent can still name
+its own provider and model.
+
+**ChatGPT** and **Grok** are presets. ChatGPT calls `https://api.openai.com/v1` and starts on `gpt-5.6-terra`. Grok
+calls `https://api.x.ai/v1` and starts on `grok-4.7`. Both need an API key. Those defaults were taken from the
+vendors' docs in October 2026; **Test** lists the models the key can actually call, and you can pick another.
+
+A local server takes a name, base URL (default `http://localhost:11434/v1`, Ollama's), default model, optional API key,
+tool calling on or off, and a timeout (default 300 seconds). **Test** lists the server's models
+(`GET {base_url}/models`); the agent loop sends `POST {base_url}/chat/completions` with `tools` (at most 12 turns)
+and never `tool_choice`. The same call is used for ChatGPT and Grok.
 
 | Server | Base URL | Tool calling |
 | --- | --- | --- |
+| ChatGPT (OpenAI) | `https://api.openai.com/v1` | supported; an API key is required |
+| Grok (xAI) | `https://api.x.ai/v1` | supported on Chat Completions; an API key is required |
 | Ollama | `http://localhost:11434/v1` | supported on `/v1/chat/completions`; `tool_choice` is not; the API key is ignored locally |
 | LM Studio | `http://localhost:1234/v1` | supported (`tools` on `/v1/chat/completions`) |
 | vLLM | `http://<host>:8000/v1` | needs `--enable-auto-tool-choice` and a `--tool-call-parser` for the model |
@@ -181,7 +215,7 @@ cannot be removed.
 
 | Endpoint | Role | Purpose |
 | --- | --- | --- |
-| `GET /api/llm/providers` | viewer | providers (keys only as "set"), the provider choices for agents, Claude's status |
+| `GET /api/llm/providers` | viewer | providers (keys only as "set"), presets (ChatGPT, Grok), the provider choices for agents, Claude's status |
 | `POST /api/llm/providers` | admin | add one |
 | `PATCH /api/llm/providers/{id}` | admin | change it; an empty `api_key` keeps the stored one, `clear_api_key` removes it |
 | `DELETE /api/llm/providers/{id}` | admin | remove it (409 while agents use it) |

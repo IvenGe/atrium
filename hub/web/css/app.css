@@ -417,6 +417,8 @@ body.signed-in .auth-root { display: none; }
 .bubble { max-width: 88%; padding: 9px 13px; border-radius: 14px; font-size: 13.5px; overflow-wrap: anywhere; }
 .bubble.me { align-self: flex-end; background: var(--accent); color: #fff; border-bottom-right-radius: 4px; }
 .bubble.bot { align-self: flex-start; background: var(--surface-2); border: 1px solid var(--border); border-bottom-left-radius: 4px; }
+.bubble .who { font-size: 11px; font-weight: 600; margin-bottom: 4px; }
+.bubble.handoff { font-size: 12.5px; color: var(--muted); background: transparent; border-style: dashed; }
 .bubble pre { white-space: pre-wrap; margin: 6px 0; font-size: 12px; background: var(--code-bg); padding: 8px; border-radius: 8px; }
 .bubble ul { margin: 4px 0; padding-left: 18px; }
 .chat form { display: flex; gap: 8px; }

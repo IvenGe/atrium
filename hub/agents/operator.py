@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from .. import guardrails
@@ -36,6 +37,30 @@ class OperatorAgent(BaseAgent):
 
     def __init__(self, hub):
         super().__init__(hub, "operator", "Operator Agent")
+
+    async def direct_chat(self, text: str, msg: Message) -> dict[str, Any]:
+        """A person talking to the Operator: run the command and report the result to the Hub Supervisor."""
+        if not text.strip() or text.lower().strip() in ("help", "?", "hi", "hello"):
+            return {"reply": ("I am the **Operator Agent**. Say `run df -h` or `run on <host>: <command>`. "
+                              "State-changing commands wait for approval. I report the result to the Hub Supervisor."),
+                    "mode": "rules"}
+        match = re.match(r"^(?:run|exec)\s+(?:on\s+([\w.-]+)\s*:\s*)?(.+)$", text.strip(), re.IGNORECASE | re.DOTALL)
+        if not match:
+            return {"reply": "Say `run <command>` and I will run it, then report to the Hub Supervisor.", "mode": "rules"}
+        host_name, command = match.group(1), match.group(2).strip()
+        target = "local"
+        if host_name:
+            host = next((h for h in self.hub.hosts() if host_name.lower() in (h.id.lower(), h.name.lower())), None)
+            if host is None:
+                return {"reply": f"I don't know a host called '{host_name}'.", "mode": "rules"}
+            target = host.id
+        result = await self.on_run({"target": target, "command": command, "reason": "Requested in chat"}, msg)
+        if result.get("status") == "done":
+            output = str(result.get("output") or "").strip()
+            reply = f"Exit code {result.get('exit_code')}:\n```\n{output[-2000:]}\n```"
+        else:
+            reply = f"{str(result.get('status', 'done')).replace('_', ' ').capitalize()}: {result.get('reason', '')}"
+        return {"reply": reply, "mode": "rules", "delegated": ["operator"]}
 
     # -- requests --------------------------------------------------------------------
 

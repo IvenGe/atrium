@@ -146,7 +146,8 @@ class Hub:
     @property
     def prefs(self) -> dict[str, Any]:
         stored = (self.store.get("settings", "prefs") or {}).get("values", {})
-        prefs = {"autonomy": self.settings.autonomy, "model": self.settings.model, **stored}
+        prefs = {"autonomy": self.settings.autonomy, "model": self.settings.model, "model_provider": "anthropic",
+                 **stored}
         prefs["vuln_sla_days"] = {**DEFAULT_SLA_DAYS, **(stored.get("vuln_sla_days") or {})}
         prefs["guardrails"] = guardrails.merged(stored.get("guardrails"))
         return prefs

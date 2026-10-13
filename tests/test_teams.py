@@ -420,7 +420,7 @@ def test_supervisor_chat_offers_every_tool(client):
     assert client.post("/api/agents/supervisor/chat", json={"text": "hello"}).json() == {
         "reply": "Hi.", "mode": "llm", "agent_id": "supervisor"}
     assert {t["name"] for t in fake.calls[0]["tools"]} == set(toolkit.TOOLS)
-    assert client.post("/api/agents/operator/chat", json={"text": "hi"}).status_code == 400
+    assert "run" in client.post("/api/agents/operator/chat", json={"text": "hi"}).json()["reply"].lower()
     assert client.post("/api/agents/nope/chat", json={"text": "hi"}).status_code == 404
 
 
@@ -501,6 +501,387 @@ class FakeLocalServer:
             return httpx.Response(200, json={"choices": [{"finish_reason": "stop", "message": {
                 "role": "assistant", "content": f"The suite has: {', '.join(names)}."}}]})
         return httpx.Response(404, json={"error": "not found"})
+
+
+def test_you_can_talk_to_an_agent_and_it_reports_to_the_supervisor(client):
+    tool = add_tool(client, "flask", "Flask")
+    tool.status = "error"
+    tool.error = "connection refused"
+    client.app.state.hub.save_tool(tool)
+    reply = client.post("/api/agents/patcher/chat", json={"text": "patch the error on Flask"}).json()
+    assert "Flask" in reply["reply"] and "1 patch" in reply["reply"]
+    patches = client.get("/api/tools/flask").json()["patches"]
+    repair = next(p for p in patches if p["strategy"] == "error_repair")
+    assert "connection refused" in repair["rationale"]
+    reports = [m for m in client.get("/api/messages?limit=100").json()
+               if m["subject"] == "team.report" and m["recipient"] == "supervisor"]
+    assert reports and reports[-1]["body"]["agent"] == "Patch Agent"
+    status = client.post("/api/agents/module:assets/chat", json={"text": "status"}).json()
+    assert "total" in status["reply"]
+    idle = client.post("/api/agents/patcher/chat/stop").json()
+    assert idle["ok"] is True and idle["stopped"] is False
+    again = client.post("/api/agents/patcher/chat", json={"text": "help"}).json()
+    assert again.get("cancelled") is not True and "Patch Agent" in again["reply"]
+    early = client.post("/api/agents/operator/chat/stop", json={"client_id": "chat-early-1"}).json()
+    assert early["stopped"] is True
+    stopped = client.post("/api/agents/operator/chat", json={"text": "help", "client_id": "chat-early-1"}).json()
+    assert stopped["cancelled"] is True and "Stopped" in stopped["reply"]
+    nxt = client.post("/api/agents/operator/chat", json={"text": "help", "client_id": "chat-early-2"}).json()
+    assert nxt.get("cancelled") is not True and "run" in nxt["reply"].lower()
+
+
+def test_a_running_chat_can_be_stopped_and_restarted(client):
+    import asyncio
+
+    hub = client.app.state.hub
+    agent = hub.agents.get("operator")
+    started = asyncio.Event()
+    release = asyncio.Event()
+    original = agent.direct_chat
+
+    async def slow(text, msg):
+        started.set()
+        await release.wait()
+        return {"reply": "finished", "mode": "rules"}
+
+    agent.direct_chat = slow
+
+    async def run():
+        chat = asyncio.create_task(hub.bus.request("user:admin", "operator", "chat", {"text": "wait please"}, 30))
+        await asyncio.wait_for(started.wait(), 5)
+        assert agent.cancel_chat() is True
+        body = await asyncio.wait_for(chat, 5)
+        assert body["cancelled"] is True and "Stopped" in body["reply"]
+        reset = await hub.bus.request("user:admin", "operator", "chat.reset", {}, 10)
+        assert reset["ok"] is True
+        agent.direct_chat = original
+        again = await hub.bus.request("user:admin", "operator", "chat", {"text": "help"}, 10)
+        assert "run" in again["reply"].lower() and again.get("cancelled") is not True
+
+    client.portal.call(run)
+
+
+def test_stopping_a_command_kills_it_and_the_next_chat_still_runs(client):
+    import asyncio
+    import subprocess
+
+    hub = client.app.state.hub
+
+    async def run():
+        chat = asyncio.create_task(hub.bus.request("user:admin", "operator", "chat", {"text": "run sleep 30"}, 20))
+        await asyncio.sleep(0.5)
+        assert hub.agents.get("operator").cancel_chat() is True
+        body = await asyncio.wait_for(chat, 8)
+        assert body["cancelled"] is True and "Stopped" in body["reply"]
+        reset = await hub.bus.request("user:admin", "operator", "chat.reset", {}, 10)
+        assert reset["ok"] is True
+        again = await hub.bus.request("user:admin", "operator", "chat", {"text": "help"}, 10)
+        assert "run" in again["reply"].lower() and again.get("cancelled") is not True
+
+    client.portal.call(run)
+    procs = subprocess.run(["ps", "-eo", "args"], check=False, capture_output=True, text=True).stdout
+    assert not any(line.strip() == "sleep 30" for line in procs.splitlines())
+
+
+def test_the_supervisor_asks_for_a_patch_when_a_tool_errors(client):
+    tool = add_tool(client, "flask", "Flask")
+    tool.status = "error"
+    tool.error = "connection refused"
+    client.app.state.hub.save_tool(tool)
+    reply = client.post("/api/chat", json={"text": "flask has an error"}).json()
+    assert reply["mode"] == "team"
+    assert "Patch Agent" in reply["reply"] and "Flask Supervisor" in reply["reply"]
+    patches = client.get("/api/tools/flask").json()["patches"]
+    repair = next(p for p in patches if p["strategy"] == "error_repair")
+    assert "connection refused" in repair["rationale"]
+    direct = client.post("/api/agents/tool:flask/chat", json={"text": "fix the error"}).json()
+    assert "Patch Agent" in direct["reply"]
+    reports = [m for m in client.get("/api/messages?limit=100").json()
+               if m["subject"] == "team.report" and m["body"].get("agent_id") == "tool:flask"]
+    assert reports
+
+
+def _health_script(path: Path) -> None:
+    path.write_text(
+        "import json, os\n"
+        "from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer\n"
+        "class Handler(BaseHTTPRequestHandler):\n"
+        "    def do_GET(self):\n"
+        "        body = json.dumps({'status': 'ok'}).encode()\n"
+        "        self.send_response(200)\n"
+        "        self.send_header('Content-Type', 'application/json')\n"
+        "        self.send_header('Content-Length', str(len(body)))\n"
+        "        self.end_headers()\n"
+        "        self.wfile.write(body)\n"
+        "    def log_message(self, fmt, *args):\n"
+        "        return\n"
+        "ThreadingHTTPServer(('127.0.0.1', int(os.environ['PORT'])), Handler).serve_forever()\n",
+        encoding="utf-8",
+    )
+
+
+def _down_tool(client, folder: Path, tool_id: str, name: str) -> Tool:
+    import socket
+
+    folder.mkdir(parents=True, exist_ok=True)
+    script = folder / f"{tool_id}.py"
+    _health_script(script)
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+    tool = add_tool(client, tool_id, name)
+    tool.source_type = "local"
+    tool.path = str(folder)
+    tool.status = "error"
+    tool.error = "connection refused"
+    tool.manifest.kind = "oss"
+    tool.manifest.launch.command = f'"{sys.executable}" "{script}"'
+    tool.manifest.launch.port = port
+    tool.manifest.launch.env = {"PORT": str(port)}
+    tool.manifest.health.url = f"http://127.0.0.1:{port}/healthz"
+    client.app.state.hub.save_tool(tool)
+    return tool
+
+
+def _stop(client, *tool_ids: str) -> None:
+    hub = client.app.state.hub
+    for tool_id in tool_ids:
+        client.portal.call(hub.processes.stop, tool_id)
+
+
+def test_a_down_tool_is_started_and_its_error_cleared(client, tmp_path):
+    folder = tmp_path / "scripts"
+    try:
+        _down_tool(client, folder, "lamp", "Lamp")
+        reply = client.post("/api/agents/patcher/chat", json={"text": "fix the error on Lamp"}).json()
+        assert "fixed" in reply["reply"].lower()
+        assert "no new patch" not in reply["reply"].lower()
+        assert "waiting in approvals" not in reply["reply"].lower()
+        saved = client.get("/api/tools/lamp").json()
+        assert saved["error"] is None and saved["status"] == "ready"
+        assert saved["health"]["ok"] is True and saved["process"]["running"] is True
+
+        _down_tool(client, folder, "bell", "Bell")
+        team = client.post("/api/chat", json={"text": "bell has an error"}).json()
+        assert team["mode"] == "team" and "fixed" in team["reply"].lower()
+        assert "Bell Supervisor" in team["reply"] and "Patch Agent" in team["reply"]
+        saved = client.get("/api/tools/bell").json()
+        assert saved["error"] is None and saved["status"] == "ready" and saved["health"]["ok"] is True
+        again = client.post("/api/agents/patcher/chat", json={"text": "fix the error on Lamp"}).json()
+        assert "no error to fix" in again["reply"].lower()
+        assert "no new patch" not in again["reply"].lower()
+    finally:
+        _stop(client, "lamp", "bell")
+
+
+def test_a_python_project_without_a_launch_command_is_started_without_editing_it(client, tmp_path):
+    from hub.execution.policy import HUB_PRIVATE
+
+    project = tmp_path / "project"
+    package = project / "src" / "demo"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("VERSION = '1'\n", encoding="utf-8")
+    (project / "pyproject.toml").write_text("[project]\nname = 'demo'\nversion = '0.0.1'\n", encoding="utf-8")
+    before = sorted(path.relative_to(project).as_posix() for path in project.rglob("*") if path.is_file())
+    tool = add_tool(client, "demo", "Demo")
+    tool.source_type = "local"
+    tool.path = str(project)
+    tool.status = "error"
+    tool.error = "connection refused"
+    tool.manifest.kind = "oss"
+    tool.manifest.stack = ["python"]
+    client.app.state.hub.save_tool(tool)
+    try:
+        reply = client.post("/api/agents/patcher/chat", json={"text": "fix the error on Demo"}).json()
+        assert "fixed" in reply["reply"].lower()
+        assert "no new patch" not in reply["reply"].lower()
+        assert "stand-in" in reply["reply"].lower()
+        saved = client.get("/api/tools/demo").json()
+        assert saved["error"] is None and saved["status"] == "ready" and saved["health"]["ok"] is True
+        command = saved["manifest"]["launch"]["command"]
+        assert HUB_PRIVATE.search(command) is None
+        assert str(project) not in command
+        after = sorted(path.relative_to(project).as_posix() for path in project.rglob("*") if path.is_file())
+        assert after == before
+    finally:
+        _stop(client, "demo")
+
+
+def test_the_supervisor_hands_a_fix_to_the_patch_agent(client):
+    tool = add_tool(client, "flask", "Flask")
+    tool.status = "needs_patch"
+    client.app.state.hub.save_tool(tool)
+    reply = client.post("/api/chat", json={"text": "fix bugs"}).json()
+    assert reply["mode"] == "team"
+    assert "Patch Agent" in reply["reply"] and "Flask" in reply["reply"]
+    assert "Flask Supervisor" in reply["reply"]
+    assert reply["delegated"] == ["tool:flask", "patcher:flask"]
+    supervisor = agent(client, "supervisor")
+    assert supervisor["provider_label"] == "Rules" and supervisor["model"] == ""
+
+
+def test_the_supervisor_plans_a_cycle_with_the_selected_model(client):
+    hub = client.app.state.hub
+    seen = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path != "/v1/chat/completions":
+            return httpx.Response(200, json={"object": "list", "data": [{"id": "gpt-5.6-terra"}, {"id": "gpt-3.5-turbo"}]})
+        body = json.loads(request.content)
+        seen.append(body)
+        system = body["messages"][0]["content"]
+        if "Reply with JSON only" in system and body["model"] == "gpt-3.5-turbo":
+            return httpx.Response(404, json={"error": {"message": "model not found"}})
+        if "Reply with JSON only" in system:
+            facts = json.loads(body["messages"][-1]["content"])
+            items = [{"id": item["id"], "priority": 1 if item["id"] == "grc" else 2,
+                      "goal": "Cycle goal for " + item["id"]} for item in facts["work"]]
+            content = json.dumps({"items": items})
+            return httpx.Response(200, json={"choices": [{"finish_reason": "stop", "message": {"content": content}}]})
+        return httpx.Response(200, json={"choices": [{"finish_reason": "stop", "message": {"content": "From ChatGPT."}}]})
+
+    hub.llm_transport = httpx.MockTransport(handler)
+    client.post("/api/llm/providers", json={"preset": "chatgpt", "name": "ChatGPT", "api_key": "sk-test"})
+    saved = client.patch("/api/settings", json={"model_provider": "chatgpt", "model": "gpt-3.5-turbo",
+                                                "autonomy": "autonomous"}).json()
+    assert saved["model_provider"] == "chatgpt" and saved["model"] == "gpt-3.5-turbo"
+
+    hello = client.post("/api/chat", json={"text": "hello there"}).json()
+    assert hello["mode"] == "local" and hello["reply"] == "From ChatGPT."
+    assert not hello.get("steps")
+
+    tool = add_tool(client, "flask", "Flask")
+    tool.status = "error"
+    tool.error = "connection refused"
+    hub.save_tool(tool)
+    repair = client.post("/api/chat", json={"text": "flask has an error"}).json()
+    assert repair["mode"] == "local"
+    assert repair["delegated"] == ["tool:flask", "patcher:flask"]
+    assert "Nothing is waiting" not in repair["reply"]
+    assert "Cycle goal for health:flask" in repair["reply"] and "Cycle goal for repair:flask" in repair["reply"]
+    assert "Dispatching 2 work item(s)" in repair["reply"]
+    assert "Supervisor hands off to Flask Supervisor" in repair["reply"]
+    assert "Supervisor hands off to Patch Agent" in repair["reply"]
+    assert any(step.get("handoff") and step["text"] == "Supervisor hands off to Patch Agent" for step in repair["steps"])
+    assert any(step["who"] == "Patch Agent" for step in repair["steps"])
+    patches = client.get("/api/tools/flask").json()["patches"]
+    filed = next(p for p in patches if p["strategy"] == "error_repair")
+    assert "connection refused" in filed["rationale"]
+    assert not [t for t in client.get("/api/agents/teams").json()["teams"] if t["team"] == "flask" and t["size"]]
+
+    cycle = client.post("/api/chat", json={
+        "text": "Plan this maintenance cycle. Assemble an AI team for the installed software."}).json()
+    assert cycle["mode"] == "local"
+    assert "Nothing is waiting" not in cycle["reply"]
+    assert "Cycle goal for grc" in cycle["reply"] and "Cycle goal for team:flask" in cycle["reply"]
+    assert "Dispatching 3 work item(s)" in cycle["reply"]
+    assert "Supervisor hands off to GRC Supervisor" in cycle["reply"]
+    assert any(step["who"] == "GRC Supervisor" and "Frameworks:" in step["text"] for step in cycle["steps"])
+    assert any(step["who"] == "Flask Supervisor" and "Created" in step["text"] for step in cycle["steps"])
+    flask_team = next(t for t in client.get("/api/agents/teams").json()["teams"] if t["team"] == "flask")
+    assert flask_team["size"] == 1 and flask_team["members"][0]["title"] == "Maintainer"
+
+    plan_calls = [body for body in seen if "Reply with JSON only" in body["messages"][0]["content"]]
+    assert [body["model"] for body in plan_calls] == ["gpt-3.5-turbo", "gpt-5.6-terra", "gpt-3.5-turbo", "gpt-5.6-terra"]
+    assert all("tools" not in body for body in plan_calls)
+    assert seen[0]["model"] == "gpt-3.5-turbo" and seen[0]["messages"][-1]["content"] == "hello there"
+
+
+def test_a_cycle_repairs_a_down_tool_and_not_a_healthy_gap(client):
+    from hub.agents.cycle import _catalog
+    from hub.models import Check, CompatibilityReport
+
+    gap = add_tool(client, "flask", "Flask")
+    gap.status = "ready"
+    gap.report = CompatibilityReport(score=50, level="patchable", checks=[
+        Check(id="sso", title="Single sign-on", status="fail", fix="sso_proxy")])
+    client.app.state.hub.save_tool(gap)
+    down = add_tool(client, "bell", "Bell")
+    down.status = "error"
+    down.error = "connection refused"
+    client.app.state.hub.save_tool(down)
+    items, _left = _catalog(client.app.state.hub.agents.get("supervisor"),
+                            "Fix all the issues if needed and assemble an AI team for the installed software.")
+    kinds = {(item["kind"], item.get("tool_id")) for item in items}
+    assert ("repair", "bell") in kinds and ("health", "bell") in kinds
+    assert ("repair", "flask") not in kinds and ("health", "flask") not in kinds
+    assert ("team", "flask") in kinds
+    assert any(item["kind"] == "grc" for item in items)
+
+
+def test_a_chatgpt_key_keeps_the_suite_out_of_rules_mode(client):
+    overview = client.get("/api/overview").json()
+    assert overview["llm"]["available"] is False
+    assert overview["model"]["provider"] == "rules" and overview["model"]["plain_language"] is False
+
+    client.post("/api/llm/providers", json={"preset": "chatgpt", "name": "ChatGPT", "api_key": "sk-test"})
+    saved = client.patch("/api/settings", json={"model_provider": "chatgpt", "model": "gpt-3.5-turbo"}).json()
+    assert saved["model_provider"] == "chatgpt"
+    overview = client.get("/api/overview").json()
+    assert overview["llm"]["available"] is False
+    assert overview["model"]["plain_language"] is True
+    assert overview["model"]["provider"] == "chatgpt" and overview["model"]["label"] == "ChatGPT"
+    assert overview["model"]["model"] == "gpt-3.5-turbo" and overview["model"]["key_set"] is True
+    assert overview["model"]["code_patches"] is False
+
+
+def test_chatgpt_and_grok_presets(client):
+    view = client.get("/api/llm/providers").json()
+    presets = {p["id"]: p for p in view["presets"]}
+    assert presets["chatgpt"]["base_url"] == "https://api.openai.com/v1"
+    assert presets["chatgpt"]["default_model"] == "gpt-5.6-terra" and presets["chatgpt"]["requires_key"]
+    assert presets["grok"]["base_url"] == "https://api.x.ai/v1" and presets["grok"]["default_model"] == "grok-4.7"
+
+    missing = client.post("/api/llm/providers", json={"preset": "chatgpt", "name": "ChatGPT"})
+    assert missing.status_code == 400 and "API key" in missing.json()["detail"]
+    assert client.post("/api/llm/providers", json={"preset": "nope", "name": "Nope", "api_key": "x"}).status_code == 400
+
+    created = client.post("/api/llm/providers", json={"preset": "chatgpt", "name": "ChatGPT", "api_key": "sk-test"})
+    assert created.status_code == 201, created.text
+    chatgpt = created.json()
+    assert chatgpt["id"] == "chatgpt" and chatgpt["name"] == "ChatGPT" and chatgpt["preset"] == "chatgpt"
+    assert chatgpt["base_url"] == "https://api.openai.com/v1" and chatgpt["default_model"] == "gpt-5.6-terra"
+    assert chatgpt["api_key_set"] and "api_key" not in chatgpt and "sk-test" not in json.dumps(chatgpt)
+    grok = client.post("/api/llm/providers", json={"preset": "grok", "name": "Grok", "api_key": "xai-test",
+                                                   "default_model": ""}).json()
+    assert grok["id"] == "grok" and grok["base_url"] == "https://api.x.ai/v1" and grok["default_model"] == "grok-4.7"
+    again = client.post("/api/llm/providers", json={"preset": "chatgpt", "name": "ChatGPT", "api_key": "sk-other"})
+    assert again.status_code == 201 and again.json()["id"] == "chatgpt-2"
+
+    choices = {c["id"]: c for c in client.get("/api/llm/providers").json()["choices"]}
+    assert choices["chatgpt"]["kind"] == "hosted" and choices["grok"]["kind"] == "hosted"
+    record = client.post("/api/agents", json={"name": "Writer", "provider": "chatgpt", "model": "gpt-4o"}).json()
+    assert record["provider_label"] == "ChatGPT" and record["provider_kind"] == "local" and record["model"] == "gpt-4o"
+
+
+def test_the_default_model_can_be_chatgpt_grok_or_a_local_server(client):
+    hub = client.app.state.hub
+    seen = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/chat/completions":
+            seen.append(json.loads(request.content))
+            return httpx.Response(200, json={"choices": [{"finish_reason": "stop", "message": {"content": "From Grok."}}]})
+        return httpx.Response(200, json={"object": "list", "data": [{"id": "grok-4.7"}]})
+
+    hub.llm_transport = httpx.MockTransport(handler)
+    assert client.patch("/api/settings", json={"model_provider": "grok", "model": "grok-4.7"}).status_code == 400
+    client.post("/api/llm/providers", json={"preset": "grok", "name": "Grok", "api_key": "xai-test"})
+    saved = client.patch("/api/settings", json={"model_provider": "grok", "model": "grok-4.7"}).json()
+    assert saved["model_provider"] == "grok" and saved["model"] == "grok-4.7"
+    assert client.patch("/api/settings", json={"model_provider": "anthropic", "model": " "}).status_code == 400
+
+    record = client.post("/api/agents", json={"name": "Defaulted"}).json()
+    assert record["provider"] == "grok" and record["model"] == "grok-4.7"
+    reply = client.post("/api/chat", json={"text": "hello there"}).json()
+    assert reply["mode"] == "local" and reply["reply"] == "From Grok."
+    assert seen[-1]["model"] == "grok-4.7" and seen[-1]["messages"][1]["content"] == "hello there"
+
+    client.post("/api/llm/providers", json={"name": "Ollama", "base_url": "http://localhost:11434/v1",
+                                            "default_model": "qwen3:8b"})
+    local = client.patch("/api/settings", json={"model_provider": "ollama", "model": "qwen3:8b"}).json()
+    assert local["model_provider"] == "ollama"
+    assert client.post("/api/agents", json={"name": "On box"}).json()["provider"] == "ollama"
 
 
 def test_local_provider_and_the_openai_compatible_tool_loop(client, sign_in):

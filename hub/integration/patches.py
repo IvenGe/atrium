@@ -47,6 +47,7 @@ STRATEGY_TITLES = {
     "event_adapter": "Add an event adapter",
     "api_adapter": "Add an API adapter skeleton",
     "reassign_port": "Move the tool to a free port",
+    "error_repair": "Repair the error the tool reported",
 }
 OIDC_CALLBACK = "/auth/oidc/callback"  # where code patches put the OIDC callback
 
@@ -369,6 +370,32 @@ def plan_patch(tool: Tool, others: list[Tool], strategy: str, hub_url: str, idp:
             manifest_update=update,
         )
     return None
+
+
+def plan_error_repair(tool: Tool, error: str, *, hub_url: str = "http://127.0.0.1") -> Patch | None:
+    """A patch for an error that actually happened: a health probe when the tool cannot be reached, otherwise an
+    adapter that records the error for the person who approves it."""
+    if tool.manifest is None:
+        return None
+    text = " ".join(str(error or tool.error or "The tool reported an error.").split())[:1500]
+    low = text.lower()
+    reachability = any(word in low for word in ("refused", "timed out", "timeout", "unreachable", "health", "down", "connect"))
+    down = (tool.health or {}).get("ok") is False
+    if reachability or down:
+        probe = plan_patch(tool, [], "health_probe", hub_url)
+        if probe is not None:
+            probe.strategy = "error_repair"
+            probe.title = f"Repair the error on {tool.name}"
+            probe.rationale = f"{tool.name} failed: {text}\n\n{probe.rationale}"
+            return probe
+    return Patch(
+        id=new_id("p_"), tool_id=tool.id, title=f"Repair the error on {tool.name}", strategy="error_repair",
+        target="adapter",
+        rationale=f"{tool.name} failed: {text}\n\nApprove this to keep the error with the tool and re-analyse it "
+                  "after the cause is fixed.",
+        changes=[FileChange(path="error-repair.yaml", content=yaml.safe_dump(
+            {"error": text, "action": "reanalyze"}, sort_keys=False))],
+    )
 
 
 # --------------------------------------------------------------------------------------

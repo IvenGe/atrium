@@ -29,6 +29,9 @@ class Remote:
         self.findings: list[dict] = []
         self.scans: list[dict] = []
         self.scan_state = {"status": "Done", "progress": 100, "done": True}
+        self.scanner_check: dict = {"online": True, "message": "The scanner answers", "suggestion": None}
+        self.retargets: list[dict] = []
+        self.retarget_error = ""
         self.require_api = False  # answer 404 unless the base URL ends with /api
         self.fail: tuple[int | None, str] | None = None
         self.push_calls = 0
@@ -107,7 +110,22 @@ class FakeGrc(Fake):
 class FakeScanner(Fake):
     kind, title = "fake_scanner", "Fake Scanner"
     capabilities = {"vulnerabilities": {"read"}}
-    actions = {"scan", "scan_status"}
+    actions = {"scan", "scan_status", "scanner_check", "retarget_scanner"}
+    side_effects = {"scan", "retarget_scanner"}
+
+    async def action(self, name, params):
+        self.guard()
+        if name == "scanner_check":
+            return dict(self.remote.scanner_check)
+        if name == "retarget_scanner":
+            if self.remote.retarget_error:
+                raise ConnectorError(self.remote.retarget_error)
+            self.remote.retargets.append(dict(params))
+            return {"scanner_id": params.get("scanner_id"), "host": params.get("host")}
+        if name == "scan":
+            self.remote.scans.append(params)
+            return {"job_id": f"job-{len(self.remote.scans)}"}
+        return dict(self.remote.scan_state)
 
 
 @pytest.fixture
@@ -441,6 +459,58 @@ def test_rejected_scan_and_failed_scan_do_not_count_as_integration_failures(clie
     client.post("/api/vulnerabilities/scan", json={})
     stopped = run(client, flow["id"])
     assert not stopped["ok"] and "stopped" in stopped["error"]["message"] and stopped["flow"]["failures"] == 1
+
+
+SCANNER = "08b69003-5fc2-4037-a479-93b440211c73"
+
+
+def _scanner_ready(client, remote, wait_for):
+    web = client.post("/api/assets", json={"name": "web-1", "type": "server", "facts": {"addresses": ["10.0.0.5"]}}).json()
+    client.post("/api/assets/scan-scope", json={"asset_ids": [web["id"]], "in_scope": True})
+    add_tool(client, "scanner", "Scanner")
+    connect(client, "scanner", "fake_scanner")
+    [flow] = plan_and_enable(client, wait_for, "scanner", 1)
+    return flow
+
+
+def test_an_interrupted_scan_points_the_scanner_at_the_socket_that_is_listening(client, remote, wait_for):
+    remote.scan_state = {"status": "interrupted", "progress": 0, "done": False, "detail": "Could not connect to Scanner"}
+    remote.scanner_check = {
+        "online": False, "scanner_id": SCANNER, "name": "OpenVAS Default", "host": "/run/ospd/ospd-openvas.sock",
+        "message": "OpenVAS / Greenbone is busy or its scanner is not available (verifying the scanner: Service unavailable)",
+        "suggestion": {"scanner_id": SCANNER, "host": "/run/ospd/ospd.sock", "previous": "/run/ospd/ospd-openvas.sock",
+                       "name": "OpenVAS Default"},
+    }
+    flow = _scanner_ready(client, remote, wait_for)
+    for _ in range(3):
+        client.post("/api/vulnerabilities/scan", json={})
+        failed = run(client, flow["id"])
+        assert not failed["ok"] and "Could not connect to Scanner" in failed["error"]["message"]
+        assert failed["error"]["status"] is None
+    approval = repair_approval(client, wait_for, "scanner")
+    assert approval["payload"]["diagnosis"] == "scanner"
+    assert approval["payload"]["change"] == {"kind": "scanner_socket", "scanner_id": SCANNER,
+                                             "host": "/run/ospd/ospd.sock", "previous": "/run/ospd/ospd-openvas.sock"}
+    assert "unreachable" not in approval["detail"].lower() and "/run/ospd/ospd.sock" in approval["detail"]
+    assert "No settings change" not in approval["detail"]
+    client.patch("/api/settings", json={"autonomy": "autonomous"})
+    client.post(f"/api/approvals/{approval['id']}", json={"approve": True})
+    wait_for(lambda: remote.retargets and len(remote.scans) == 4)
+    assert remote.retargets == [{"scanner_id": SCANNER, "host": "/run/ospd/ospd.sock"}]
+
+
+def test_an_interrupted_scan_is_not_called_unreachable_when_no_socket_can_be_chosen(client, remote, wait_for):
+    remote.scan_state = {"status": "interrupted", "progress": 0, "done": False}
+    remote.scanner_check = {"online": False, "scanner_id": SCANNER, "name": "OpenVAS Default",
+                            "host": "/run/ospd/ospd.sock", "message": "Service unavailable", "suggestion": None}
+    flow = _scanner_ready(client, remote, wait_for)
+    client.post("/api/vulnerabilities/scan", json={})
+    assert not run(client, flow["id"])["ok"]
+    asked = client.post(f"/api/flows/{flow['id']}/repair")
+    assert asked.status_code == 202 and asked.json()["diagnosis"] == "scanner" and asked.json()["applied"] is False
+    approval = repair_approval(client, wait_for, "scanner")
+    assert approval["payload"]["change"] is None and approval["payload"]["diagnosis"] == "scanner"
+    assert "unreachable" not in approval["detail"].lower() and "Service unavailable" in approval["detail"]
 
 
 # -- planning, editing, scheduling ------------------------------------------------------------------

@@ -445,6 +445,32 @@ async def _evaluate(ctx: ToolContext, args: dict[str, Any]) -> Any:
 # --------------------------------------------------------------------------------------
 
 
+@tool("ask_agent", "Give a task to another agent and return what they report. agent_id: patcher, operator, "
+      "module:assets, module:people, module:vulns, module:grc, tool:<tool id>, or agent:<id>. task: one sentence. "
+      "For the Patch Agent, name the tool in the task.", "agents", {"agent_id": STR, "task": STR})
+async def _ask_agent(ctx: ToolContext, args: dict[str, Any]) -> Any:
+    agent_id = str(args.get("agent_id") or "").strip()
+    task = str(args.get("task") or "").strip()
+    if not agent_id or not task:
+        raise ValueError("Say which agent and what you want them to do")
+    if ctx.hub.agents.get(agent_id) is None:
+        raise ValueError(f"No agent '{agent_id}'")
+    if agent_id.startswith("agent:"):
+        return await ctx.ask(agent_id, "chat", {"text": task}, timeout=120)
+    if agent_id == "patcher":
+        low = task.lower()
+        tool = next((t for t in ctx.hub.tools() if t.id in low or t.name.lower() in low), None)
+        if tool is None:
+            raise ValueError("Name the tool the Patch Agent should patch")
+        result = await ctx.ask("patcher", "propose", {"tool_id": tool.id}, timeout=90)
+        return {"tool": tool.name, "patches": result.get("patches") or []}
+    if agent_id.startswith("tool:"):
+        return await ctx.ask(agent_id, "health", timeout=30)
+    if agent_id.startswith("module:"):
+        return await ctx.ask(agent_id, "summary", timeout=60)
+    raise ValueError(f"{agent_id} does not take a free-text task from the team lead")
+
+
 @tool("propose_team", "Ask a tool's supervisor to propose an AI agent team for the tool (it waits for approval unless "
       "an admin relaxed that guardrail).", "agents", {"tool_id": STR})
 async def _propose_team(ctx: ToolContext, args: dict[str, Any]) -> Any:

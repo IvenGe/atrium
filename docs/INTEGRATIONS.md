@@ -116,7 +116,7 @@ records in the canonical shapes below, runs actions (scans) and tests itself. `R
 | --- | --- | --- | --- |
 | `snipeit` | Snipe-IT | `assets` read and write (system of record); `accounts` read with "Read user accounts" on | `Authorization: Bearer <token>` |
 | `ciso_assistant` | CISO Assistant | `assets` read and write, `controls` write, `risks` read, `vulnerabilities` write (when the instance has them) | `Authorization: Token <token>` |
-| `openvas` | OpenVAS / Greenbone | `vulnerabilities` read; actions `scan`, `scan_status` | GMP user name and password |
+| `openvas` | OpenVAS / Greenbone | `vulnerabilities` read; actions `scan`, `scan_status`, `scanner_check`, `retarget_scanner` | GMP user name and password |
 | `okta` | Okta | `people` read; `accounts` read (app assignments) unless switched off | `Authorization: SSWS <token>` |
 | `keycloak` | Keycloak admin API | `people` read | client credentials of a service-account client |
 | `scim` | any SCIM 2.0 service | `people` read, or `accounts` read (setting "The users are") | `Authorization: Bearer <token>` |
@@ -166,7 +166,14 @@ A vulnerability scanner reached over GMP, the Greenbone Management Protocol.
 - Defaults: scan config "Full and fast", the "OpenVAS Default" scanner and the port list "All IANA assigned TCP"
   (their well-known ids), alive test from the scan config, minimum quality of detection 70. All are selectable.
 - A scan creates a target and a task for the hub's in-scope hosts (IP addresses, networks and hostnames only;
-  everything placed in XML is escaped) and starts it; `scan_status` follows the task.
+  everything placed in XML is escaped) and starts it; `scan_status` follows the task. An interrupted, stopped or
+  failed task includes the scanner's own error text when the report has one (a negative-severity result such as
+  "Could not connect to Scanner").
+- `scanner_check` reads the configured scanner's host and verifies it. `retarget_scanner` is the Patch Agent's
+  repair only: when the scanner's unix socket is missing and the other of `ospd.sock` and `ospd-openvas.sock` is
+  listening in that same directory, it links the missing name to the live socket. GMP's `modify_scanner` rejects a
+  unix socket path, so the scanner record is not rewritten. If the scanner still does not answer, the link is removed.
+  The link is on `/run` and does not survive a reboot; the same repair creates it again.
 - Findings: host, port, NVT name and OID, CVEs, description, solution, severity from the score (critical >= 9,
   high >= 7, medium >= 4, low > 0, info 0). `external_id` is `<nvt oid>|<host>|<port>`. An incomplete read of a
   report is refused, because findings missing from a scan are marked fixed.
@@ -374,7 +381,12 @@ secret values redacted.
   never point the connection at a different endpoint.
 - **Without Claude**, rules: 401 / 403 -> check the credentials; 404 -> try base-path variants (`/api` added or
   removed) with a connection test and propose the one that works; 400 / 409 / 422 -> the tool's validation message as
-  it wrote it.
+  it wrote it. A scan that stops, fails or is interrupted inside the scanner is not "the tool is unreachable": the
+  Patch Agent asks `scanner_check`. When Greenbone's scanner record points at a local socket that is not there, and
+  ospd is listening on the other of `ospd.sock` and `ospd-openvas.sock` in that directory, the repair links the missing
+  name to that socket (GMP will not store the path) and runs the scan again. If the scanner still does not answer,
+  the link is removed. A scanner that is simply down is described as down (the web interface can still answer);
+  approving then only retries.
 
 The proposal is an approval of kind `repair` (applied directly in autonomous mode when it changes something);
 approving it applies the change and runs the flow again.
