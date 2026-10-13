@@ -601,6 +601,112 @@ def test_the_supervisor_asks_for_a_patch_when_a_tool_errors(client):
     assert reports
 
 
+def _health_script(path: Path) -> None:
+    path.write_text(
+        "import json, os\n"
+        "from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer\n"
+        "class Handler(BaseHTTPRequestHandler):\n"
+        "    def do_GET(self):\n"
+        "        body = json.dumps({'status': 'ok'}).encode()\n"
+        "        self.send_response(200)\n"
+        "        self.send_header('Content-Type', 'application/json')\n"
+        "        self.send_header('Content-Length', str(len(body)))\n"
+        "        self.end_headers()\n"
+        "        self.wfile.write(body)\n"
+        "    def log_message(self, fmt, *args):\n"
+        "        return\n"
+        "ThreadingHTTPServer(('127.0.0.1', int(os.environ['PORT'])), Handler).serve_forever()\n",
+        encoding="utf-8",
+    )
+
+
+def _down_tool(client, folder: Path, tool_id: str, name: str) -> Tool:
+    import socket
+
+    folder.mkdir(parents=True, exist_ok=True)
+    script = folder / f"{tool_id}.py"
+    _health_script(script)
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+    tool = add_tool(client, tool_id, name)
+    tool.source_type = "local"
+    tool.path = str(folder)
+    tool.status = "error"
+    tool.error = "connection refused"
+    tool.manifest.kind = "oss"
+    tool.manifest.launch.command = f'"{sys.executable}" "{script}"'
+    tool.manifest.launch.port = port
+    tool.manifest.launch.env = {"PORT": str(port)}
+    tool.manifest.health.url = f"http://127.0.0.1:{port}/healthz"
+    client.app.state.hub.save_tool(tool)
+    return tool
+
+
+def _stop(client, *tool_ids: str) -> None:
+    hub = client.app.state.hub
+    for tool_id in tool_ids:
+        client.portal.call(hub.processes.stop, tool_id)
+
+
+def test_a_down_tool_is_started_and_its_error_cleared(client, tmp_path):
+    folder = tmp_path / "scripts"
+    try:
+        _down_tool(client, folder, "lamp", "Lamp")
+        reply = client.post("/api/agents/patcher/chat", json={"text": "fix the error on Lamp"}).json()
+        assert "fixed" in reply["reply"].lower()
+        assert "no new patch" not in reply["reply"].lower()
+        assert "waiting in approvals" not in reply["reply"].lower()
+        saved = client.get("/api/tools/lamp").json()
+        assert saved["error"] is None and saved["status"] == "ready"
+        assert saved["health"]["ok"] is True and saved["process"]["running"] is True
+
+        _down_tool(client, folder, "bell", "Bell")
+        team = client.post("/api/chat", json={"text": "bell has an error"}).json()
+        assert team["mode"] == "team" and "fixed" in team["reply"].lower()
+        assert "Bell Supervisor" in team["reply"] and "Patch Agent" in team["reply"]
+        saved = client.get("/api/tools/bell").json()
+        assert saved["error"] is None and saved["status"] == "ready" and saved["health"]["ok"] is True
+        again = client.post("/api/agents/patcher/chat", json={"text": "fix the error on Lamp"}).json()
+        assert "no error to fix" in again["reply"].lower()
+        assert "no new patch" not in again["reply"].lower()
+    finally:
+        _stop(client, "lamp", "bell")
+
+
+def test_a_python_project_without_a_launch_command_is_started_without_editing_it(client, tmp_path):
+    from hub.execution.policy import HUB_PRIVATE
+
+    project = tmp_path / "project"
+    package = project / "src" / "demo"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("VERSION = '1'\n", encoding="utf-8")
+    (project / "pyproject.toml").write_text("[project]\nname = 'demo'\nversion = '0.0.1'\n", encoding="utf-8")
+    before = sorted(path.relative_to(project).as_posix() for path in project.rglob("*") if path.is_file())
+    tool = add_tool(client, "demo", "Demo")
+    tool.source_type = "local"
+    tool.path = str(project)
+    tool.status = "error"
+    tool.error = "connection refused"
+    tool.manifest.kind = "oss"
+    tool.manifest.stack = ["python"]
+    client.app.state.hub.save_tool(tool)
+    try:
+        reply = client.post("/api/agents/patcher/chat", json={"text": "fix the error on Demo"}).json()
+        assert "fixed" in reply["reply"].lower()
+        assert "no new patch" not in reply["reply"].lower()
+        assert "stand-in" in reply["reply"].lower()
+        saved = client.get("/api/tools/demo").json()
+        assert saved["error"] is None and saved["status"] == "ready" and saved["health"]["ok"] is True
+        command = saved["manifest"]["launch"]["command"]
+        assert HUB_PRIVATE.search(command) is None
+        assert str(project) not in command
+        after = sorted(path.relative_to(project).as_posix() for path in project.rglob("*") if path.is_file())
+        assert after == before
+    finally:
+        _stop(client, "demo")
+
+
 def test_the_supervisor_hands_a_fix_to_the_patch_agent(client):
     tool = add_tool(client, "flask", "Flask")
     tool.status = "needs_patch"

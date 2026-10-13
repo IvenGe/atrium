@@ -272,7 +272,7 @@ class HubSupervisor(BaseAgent):
 
     async def on_chat(self, body: dict[str, Any], msg: Message) -> dict[str, Any]:
         text = str(body.get("text", "")).strip()
-        team = await self._team_reply(text)
+        team = await self._team_reply(text, msg.sender)
         if team is not None:
             return team
         chosen = teams.saved_provider(self.hub)
@@ -299,9 +299,9 @@ class HubSupervisor(BaseAgent):
         self.log("info", f"{agent} reported: {reply[:240]}", agent_id=str(body.get("agent_id") or msg.sender))
         return {"ok": True}
 
-    async def _team_reply(self, text: str) -> dict[str, Any] | None:
-        """A fix request is work for the team. Each tool's supervisor looks, then the Patch Agent proposes patches,
-        including a patch for an error the tool is reporting now."""
+    async def _team_reply(self, text: str, requester: str = "") -> dict[str, Any] | None:
+        """A fix request is work for the team. A tool that is down is started and its error cleared. Anything that
+        cannot be started is handed to the Patch Agent as a patch."""
         low = text.lower()
         if not any(word in low for word in ("fix", "bug", "patch", "broken", "repair", "error", "fail")):
             return None
@@ -330,18 +330,38 @@ class HubSupervisor(BaseAgent):
                     lines.append(f"- **{tool.name} Supervisor** — {exc}")
                     error = error or str(exc)
                 delegated.append(sup_id)
+            fixed = False
             try:
-                result = await self.ask("patcher", "propose", {"tool_id": tool.id, "error": error}, timeout=90)
-                lines.append(f"- **Patch Agent** — {tool.name}: {describe_patches(self.hub, result.get('patches') or [])}")
+                repair = await self.ask(
+                    "patcher", "repair", {"tool_id": tool.id, "error": error, "origin": requester}, timeout=300)
+                if repair.get("fixed"):
+                    lines.append(f"- **Patch Agent** — {repair.get('detail')}")
+                    fixed = True
+                elif repair.get("detail") and repair.get("status") != "not_runtime":
+                    lines.append(f"- **Patch Agent** — {repair.get('detail')}")
             except Exception as exc:
-                lines.append(f"- **Patch Agent** — {tool.name}: {exc}")
-                try:
-                    repair = await self.ask("patcher", "propose", {"tool_id": tool.id, "error": str(exc)}, timeout=60)
-                    count = len(repair.get("patches") or [])
-                    if count:
-                        lines.append(f"- **Patch Agent** — patched that error: {count} patch(es) waiting in Approvals.")
-                except Exception as again:
-                    lines.append(f"- **Patch Agent** — could not patch that error: {again}")
+                lines.append(f"- **Patch Agent** — could not start {tool.name}: {exc}")
+            if not fixed:
+                fresh = self.hub.get_tool(tool.id) or tool
+                healthy = (fresh.status not in ("error", "needs_patch") and not fresh.error
+                           and (fresh.health or {}).get("ok") is not False)
+                about_down = any(word in low for word in ("error", "broken", "fail", "down", "refused"))
+                if healthy and about_down:
+                    lines.append(f"- **Patch Agent** — {fresh.name} is up. There is no error to fix.")
+                else:
+                    try:
+                        result = await self.ask("patcher", "propose", {"tool_id": tool.id, "error": error}, timeout=90)
+                        outcome = describe_patches(self.hub, result.get("patches") or [])
+                        lines.append(f"- **Patch Agent** — {tool.name}: {outcome}")
+                    except Exception as exc:
+                        lines.append(f"- **Patch Agent** — {tool.name}: {exc}")
+                        try:
+                            again = await self.ask("patcher", "propose", {"tool_id": tool.id, "error": str(exc)}, timeout=60)
+                            count = len(again.get("patches") or [])
+                            if count:
+                                lines.append(f"- **Patch Agent** — patched that error: {count} patch(es) waiting in Approvals.")
+                        except Exception as second:
+                            lines.append(f"- **Patch Agent** — could not patch that error: {second}")
             delegated.append(f"patcher:{tool.id}")
         if rest:
             lines.append(f"{len(rest)} more tools still need a look. Say `patch <name>` for one of them.")

@@ -30,6 +30,7 @@ from ..integration.patches import (
 from ..models import FileChange, Flow, Patch, Tool
 from ..store import new_id
 from .base import BaseAgent
+from .repair import fix_down_tool, requester_of
 
 MAX_SPEC = 5_000_000
 SPEC_PROMPT_CHARS = 60_000
@@ -165,12 +166,21 @@ class PatchAgent(BaseAgent):
             self.log("info", f"Proposed {len(created)} patch(es) for {tool.name}: " + "; ".join(p.title for p in created))
         return {"patches": [p.id for p in created]}
 
+    async def on_repair(self, body: dict[str, Any], msg: Message) -> dict[str, Any]:
+        """Start a tool that is down and clear its error once the health check passes."""
+        tool = self._tool(body.get("tool_id"))
+        async with self._lock(tool.id):
+            tool = self._tool(tool.id)
+            error = str(body.get("error") or tool.error or "")
+            return await fix_down_tool(self, tool, error, requester_of(msg, body))
+
     async def direct_chat(self, text: str, msg: Message) -> dict[str, Any]:
-        """A person talking to the Patch Agent: patch the tools they name, and the errors those tools have."""
+        """A person talking to the Patch Agent: start a tool that is down, and patch what cannot be started."""
         low = text.lower().strip()
         if not low or low in ("help", "?", "hi", "hello"):
-            return {"reply": ("I am the **Patch Agent**. Say `patch <tool>` or `fix errors` and I propose the patches, "
-                              "including errors a tool has just reported. I report the result to the Hub Supervisor."),
+            return {"reply": ("I am the **Patch Agent**. Say `patch <tool>` or `fix errors`. "
+                              "If a tool is down, I start it and clear the error once it answers. "
+                              "I report the result to the Hub Supervisor."),
                     "mode": "rules"}
         named = [t for t in self.hub.tools() if t.id in low or t.name.lower() in low]
         if not named and any(word in low for word in ("error", "fix", "bug", "patch", "broken", "repair", "fail")):
@@ -180,13 +190,26 @@ class PatchAgent(BaseAgent):
         named = named[:5]
         if not named:
             return {"reply": "Name the tool to patch, or say `fix errors`.", "mode": "rules"}
-        lines = ["I am patching this and I will report it to the Hub Supervisor."]
+        lines = ["I am fixing this and I will report it to the Hub Supervisor."]
         delegated: list[str] = []
         for tool in named:
+            repair = await self.on_repair({"tool_id": tool.id, "error": tool.error or "", "origin": msg.sender}, msg)
+            delegated.append(f"patcher:{tool.id}")
+            if repair.get("fixed"):
+                lines.append(f"- **{tool.name}**: {repair.get('detail')}")
+                continue
+            healthy = (repair.get("status") == "not_runtime" and tool.status not in ("error", "needs_patch")
+                       and not tool.error and (tool.health or {}).get("ok") is not False)
+            if healthy and any(word in low for word in ("error", "broken", "fail", "down", "refused")):
+                lines.append(f"- **{tool.name}**: it is up. There is no error to fix.")
+                continue
             result = await self.on_propose({"tool_id": tool.id, "error": tool.error or ""}, msg)
             outcome = describe_patches(self.hub, result.get("patches") or [])
-            lines.append(f"- **{tool.name}**: {outcome}")
-            delegated.append(f"patcher:{tool.id}")
+            detail = str(repair.get("detail") or "").strip()
+            if detail and repair.get("status") != "not_runtime":
+                lines.append(f"- **{tool.name}**: {detail} {outcome}")
+            else:
+                lines.append(f"- **{tool.name}**: {outcome}")
         return {"reply": "\n".join(lines), "mode": "rules", "delegated": delegated}
 
     async def on_sso_plan(self, body: dict[str, Any], msg: Message) -> dict[str, Any]:

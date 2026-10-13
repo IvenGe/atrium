@@ -19,6 +19,7 @@ from ..models import AGENT_PERMISSIONS, Manifest, Tool
 from . import teams
 from .base import BaseAgent
 from .patcher import describe_patches
+from .repair import requester_of
 
 PUSH_ACTIONS = ("created", "updated", "skipped", "failed")
 
@@ -116,10 +117,28 @@ class ToolSupervisor(BaseAgent):
         return {"reply": f"Say `health`, `status`, `start`, `stop`, or `fix` for **{tool.name}**.", "mode": "rules"}
 
     async def _ask_patcher(self, tool: Tool, error: str, msg: Message) -> str:
+        repair = await self.ask("patcher", "repair",
+                                {"tool_id": tool.id, "error": error, "origin": requester_of(msg)}, timeout=300)
+        if repair.get("fixed"):
+            return str(repair.get("detail") or f"**{tool.name}** is up. The error is fixed.")
+        if repair.get("status") == "not_runtime":
+            fresh = self._tool()
+            if fresh.status not in ("error", "needs_patch") and not fresh.error and (fresh.health or {}).get("ok") is not False:
+                return f"**{fresh.name}** is up. There is no error to fix."
         result = await self.ask("patcher", "propose", {"tool_id": tool.id, "error": error}, timeout=90)
         outcome = describe_patches(self.hub, result.get("patches") or [])
+        detail = str(repair.get("detail") or "").strip()
+        if repair.get("status") == "not_runtime":
+            detail = ""
         if outcome.startswith("no new patch"):
+            if detail:
+                return f"The Patch Agent could not bring **{tool.name}** up. {detail}"
+            fresh = self._tool()
+            if fresh.status not in ("error", "needs_patch") and not fresh.error:
+                return f"**{fresh.name}** is up. There is no error to fix."
             return f"The Patch Agent has nothing new for **{tool.name}**. One may already be waiting in Approvals."
+        if detail:
+            return f"I asked the Patch Agent to patch **{tool.name}**: {outcome} {detail}"
         return f"I asked the Patch Agent to patch **{tool.name}**: {outcome}"
 
     # -- requests --------------------------------------------------------------------

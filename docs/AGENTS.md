@@ -46,7 +46,8 @@ and operators get a read-only details view.
 
 Operators **chat** with any agent (the Hub Supervisor, the Patch Agent, the Operator, a module supervisor, a tool
 supervisor, or a team agent). The chat panel has an agent selector and each agent keeps its own conversation. A
-specialist does the work and reports it to the Hub Supervisor. **Stop** ends the request that is running.
+specialist does the work and reports it to the Hub Supervisor. A down tool (connection refused, a failed health
+check, or a stored error) is started, and the error is cleared once the check passes. **Stop** ends the request that is running.
 **New conversation** starts again. **Run** starts a team agent's standing task now, optionally with a one-off task.
 A reply says whether it came from a model (`llm`), a local model (`local`), the team (`team`) or rules (`rules`).
 
@@ -165,7 +166,10 @@ Team agents can run on any server with an OpenAI-compatible API (`hub/llm_provid
 The default is chosen under **Settings > AI model**: Claude, ChatGPT, Grok, a local provider, or rules, plus the
 model name. New team agents use that provider. The Hub Supervisor's chat uses it too, and the chat badge names that
 provider. A message about a fix, a bug, a patch or an error goes to each tool's supervisor and then to the Patch
-Agent (up to five tools). The Patch Agent also proposes a patch when a tool is reporting an error. You can talk to
+Agent (up to five tools). When the tool is down — connection refused, a failed health check, or a stored error — the
+Patch Agent starts it and clears the error once the check passes. A Python project on disk with no launch command is
+installed into an adapter environment and served from there; the tool's own repository is not changed. A patch is
+filed only when the tool cannot be started. You can talk to
 the Patch Agent, the Operator, a module supervisor or a tool supervisor directly; they do the work and report it to
 the Hub Supervisor. **Stop** ends the request that is running, and **New conversation** starts again. Code patches, extension packs
 and self-patches still call Claude, and they stay on rules when no Claude key is set. A team agent can still name
