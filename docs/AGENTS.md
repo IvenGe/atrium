@@ -180,7 +180,9 @@ installed into an adapter environment and served from there; the tool's own repo
 filed only when the tool cannot be started. You can talk to
 the Patch Agent, the Operator, a module supervisor or a tool supervisor directly; they do the work and report it to
 the Hub Supervisor. **Stop** ends the request that is running, and **New conversation** starts again. Code patches, extension packs
-and self-patches still call Claude, and they stay on rules when no Claude key is set. A team agent can still name
+and self-patches still call Claude, and they stay on rules when no Claude key is set. The home page says agents are
+in rules mode only when nothing can plan: a selected ChatGPT, Grok or local provider (a hosted one needs its API key)
+is enough, and that notice does not ask for `ANTHROPIC_API_KEY`. A team agent can still name
 its own provider and model.
 
 **ChatGPT** and **Grok** are presets. ChatGPT calls `https://api.openai.com/v1` and starts on `gpt-5.6-terra`. Grok

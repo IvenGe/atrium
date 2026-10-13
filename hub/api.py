@@ -322,6 +322,7 @@ def build_router(hub: Hub) -> APIRouter:
             "extension_domains": len(ext_registry.active_domains(hub)),
             "restart_required": hub.restart_required is not None,
             "llm": hub.llm.status(),
+            "model": teams.suite_model(hub),
             "autonomy": hub.prefs["autonomy"],
         }
 

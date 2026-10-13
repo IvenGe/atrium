@@ -12,6 +12,8 @@ The audit pack is a ZIP: `summary.html`, `requirements.csv`, an evidence index, 
 
 CRA is not built in. It appears when a CISO Assistant connection has the CRA library loaded. Other imported frameworks are read-only.
 
+The GRC Supervisor owns both of those flows. A frameworks pull stores each loaded framework. An assessments push sends the hub's CyFun self-assessments when an administrator turned that on in the connection. Running either flow is ordinary work for that agent: a failure is recorded on the flow, and it does not add an error on the GRC Supervisor card.
+
 ## Hub controls
 
 Automated controls live in `hub/grc/baseline.py`. Each one names the ISO 27001, SOC 2 and NIS2 clauses it supports, and CyFun 2025 / 2023 requirement ids where a mapping exists. Those reference strings are analyst mappings; they are not a certification.

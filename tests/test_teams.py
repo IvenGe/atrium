@@ -809,6 +809,22 @@ def test_a_cycle_repairs_a_down_tool_and_not_a_healthy_gap(client):
     assert any(item["kind"] == "grc" for item in items)
 
 
+def test_a_chatgpt_key_keeps_the_suite_out_of_rules_mode(client):
+    overview = client.get("/api/overview").json()
+    assert overview["llm"]["available"] is False
+    assert overview["model"]["provider"] == "rules" and overview["model"]["plain_language"] is False
+
+    client.post("/api/llm/providers", json={"preset": "chatgpt", "name": "ChatGPT", "api_key": "sk-test"})
+    saved = client.patch("/api/settings", json={"model_provider": "chatgpt", "model": "gpt-3.5-turbo"}).json()
+    assert saved["model_provider"] == "chatgpt"
+    overview = client.get("/api/overview").json()
+    assert overview["llm"]["available"] is False
+    assert overview["model"]["plain_language"] is True
+    assert overview["model"]["provider"] == "chatgpt" and overview["model"]["label"] == "ChatGPT"
+    assert overview["model"]["model"] == "gpt-3.5-turbo" and overview["model"]["key_set"] is True
+    assert overview["model"]["code_patches"] is False
+
+
 def test_chatgpt_and_grok_presets(client):
     view = client.get("/api/llm/providers").json()
     presets = {p["id"]: p for p in view["presets"]}

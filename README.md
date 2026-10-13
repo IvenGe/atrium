@@ -147,9 +147,10 @@ Roles, sessions, API tokens and single sign-on are described in [docs/AUTH.md](d
 
 ### Turn on Claude (optional)
 
-Without credentials the agents run in **rules mode**: imports, analysis, scoring, template
+Without a model the agents run in **rules mode**: imports, analysis, scoring, template
 patches, adapters, commands, assets, data flows, people, template extensions and compliance all work
-deterministically. With Claude:
+deterministically. ChatGPT, Grok or a local model selected in Settings is enough for plain-language planning; the
+home page does not ask for a Claude key in that case. With Claude:
 
 - the Hub Supervisor understands plain language and plans multi-step work using the other agents,
 - the Patch Agent writes real source-code patches (e.g. adds a `/healthz` endpoint in the

@@ -26,7 +26,7 @@ HELP = (
     "- `analyze <tool>` / `patch <tool>` / `start <tool>` / `stop <tool>`\n"
     "- `run <command>` or `run on <host>: <command>`\n"
     "- `health`, `assets`, `compliance`\n"
-    "With ANTHROPIC_API_KEY set I also understand plain language and can plan multi-step work."
+    "With ChatGPT, Grok, a local model, or Claude selected, I also understand plain language and can plan multi-step work."
 )
 
 SYSTEM = """You are the Hub Supervisor, the orchestrating agent of an integration hub - an "office suite" that brings

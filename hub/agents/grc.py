@@ -10,6 +10,7 @@ from ..extensions import controls as extension_controls
 from ..grc.baseline import CONTROLS, CONTROLS_BY_ID
 from ..grc.checks import Snapshot, evaluate_controls, framework_scores
 from ..grc.frameworks import assessments as framework_assessments
+from ..grc.frameworks import sync as framework_sync
 from ..integration import flows
 from ..integration import network as network_app
 from .. import people
@@ -26,8 +27,9 @@ class GrcSupervisor(FlowOwner):
     max_concurrency = 1  # evaluations must not interleave
     description = ("Responsible for the Compliance hub: evaluates controls against live hub state, collects evidence, "
                    "maps it to ISO 27001, SOC 2 and NIS2, opens or closes risks when controls fail or recover, pushes "
-                   "controls and evidence to GRC tools and pulls their risk scenarios into the risk register.")
-    flow_domains = ("controls", "risks")
+                   "controls and evidence to GRC tools, pulls their risk scenarios into the risk register, pulls the "
+                   "frameworks they have loaded, and pushes CyFun self-assessments when that flow is on.")
+    flow_domains = ("controls", "risks", "frameworks", "assessments")
     permissions = ("read", "tool_api", "flows", "grc_write", "agents")
 
     def __init__(self, hub):
@@ -69,7 +71,27 @@ class GrcSupervisor(FlowOwner):
             return {"counts": await self.push_records(flow, records, label=lambda r: r["ref_id"])}
         if flow.domain == "risks" and flow.direction == "pull":
             return await self._pull_risks(flow)
+        if flow.domain == "frameworks" and flow.direction == "pull":
+            return await self._pull_frameworks(flow)
+        if flow.domain == "assessments" and flow.direction == "push":
+            return await self._push_assessments(flow)
         raise ValueError(f"The GRC Supervisor cannot {flow.direction} {flow.domain}")
+
+    async def _pull_frameworks(self, flow: Flow) -> dict[str, Any]:
+        """Store the frameworks a GRC tool has loaded. They stay read-only in the Compliance hub."""
+        records, info = await self.pull_records(flow)
+        counts = framework_sync.store(self.hub, flow.tool_id, records, bool(flow.options.get("retire_missing", True)))
+        counts["dropped"] = info["dropped"]
+        detail = ""
+        if info["dropped"]:
+            detail = f"{info['dropped']} record(s) could not be read: {'; '.join(info['errors'][:3])}"
+        return {"counts": counts, "detail": detail}
+
+    async def _push_assessments(self, flow: Flow) -> dict[str, Any]:
+        """Send the hub's CyFun self-assessments. The connector writes them only when the connection allows it."""
+        records = framework_sync.push_records(self.hub)
+        counts = await self.push_records(flow, records, label=lambda r: r.get("name") or r["hub_id"])
+        return {"counts": counts}
 
     async def _pull_risks(self, flow: Flow) -> dict[str, Any]:
         records, info = await self.pull_records(flow)

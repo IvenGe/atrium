@@ -99,6 +99,11 @@ class RequirementResult(_Base):
     score: int | None = None
     documentation_score: int | None = None
 
+    @field_validator("status", "urn", "ref_id", mode="before")
+    @classmethod
+    def _bits(cls, value: Any) -> str:
+        return text(value, 200)
+
     @field_validator("result", mode="before")
     @classmethod
     def _result(cls, value: Any) -> str:

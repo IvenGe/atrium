@@ -6,6 +6,19 @@ const stat = (label, value, sub, iconName, href) => html`
   <a class="card stat" href="${href}"><div class="stat-icon">${icon(iconName)}</div>
   <div><div class="label">${label}</div><div class="value">${value ?? "-"}</div><div class="sub">${sub}</div></div></a>`;
 
+/** The rules-mode notice. Hidden once ChatGPT, Grok, a local model, or Claude can plan in plain language. */
+export function modelNotice(ov, style = "margin-bottom:16px") {
+  const model = ov?.model;
+  if (!ov || ov.llm?.available || model?.plain_language) return "";
+  if (model?.provider && model.provider !== "rules" && model.provider !== "anthropic") {
+    const name = model.label || "The selected model";
+    return html`<div class="notice" style="${style}">${icon("bot")}<div><b>${name} needs an API key.</b>
+      <span class="muted">Add it under Settings so agents can plan in plain language.</span></div></div>`;
+  }
+  return html`<div class="notice" style="${style}">${icon("bot")}<div><b>Agents run in rules mode.</b>
+    <span class="muted">Everything works. To let agents plan in plain language, pick ChatGPT, Grok or a local model in Settings, or start the hub with <code>ANTHROPIC_API_KEY</code> set. Code patches use Claude.</span></div></div>`;
+}
+
 export function toolCard(t) {
   const level = t.report?.level;
   return html`<a class="tool-card" href="#/tools/${t.id}">
@@ -40,8 +53,7 @@ export async function render(el, ctx) {
         ${stat("Vulnerabilities", ov.vulnerabilities_open, ov.vulnerabilities_overdue ? `${ov.vulnerabilities_overdue} past their deadline` : "open findings", "bug", "#/vulnerabilities")}
         ${stat("Compliance", ov.compliance_score != null ? `${ov.compliance_score}%` : "-", `${ov.risks_open} open risks`, "shield", "#/compliance")}
       </div>
-      ${!ov.llm.available ? html`<div class="notice" style="margin-bottom:16px">${icon("bot")}<div><b>Agents run in rules mode.</b>
-        <span class="muted">Everything works, but to let agents plan in plain language and write code patches, start the hub with <code>ANTHROPIC_API_KEY</code> set.</span></div></div>` : ""}
+      ${modelNotice(ov)}
       <div class="grid split">
         <section class="card"><header><h2>Apps</h2><a href="#/tools">All apps &rarr;</a></header>
           ${tools.length ? html`<div class="tool-grid">${tools.map(toolCard)}</div>`

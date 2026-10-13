@@ -3,7 +3,7 @@ import { connectEvents, disconnectEvents, get, onEvent, post } from "./api.js";
 import { avatar, openChangePassword, openSessions, roleBadge, session, showAuth, showUnreachable } from "./auth.js";
 import { xColor, xDomains, xHref } from "./extensions.js";
 import { actions, appIcon, builtinIcon, can, debounce, emptyState, html, icon, modal, setHTML, timeAgo, toggleTheme } from "./ui.js";
-import * as home from "./views/home.js";
+import * as home from "./views/home.js?v=10";
 import * as tools from "./views/tools.js";
 import * as integration from "./views/integration.js";
 import * as network from "./views/network.js";
@@ -277,7 +277,6 @@ async function openPalette() {
 
 // ---------- get started ----------
 function getStarted() {
-  const llm = state.overview?.llm;
   const step = (n, title, text, act, label, minRole = "") => html`<div class="check-row"><div class="ico pass" style="width:28px;height:28px"><b>${n}</b></div>
     <div style="flex:1"><h3>${title}</h3><p class="muted">${text}</p></div><button type="button" class="btn sm" data-act="${act}" data-min-role="${minRole}">${label}</button></div>`;
   const m = modal({
@@ -291,8 +290,7 @@ function getStarted() {
       ${step(4, "Review approvals", "Agents ask before they change anything. Approve or reject their patches, data flows, scans and repairs.", "approvals", "Open")}
       ${step(5, "Check compliance", "The GRC Supervisor maps live evidence to ISO 27001, SOC 2 and NIS2 controls.", "compliance", "Open")}
       ${can("admin") ? step(6, "Invite your team", "Give people their own accounts as viewer, operator or admin, and create API tokens for integrations.", "users", "Open") : ""}
-      ${llm && !llm.available ? html`<div class="notice" style="margin-top:14px">${icon("bot")}<div><b>Agents are in rules mode.</b>
-        <span class="muted">Set <code>ANTHROPIC_API_KEY</code> before starting the hub to let them plan in plain language and write code patches with Claude.</span></div></div>` : ""}`,
+      ${home.modelNotice(state.overview, "margin-top:14px")}`,
   });
   actions(m.el, {
     import: () => { m.close(); tools.openImport(); },
