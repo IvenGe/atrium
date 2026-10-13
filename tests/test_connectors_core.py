@@ -65,7 +65,8 @@ def test_scan_targets_are_addresses_or_hostnames(value, ok):
 def test_registry_catalog_and_detection():
     kinds = {c["kind"]: c for c in connectors.catalog()}
     assert {"snipeit", "ciso_assistant", "openvas", "generic_rest"} <= set(kinds)
-    assert kinds["openvas"]["actions"] == ["scan", "scan_status"] and kinds["snipeit"]["system_of_record"] == ["assets"]
+    assert kinds["openvas"]["actions"] == ["retarget_scanner", "scan", "scan_status", "scanner_check"]
+    assert kinds["snipeit"]["system_of_record"] == ["assets"]
     assert any(f["kind"] == "secret" for f in kinds["generic_rest"]["fields"])
     tool = Tool(id="snipe-it", name="Snipe-IT", source_type="local", source="/x", manifest=Manifest(id="snipe-it", name="Snipe-IT"))
     assert connectors.detect(tool)[0]["kind"] == "snipeit"

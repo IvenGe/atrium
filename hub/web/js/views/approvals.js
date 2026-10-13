@@ -19,6 +19,7 @@ const DESIGNER = { templates: "templates", claude: "designed by Claude", auto: "
 const DIAGNOSIS = {
   credentials: "credentials refused", base_path: "API path", validation: "rejected data", unreachable: "unreachable", unknown: "unknown error",
   mapping: "mapping change", config: "settings change", manual: "needs a person", generated: "generated connector",
+  scanner: "scanner",
 };
 
 const diffLines = (diff) => (diff ? diff.split("\n").length : 0);
@@ -47,6 +48,18 @@ function scanDetails(p, names) {
     ${p.origin ? html`<dt>Requested by</dt><dd>${p.origin}</dd>` : ""}</dl>`;
 }
 
+function repairChange(p, change) {
+  if (change.kind === "scanner_socket") {
+    const missing = change.previous ? html`<span class="mono">${change.previous}</span> to ` : "";
+    return html`<p style="font-size:12.5px;margin-bottom:6px">Approving links ${missing}<span class="mono">${change.host}</span> and runs the scan again. The link is in /run, so a reboot can drop it; the same repair creates it again.</p>
+      ${p.diff ? collapsibleDiff(p.diff, "scanner change") : ""}`;
+  }
+  return html`<p style="font-size:12.5px;margin-bottom:6px">${p.diagnosis === "generated"
+      ? html`Approving creates a <b>${change.kind === "generic_rest" ? "Generic REST" : change.kind}</b> connection without credentials; an administrator enters them in the tool's Connection tab.`
+      : html`Approving changes these connection settings (never the address the credentials go to) and runs the flow again:`}</p>
+    ${collapsibleDiff(p.diff, "settings change")}`;
+}
+
 function repairDetails(p, names) {
   const change = p.change;
   return html`<div class="row" style="margin:6px 0 10px;gap:6px">${badge(DIAGNOSIS[p.diagnosis] || p.diagnosis, p.diagnosis === "generated" ? "info" : "warn")}
@@ -56,11 +69,7 @@ function repairDetails(p, names) {
     ${p.tried?.length ? html`<details style="margin-bottom:10px"><summary class="muted" style="cursor:pointer">Tried ${p.tried.length} variant(s)</summary>
       <div style="margin-top:6px">${p.tried.map((t) => html`<div class="check-row"><div class="ico ${t.ok ? "pass" : "fail"}">${icon(t.ok ? "check" : "x")}</div>
         <div style="min-width:0"><code>${t.field}</code> = <span class="mono">${t.value}</span>${t.detail ? html`<div class="faint" style="font-size:12px">${t.detail}</div>` : ""}</div></div>`)}</div></details>` : ""}
-    ${change ? html`<p style="font-size:12.5px;margin-bottom:6px">${p.diagnosis === "generated"
-        ? html`Approving creates a <b>${change.kind === "generic_rest" ? "Generic REST" : change.kind}</b> connection without credentials; an administrator enters them in the tool's Connection tab.`
-        : html`Approving changes these connection settings (never the address the credentials go to) and runs the flow again:`}</p>
-      ${collapsibleDiff(p.diff, "settings change")}`
-      : html`<p class="faint" style="font-size:12.5px">No settings change: approving runs the flow again once the cause is fixed.</p>`}`;
+    ${change ? repairChange(p, change) : html`<p class="faint" style="font-size:12.5px">No settings change: approving runs the flow again once the cause is fixed.</p>`}`;
 }
 
 function teamDetails(p, names) {
@@ -191,6 +200,7 @@ function resultText(a) {
   if (r.branch) return r.branch;
   if (r.exit_code !== undefined) return `exit ${r.exit_code}`;
   if (r.location) return r.location;
+  if (r.socket) return `linked ${r.socket}`;
   if (r.applied !== undefined) return r.applied ? "settings changed" : "retried";
   if (r.counts) return Object.entries(r.counts).filter(([k, v]) => k !== "total" && v).map(([k, v]) => `${v} ${k}`).join(", ") || "scan finished";
   if (r.status) return r.status;

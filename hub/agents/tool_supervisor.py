@@ -26,10 +26,13 @@ PUSH_ACTIONS = ("created", "updated", "skipped", "failed")
 
 def _side_effect_allowed(sender: str, name: str) -> bool:
     """A person may start a side-effecting action. A scan is started only by the Vulnerability Supervisor,
-    which is the scan approval path. Every other agent is refused."""
+    which is the scan approval path. Pointing a scanner at its local socket is the Patch Agent's repair.
+    Every other agent is refused."""
     if sender.startswith("user:"):
         return True
-    return name == "scan" and sender == "module:vulns"
+    if name == "scan" and sender == "module:vulns":
+        return True
+    return name == "retarget_scanner" and sender == "patcher"
 
 
 def guardrails_on(hub) -> bool:

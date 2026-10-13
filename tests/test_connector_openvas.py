@@ -69,8 +69,9 @@ class FakeGmp:
         self.configs = [{"id": FULL_AND_FAST, "name": "Full and fast", "nvts": "95000", "usage": "scan"},
                         {"id": EMPTY_CONFIG, "name": "Empty", "nvts": "0", "usage": "scan"},
                         {"id": POLICY, "name": "IT-Grundschutz", "nvts": "300", "usage": "policy"}]
-        self.scanners = [{"id": OPENVAS_DEFAULT, "name": "OpenVAS Default", "type": "2"},
-                         {"id": CVE_SCANNER, "name": "CVE", "type": "3"}]
+        self.scanners = [{"id": OPENVAS_DEFAULT, "name": "OpenVAS Default", "type": "2",
+                           "host": "/run/ospd/ospd-openvas.sock", "port": "0"},
+                         {"id": CVE_SCANNER, "name": "CVE", "type": "3", "host": "", "port": "0"}]
         self.port_lists = [{"id": ALL_IANA_TCP, "name": "All IANA assigned TCP"},
                            {"id": NMAP_PORTS, "name": "All TCP and Nmap top 100 UDP"}]
         self.feed_syncing = False
@@ -242,7 +243,17 @@ class FakeGmp:
 
     def do_get_scanners(self, el):
         return self._listing(el, "scanner", self.scanners, lambda s: (
-            f'<scanner id="{s["id"]}"><name>{escape(s["name"])}</name><type>{s["type"]}</type></scanner>'), "scanner_id")
+            f'<scanner id="{s["id"]}"><name>{escape(s["name"])}</name><type>{s["type"]}</type>'
+            f'<host>{escape(s.get("host") or "")}</host><port>{s.get("port") or 0}</port></scanner>'), "scanner_id")
+
+    def do_modify_scanner(self, el):
+        scanner = next((s for s in self.scanners if s["id"] == el.get("scanner_id")), None)
+        if scanner is None:
+            return answer(el.tag, status="404", text="Failed to find scanner")
+        host = el.findtext("host")
+        if host is not None:
+            scanner["host"] = host
+        return answer(el.tag)
 
     def do_get_port_lists(self, el):
         return self._listing(el, "port_list", self.port_lists, lambda p: (
@@ -331,9 +342,12 @@ class FakeGmp:
     def do_get_results(self, el):
         t = terms(el.get("filter"))
         selected = [r for r in self.results if r["report_id"] == t.get("report_id", ("=", ""))[1]]
-        selected = [r for r in selected if r.get("qod", 80) >= int(t.get("min_qod", ("=", "70"))[1])]
+        if "min_qod" in t:
+            selected = [r for r in selected if r.get("qod", 80) >= int(t["min_qod"][1])]
         if t.get("severity", ("", ""))[0] == ">":
             selected = [r for r in selected if r["severity"] > float(t["severity"][1])]
+        elif t.get("severity", ("", ""))[0] == "<":
+            selected = [r for r in selected if r["severity"] < float(t["severity"][1])]
         selected.sort(key=lambda r: -r["severity"])
         shown = self.page(selected, el.get("filter"))
         total = len(selected) + self.lie_about_count
@@ -518,7 +532,8 @@ def test_settings_are_validated_and_the_endpoint_covers_tls_verification():
     fields = {f["name"]: f for f in entry["fields"]}
     assert fields["scan_config_id"]["default"] == FULL_AND_FAST and fields["scanner_id"]["default"] == OPENVAS_DEFAULT
     assert fields["port_list_id"]["default"] == ALL_IANA_TCP and fields["password"]["kind"] == "secret"
-    assert entry["actions"] == ["scan", "scan_status"] and entry["capabilities"] == {"vulnerabilities": ["read"]}
+    assert entry["actions"] == ["retarget_scanner", "scan", "scan_status", "scanner_check"]
+    assert entry["capabilities"] == {"vulnerabilities": ["read"]}
     tool = Tool(id="gvm", name="Greenbone", source_type="local", source="/x", manifest=Manifest(id="gvm", name="Greenbone"))
     assert OpenVasConnector.detect(tool) == 90
 
@@ -592,6 +607,79 @@ def test_scan_refuses_odd_hosts_and_cleans_up_after_a_failed_start(gmp):
     with pytest.raises(ConnectorError) as failure:
         run(connector.action("scan", {"hosts": ["10.0.0.5"], "name": "x"}))
     assert failure.value.status == 400 and failure.value.message.endswith("Error in host specification")
+
+
+def _listen(path: Path) -> socket.socket:
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    sock.bind(str(path))
+    return sock
+
+
+def test_a_failed_scan_includes_the_scanners_error(gmp):
+    connector = gmp.connector()
+    job = run(connector.action("scan", {"hosts": ["10.0.0.5"], "name": "Atrium scan"}))
+    task = gmp.tasks[job["job_id"]]
+    task["status"] = "Interrupted"
+    gmp.results.append({"report_id": task["current"], "task_id": job["job_id"], "name": "Error Message", "host": "",
+                        "port": "general", "oid": "0", "severity": -3, "qod": 0, "description": "Could not connect to Scanner",
+                        "cves": []})
+    status = run(connector.action("scan_status", {"job_id": job["job_id"]}))
+    assert status["status"] == "interrupted" and status["detail"] == "Could not connect to Scanner"
+
+
+def test_a_missing_scanner_socket_is_replaced_by_the_one_ospd_opened(gmp, tmp_path):
+    missing, live = tmp_path / "ospd-openvas.sock", tmp_path / "ospd.sock"
+    sock = _listen(live)
+    try:
+        gmp.scanners[0]["host"] = str(missing)
+        gmp.scanner_online = False
+        checked = run(gmp.connector().scanner_check())
+        assert checked["online"] is False and checked["suggestion"]["host"] == str(live)
+        assert checked["suggestion"]["previous"] == str(missing)
+        assert checked["suggestion"]["scanner_id"] == OPENVAS_DEFAULT
+
+        gmp.scanner_online = True
+        moved = run(gmp.connector().retarget_scanner(OPENVAS_DEFAULT, str(live)))
+        assert moved == {"scanner_id": OPENVAS_DEFAULT, "host": str(live), "previous": str(missing)}
+        assert gmp.scanners[0]["host"] == str(missing)  # GMP will not store a socket path
+        assert os.path.islink(missing) and os.path.realpath(missing) == os.path.realpath(live)
+        assert gmp.sent("modify_scanner") == []
+    finally:
+        sock.close()
+
+
+def test_retarget_restores_the_old_path_when_the_scanner_still_does_not_answer(gmp, tmp_path):
+    missing, live = tmp_path / "ospd-openvas.sock", tmp_path / "ospd.sock"
+    sock = _listen(live)
+    try:
+        gmp.scanners[0]["host"] = str(missing)
+        gmp.scanner_online = False
+        with pytest.raises(ConnectorError, match="link was removed") as failure:
+            run(gmp.connector().retarget_scanner(OPENVAS_DEFAULT, str(live)))
+        assert gmp.scanners[0]["host"] == str(missing) and not missing.exists()
+        assert gmp.sent("modify_scanner") == []
+        assert failure.value.status == 503
+    finally:
+        sock.close()
+
+
+def test_retarget_refuses_a_socket_that_is_not_the_one_beside_the_missing_path(gmp, tmp_path):
+    missing = tmp_path / "ospd-openvas.sock"
+    elsewhere = tmp_path / "other"
+    elsewhere.mkdir()
+    sock = _listen(elsewhere / "ospd.sock")
+    present = _listen(tmp_path / "ospd.sock")
+    try:
+        gmp.scanners[0]["host"] = str(missing)
+        with pytest.raises(ConnectorError, match="beside the missing one"):
+            run(gmp.connector().retarget_scanner(OPENVAS_DEFAULT, str(elsewhere / "ospd.sock")))
+        gmp.scanners[0]["host"] = str(tmp_path / "ospd.sock")
+        with pytest.raises(ConnectorError, match="already there"):
+            run(gmp.connector().retarget_scanner(OPENVAS_DEFAULT, str(tmp_path / "ospd.sock")))
+        assert gmp.sent("modify_scanner") == [] and not missing.exists()
+    finally:
+        sock.close()
+        present.close()
 
 
 # -- findings ---------------------------------------------------------------------------------------

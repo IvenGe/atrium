@@ -13,7 +13,7 @@ import httpx
 import yaml
 
 from .. import connectors, guardrails
-from ..bus import Message
+from ..bus import AgentError, Message
 from ..connectors import base as connector_sdk
 from ..connectors import generic_rest
 from ..connectors.base import ConnectorError, endpoint_of
@@ -97,6 +97,28 @@ PATCH_SCHEMA = {
     "required": ["title", "rationale", "changes", "health_path"],
     "additionalProperties": False,
 }
+
+
+def _scanner_failure(message: str, status: Any) -> bool:
+    """A scan that died in the scanner, not a refused login or a missing asset."""
+    low = message.lower()
+    if "in the scanner" in low:
+        return True
+    return status == 503 and "scanner" in low
+
+
+def _scanner_host_change(suggestion: dict[str, Any]) -> dict[str, str] | None:
+    """The only scanner change a repair may propose: one local socket path replaced by another."""
+    host = str(suggestion.get("host") or "")
+    previous = str(suggestion.get("previous") or "")
+    scanner_id = str(suggestion.get("scanner_id") or "")
+    if not host.startswith("/") or not previous.startswith("/") or ".." in f"{host}/{previous}".split("/"):
+        return None
+    if any(c in host + previous for c in "\x00\n\r\t <>"):
+        return None
+    if len(scanner_id) < 32 or any(c not in "0123456789abcdefABCDEF-" for c in scanner_id):
+        return None
+    return {"kind": "scanner_socket", "scanner_id": scanner_id, "host": host, "previous": previous}
 
 
 class PatchAgent(BaseAgent):
@@ -360,6 +382,10 @@ class PatchAgent(BaseAgent):
         status, message = error.get("status"), str(error.get("message") or "the flow failed")
         excerpt = error.get("excerpt") or ""
         title = f"Repair: {flow.title}"
+        if flow.direction == "scan" and _scanner_failure(message, status):
+            scanned = await self._scan_repair(flow, tool, message)
+            if scanned is not None:
+                return scanned
         if status in (401, 403):
             return {"diagnosis": "credentials", "title": title, "change": None, "detail": (
                 f"{tool.name} refused the hub's credentials ({message}). An administrator should check the API token "
@@ -393,13 +419,54 @@ class PatchAgent(BaseAgent):
         return {"diagnosis": "unknown", "title": title, "change": None,
                 "detail": f"{tool.name} answered: {message}" + (f"\n\n{excerpt}" if excerpt else "")}
 
+    async def _scan_repair(self, flow: Flow, tool: Tool, message: str) -> dict[str, Any] | None:
+        """A scan that stopped inside the scanner. A missing local socket is a real change; the tool being up is
+        not an 'unreachable' retry."""
+        checked = await self._scanner_check(tool)
+        if checked is None:
+            return None
+        title = f"Repair: {flow.title}"
+        suggestion = checked.get("suggestion") if isinstance(checked.get("suggestion"), dict) else None
+        change = _scanner_host_change(suggestion) if suggestion else None
+        if change:
+            previous, host = change["previous"], change["host"]
+            where = f" at {previous}" if previous else ""
+            return {"diagnosis": "scanner", "title": title, "change": change,
+                    "diff": f"- socket: {previous}\n+ socket: {host}\n",
+                    "detail": f"{tool.name} interrupted the scan because it could not reach its scanner{where}. "
+                              f"The scanner is listening on {host}. Greenbone will not store a socket path, so the "
+                              f"missing name is linked to that socket. Approve to create the link and run the scan again."}
+        reason = str(checked.get("message") or message).strip()
+        where = str(checked.get("host") or "").strip()
+        where_text = f" The scanner record points at {where}." if where else ""
+        if checked.get("online") is False:
+            detail = (f"The scan stopped inside {tool.name}, which answered. {reason}.{where_text} "
+                      "The web interface can be up while the scanner is not. Start the scanner (and its broker if "
+                      "the scanner log says the broker refused the connection), then approve to run the scan again.")
+        else:
+            detail = (f"The scan stopped inside {tool.name}: {message}. The scanner answers a check, so this is not "
+                      "a connection failure. Approve to run the scan again once the cause in the scanner is fixed.")
+        return {"diagnosis": "scanner", "title": title, "change": None, "detail": detail}
+
+    async def _scanner_check(self, tool: Tool) -> dict[str, Any] | None:
+        try:
+            reply = await self.ask(f"tool:{tool.id}", "connector.action",
+                                   {"name": "scanner_check", "params": {}}, timeout=90)
+        except AgentError:
+            return None
+        if reply.get("failure") or not isinstance(reply.get("result"), dict):
+            return None
+        return reply["result"]
+
     async def _submit_repair(self, tool: Tool, proposal: dict[str, Any], flow: Flow | None,
                              error: dict[str, Any]) -> dict[str, Any]:
         conn = connections.get(self.hub, tool.id)
         change = proposal.get("change")
+        diff = str(proposal.get("diff") or "")
+        if not diff and change and isinstance(change.get("config"), dict) and conn and conn.kind == change.get("kind"):
+            diff = config_diff(conn.config, change["config"])
         payload = {"flow_id": flow.id if flow else None, "tool_id": tool.id, "diagnosis": proposal["diagnosis"],
-                   "change": change, "diff": config_diff(conn.config if conn and change and conn.kind == change["kind"] else {},
-                                                         change["config"]) if change else "",
+                   "change": change, "diff": diff,
                    "tried": proposal.get("tried", []), "error": {"message": error.get("message"), "status": error.get("status")}}
         if change and self.hub.prefs["autonomy"] == "autonomous":
             approval = self.hub.approvals.create("repair", proposal["title"], proposal["detail"], payload, self.id)
@@ -421,7 +488,20 @@ class PatchAgent(BaseAgent):
         payload = approval.payload
         flow = flows.get(self.hub, payload.get("flow_id") or "")
         change = payload.get("change")
-        if approved and change:
+        if approved and change and change.get("kind") == "scanner_socket":
+            try:
+                reply = await self.ask(f"tool:{payload['tool_id']}", "connector.action", {
+                    "name": "retarget_scanner",
+                    "params": {"scanner_id": change.get("scanner_id"), "host": change.get("host")},
+                }, timeout=90)
+                failure = reply.get("failure")
+                if failure:
+                    raise ConnectorError(failure.get("message") or "the scanner could not be pointed at its socket")
+            except (AgentError, ConnectorError, ValueError) as exc:
+                self.hub.approvals.complete(approval.id, False, {"error": getattr(exc, "message", None) or str(exc)})
+                self.log("warn", f"Could not apply '{approval.title}': {exc}")
+                approved = False
+        elif approved and change:
             try:
                 connections.update_config(self.hub, payload["tool_id"], change["config"], f"{actor} (repair)",
                                           kind=change["kind"], generated=change.get("generated"))
@@ -430,7 +510,10 @@ class PatchAgent(BaseAgent):
                 self.log("warn", f"Could not apply '{approval.title}': {exc}")
                 approved = False  # nothing changed: the flow keeps its state, and a later repair may be proposed
         if approved:
-            self.hub.approvals.complete(approval.id, True, {"applied": bool(change)})
+            result = {"applied": bool(change)}
+            if change and change.get("kind") == "scanner_socket" and change.get("host"):
+                result["socket"] = change["host"]
+            self.hub.approvals.complete(approval.id, True, result)
         if flow is not None:
             flow.repair, flow.failures = None, 0
             flows.save(self.hub, flow)

@@ -12,7 +12,12 @@ web/pages/targets/TargetDialog.tsx) and python-gvm (gvm/connections), October 20
 - a scan is create_target (hosts and a port list) -> create_task (scan config, target, scanner) -> start_task, which
   answers the report id. The job id is the task id: get_tasks gives its status (New, Requested, Queued, Running,
   Processing, Done, Stop Requested, Stopped, Interrupted, Delete Requested) and progress (-1 when not running), and
-  last_report - the last finished report with its timestamp;
+  last_report - the last finished report with its timestamp. An Interrupted, Stopped or Failed task also carries the
+  scanner's own error when the report has a negative-severity result (for example "Could not connect to Scanner");
+- scanner_check reads the configured scanner and verifies it. When that scanner's unix socket is missing and ospd is
+  listening on the other of ospd.sock and ospd-openvas.sock in the same directory, retarget_scanner links the missing
+  path to that socket and verifies the scanner again. GMP's modify_scanner rejects a unix socket ("Erroneous host
+  value"), so the scanner record is left as it is. A failed check removes the link. Nothing else may be linked;
 - defaults as gvmd / GSA define them: scan config "Full and fast" daba56c8-73ec-11df-a475-002264764cea, scanner
   "OpenVAS Default" 08b69003-5fc2-4037-a479-93b440211c73, port list "All IANA assigned TCP"
   33d0cd82-57c6-11e1-8ed1-406186ea4fc5;
@@ -37,12 +42,15 @@ GSA uses them; an NVT's solution is in <nvt><solution type=...> (GMP 20.08+) or 
 from __future__ import annotations
 
 import asyncio
+import errno
 import ipaddress
 import os
 import re
 import secrets as tokens
 import socket
 import ssl
+import stat
+import subprocess
 import xml.etree.ElementTree as ET
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -50,8 +58,8 @@ from pathlib import PurePosixPath
 from typing import Any, AsyncIterator
 from xml.sax.saxutils import escape, quoteattr
 
-from .base import HOSTNAME_RE, Connector, ConnectorError, ConnectorField, check, severity_from_score, to_timestamp, \
-    valid_scan_target
+from .base import FAILED_SCAN_STATES, HOSTNAME_RE, Connector, ConnectorError, ConnectorField, check, \
+    severity_from_score, to_timestamp, valid_scan_target
 
 GMP_PORT = 9390
 FULL_AND_FAST = "daba56c8-73ec-11df-a475-002264764cea"
@@ -284,8 +292,8 @@ class OpenVasConnector(Connector):
                             "whether the hub keeps them."),
     ]
     capabilities = {"vulnerabilities": {"read"}}
-    actions = {"scan", "scan_status"}
-    side_effects = {"scan"}
+    actions = {"scan", "scan_status", "scanner_check", "retarget_scanner"}
+    side_effects = {"scan", "retarget_scanner"}
 
     @classmethod
     def detect(cls, tool) -> int:
@@ -611,6 +619,10 @@ class OpenVasConnector(Connector):
             return await self.scan(params.get("hosts"), params.get("name"))
         if name == "scan_status":
             return await self.scan_status(params.get("job_id"))
+        if name == "scanner_check":
+            return await self.scanner_check()
+        if name == "retarget_scanner":
+            return await self.retarget_scanner(params.get("scanner_id"), params.get("host"))
         return await super().action(name, params)
 
     async def scan(self, hosts: Any, name: Any = None) -> dict[str, Any]:
@@ -678,19 +690,108 @@ class OpenVasConnector(Connector):
                 if exc.status != 404:
                     raise
                 root = ET.Element("get_tasks_response")
-        task = root.find("task")
-        if task is None:
-            return {"status": "failed", "progress": 0, "done": False,
-                    "detail": f"The scan task {job_id} no longer exists in {self.title}"}
-        raw = _clean(task.findtext("status"), 60)
-        state, done = TASK_STATES.get(raw.lower(), (raw.lower() or "unknown", False))
-        progress = _float(task.findtext("progress"))
-        progress = 100 if done else max(0, min(99, int(progress or 0)))
-        report = task.find("current_report/report")
-        if report is None:
-            report = task.find("last_report/report")
-        return {"status": state, "progress": progress, "done": done, "scanner_status": raw,
-                "report_id": report.get("id") if report is not None else None}
+            task = root.find("task")
+            if task is None:
+                return {"status": "failed", "progress": 0, "done": False,
+                        "detail": f"The scan task {job_id} no longer exists in {self.title}"}
+            raw = _clean(task.findtext("status"), 60)
+            state, done = TASK_STATES.get(raw.lower(), (raw.lower() or "unknown", False))
+            progress = _float(task.findtext("progress"))
+            progress = 100 if done else max(0, min(99, int(progress or 0)))
+            report = task.find("current_report/report")
+            if report is None:
+                report = task.find("last_report/report")
+            report_id = report.get("id") if report is not None else None
+            detail = ""
+            if state in FAILED_SCAN_STATES and report_id:
+                detail = await self._scan_errors(gmp, job_id, report_id)
+            out = {"status": state, "progress": progress, "done": done, "scanner_status": raw, "report_id": report_id}
+            if detail:
+                out["detail"] = detail
+            return out
+
+    async def _scan_errors(self, gmp: Gmp, task_id: str, report_id: str) -> str:
+        """The scanner's own error text for a failed task. Empty when the report has none or the read fails."""
+        if not UUID_RE.match(report_id):
+            return ""
+        try:
+            filt = attr(f"report_id={report_id} severity<0 rows=5")
+            root = await gmp.command(
+                f'<get_results task_id={attr(task_id)} details="1" filter={filt}/>', "reading the scan error")
+        except ConnectorError:
+            return ""
+        texts: list[str] = []
+        for result in root.findall("result"):
+            text = _clean(result.findtext("description") or result.findtext("name"), 240)
+            if text and text not in texts:
+                texts.append(text)
+        return "; ".join(texts[:3])
+
+    async def scanner_check(self) -> dict[str, Any]:
+        """Whether the configured scanner answers, and a local ospd socket it could use instead."""
+        scanner_id = str(self.config.get("scanner_id") or OPENVAS_DEFAULT).strip() or OPENVAS_DEFAULT
+        async with self.session() as gmp:
+            scanner = await self._read_scanner(gmp, scanner_id)
+            online, message = await self._verify(gmp, scanner["id"])
+        suggestion = None
+        host = scanner["host"]
+        if not online:
+            alt = sibling_ospd_socket(host)
+            if alt:
+                suggestion = {"scanner_id": scanner["id"], "name": scanner["name"], "host": alt, "previous": host}
+        return {"online": online, "scanner_id": scanner["id"], "name": scanner["name"], "host": host,
+                "message": message, "suggestion": suggestion}
+
+    async def retarget_scanner(self, scanner_id: Any, host: Any) -> dict[str, Any]:
+        """Link a scanner's missing unix socket to the ospd socket beside it. GMP refuses to store a socket path,
+        so the scanner record stays and the missing name becomes a symlink. Anything else is refused, and a scanner
+        that still does not answer loses the link."""
+        scanner_id = str(scanner_id or "").strip()
+        wanted = unix_socket_path(str(host or ""))
+        if not UUID_RE.match(scanner_id) or wanted is None or not _is_socket(wanted):
+            raise ConnectorError("Refusing to point the scanner at anything other than a local ospd socket")
+        if os.path.basename(wanted) not in OSPD_SOCKETS:
+            raise ConnectorError("Refusing to point the scanner at anything other than a local ospd socket")
+        async with self.session() as gmp:
+            current = await self._read_scanner(gmp, scanner_id)
+            previous = unix_socket_path(current["host"])
+            if previous is None:
+                raise ConnectorError("This scanner is not reached through a local socket, so it was left unchanged")
+            if os.path.lexists(previous):
+                raise ConnectorError("The scanner's socket is already there; it was left unchanged")
+            if os.path.dirname(previous) != os.path.dirname(wanted) or sibling_ospd_socket(previous) != wanted:
+                raise ConnectorError("Refusing to point the scanner at a socket it did not find beside the missing one")
+            _link_socket(previous, wanted)
+            try:
+                await self._verify_or_raise(gmp, scanner_id)
+            except ConnectorError as exc:
+                restored = _unlink_socket(previous, wanted)
+                note = "The link was removed." if restored else "The link could not be removed."
+                raise self.error(f"Linking the scanner socket to {wanted} did not make it answer ({exc.message}). {note}",
+                                 status=exc.status) from exc
+        return {"scanner_id": scanner_id, "host": wanted, "previous": previous}
+
+    async def _read_scanner(self, gmp: Gmp, scanner_id: str) -> dict[str, str]:
+        root = await gmp.command(f"<get_scanners scanner_id={attr(scanner_id)}/>", "reading the scanner")
+        item = root.find("scanner")
+        if item is None:
+            raise self.error(f"{self.title} could not find the scanner {scanner_id}", status=404)
+        return {"id": item.get("id") or scanner_id, "name": _clean(item.findtext("name")) or scanner_id,
+                "host": (item.findtext("host") or "").strip(), "port": (item.findtext("port") or "").strip(),
+                "type": (item.findtext("type") or "").strip()}
+
+    async def _verify(self, gmp: Gmp, scanner_id: str) -> tuple[bool, str]:
+        try:
+            root = await self._verify_or_raise(gmp, scanner_id)
+        except ConnectorError as exc:
+            if exc.status in (401, 403):
+                return True, "Not checked: this account may not verify scanners"
+            return False, exc.message
+        version = _clean(root.findtext("version"))
+        return True, "The scanner answers" + (f" ({version})" if version else "")
+
+    async def _verify_or_raise(self, gmp: Gmp, scanner_id: str) -> ET.Element:
+        return await gmp.command(f"<verify_scanner scanner_id={attr(scanner_id)}/>", "verifying the scanner")
 
     # -- findings --------------------------------------------------------------------
 
@@ -824,6 +925,84 @@ class OpenVasConnector(Connector):
             "detected_at": _time(result.findtext("creation_time")) or _time(result.findtext("modification_time")),
             "scanner": SCANNER_NAME,
         }
+
+
+OSPD_SOCKETS = ("ospd-openvas.sock", "ospd.sock")
+
+
+def unix_socket_path(value: str) -> str | None:
+    """An absolute unix path with no parent segments. Anything else is not a scanner socket we may follow."""
+    text = str(value or "").strip()
+    if not text.startswith("/") or ".." in text.split("/") or any(c in text for c in "\x00\n\r\t <>"):
+        return None
+    return text
+
+
+def _is_socket(path: str) -> bool:
+    try:
+        return stat.S_ISSOCK(os.stat(path).st_mode)
+    except OSError:
+        return False
+
+
+def _link_socket(link: str, target: str) -> None:
+    """Make `link` a symlink to `target`. The scanner directory is often root-owned, so sudo -n is the fallback.
+    Never replaces a path that already exists."""
+    if os.path.lexists(link):
+        raise ConnectorError("The scanner socket path already exists; it was left unchanged")
+    try:
+        os.symlink(target, link)
+        return
+    except OSError as exc:
+        if exc.errno not in (errno.EACCES, errno.EPERM):
+            raise ConnectorError(f"Could not link the scanner socket: {exc.strerror or exc.__class__.__name__}") from exc
+    if not _sudo_link(target, link):
+        raise ConnectorError("Could not link the scanner socket: the hub cannot write that directory and sudo was refused")
+
+
+def _sudo_link(target: str, link: str) -> bool:
+    try:
+        done = subprocess.run(["sudo", "-n", "ln", "-s", "--", target, link],
+                              capture_output=True, timeout=20, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return done.returncode == 0 and os.path.islink(link) and os.path.realpath(link) == os.path.realpath(target)
+
+
+def _unlink_socket(link: str, target: str) -> bool:
+    """Remove a symlink this repair just created. A real socket or a link to somewhere else is left alone."""
+    if not os.path.islink(link) or os.path.realpath(link) != os.path.realpath(target):
+        return False
+    try:
+        os.unlink(link)
+        return True
+    except OSError:
+        pass
+    try:
+        done = subprocess.run(["sudo", "-n", "rm", "--", link], capture_output=True, timeout=20, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return done.returncode == 0 and not os.path.lexists(link)
+
+
+def sibling_ospd_socket(missing: str) -> str | None:
+    """The other ospd socket in the same directory, when `missing` is not a socket and exactly one sibling is."""
+    path = unix_socket_path(missing)
+    if path is None or _is_socket(path):
+        return None
+    directory = os.path.dirname(path)
+    try:
+        names = set(os.listdir(directory))
+    except OSError:
+        return None
+    found = []
+    for name in OSPD_SOCKETS:
+        if name == os.path.basename(path) or name not in names:
+            continue
+        candidate = os.path.join(directory, name)
+        if _is_socket(candidate):
+            found.append(candidate)
+    return found[0] if len(found) == 1 else None
 
 
 def _host_ok(host: str) -> bool:
