@@ -3,11 +3,12 @@
 // These answer 401 as part of signing in; any other 401 means the session is gone.
 const AUTH_PATHS = ["/auth/login", "/auth/setup", "/auth/me"];
 
-export async function api(path, { method = "GET", body } = {}) {
+export async function api(path, { method = "GET", body, signal } = {}) {
   const res = await fetch(`/api${path}`, {
     method,
     headers: { "Content-Type": "application/json", "X-Hub-Request": "1" },
     body: body === undefined ? undefined : JSON.stringify(body),
+    signal,
   });
   const data = await res.json().catch(() => null);
   if (!res.ok) {
@@ -29,7 +30,7 @@ export async function api(path, { method = "GET", body } = {}) {
 }
 
 export const get = (path) => api(path);
-export const post = (path, body = {}) => api(path, { method: "POST", body });
+export const post = (path, body = {}, opts = {}) => api(path, { method: "POST", body, ...opts });
 export const patch = (path, body = {}) => api(path, { method: "PATCH", body });
 export const put = (path, body = {}) => api(path, { method: "PUT", body });
 export const del = (path) => api(path, { method: "DELETE" });

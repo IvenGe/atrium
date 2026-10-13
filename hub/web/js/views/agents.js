@@ -3,13 +3,17 @@ import { scheduleLabel } from "../flows.js";
 import { actions, badge, builtinIcon, can, colorFor, confirmDialog, field, html, icon, md, modal, options, setHTML, timeAgo, timeIn, toast } from "../ui.js";
 
 // Chat transcripts (one per agent) survive navigation inside the app; redraw belongs to the Agents page currently shown.
-const chat = { agent: "supervisor", logs: {}, busy: new Set(), redraw: null };
+const chat = { agent: "supervisor", logs: {}, busy: new Set(), controllers: new Map(), clientIds: new Map(), seenReports: new Set(), redraw: null };
 
 /** Forget the transcripts, e.g. on sign-out, so the next person starts fresh. */
 export function resetChat() {
   chat.agent = "supervisor";
   chat.logs = {};
   chat.busy = new Set();
+  chat.controllers.forEach((c) => c.abort());
+  chat.controllers.clear();
+  chat.clientIds = new Map();
+  chat.seenReports = new Set();
 }
 
 const GROUPS = [
@@ -21,7 +25,8 @@ const ROLE_ICON = { supervisor: "bot", patcher: "wrench", operator: "terminal", 
 const MODULE_ICON = { "module:assets": "box", "module:people": "contact", "module:vulns": "bug" };
 const agentIcon = (a) => MODULE_ICON[a.id] || ROLE_ICON[a.role] || "bot";
 const PROVIDER_ICON = { anthropic: "bot", local: "server", rules: "sliders" };
-const MODE = { llm: "Claude", local: "the model", rules: "rules", team: "the team" };
+const MODE = { llm: "Claude", local: "the model", rules: "rules", team: "the team", stopped: "stopped" };
+const CHAT_RANK = { supervisor: 0, patcher: 1, operator: 2, "module-supervisor": 3, "team-agent": 4, "tool-supervisor": 5 };
 const AGENT_NAME = { patcher: "Patch Agent", operator: "Operator", supervisor: "Hub Supervisor" };
 const DESIGNERS = [
   ["auto", "Automatic", "Claude designs the team when it is connected; otherwise the templates for this kind of tool."],
@@ -29,7 +34,7 @@ const DESIGNERS = [
   ["claude", "Claude", "Claude reads the tool's manifest and designs the roles, tasks and permissions."],
 ];
 const enc = encodeURIComponent;
-const chatty = (a) => a.id === "supervisor" || a.kind === "custom";
+const chatty = (a) => a.chats !== false;
 
 function providerBadge(a) {
   const kind = a.provider_kind || (a.uses_llm ? "anthropic" : "rules");
@@ -59,6 +64,7 @@ function agentCard(a) {
 
 function coreButtons(a) {
   return html`<span class="row" style="gap:6px">
+    ${chatty(a) && a.id !== "supervisor" ? html`<button class="btn sm" data-act="chat-with" data-id="${a.id}" data-min-role="operator">${icon("chat")}Chat</button>` : ""}
     <button class="btn sm" data-act="toggle" data-id="${a.id}" data-paused="${a.paused}" data-min-role="admin">${icon(a.paused ? "play" : "pause")}${a.paused ? "Resume" : "Pause"}</button>
     <button class="btn sm" data-act="configure" data-id="${a.id}" data-min-role="admin">${icon("sliders")}Configure</button></span>`;
 }
@@ -129,14 +135,13 @@ function groupsView(agents, overview) {
 
 function greeting(a) {
   if (!a || a.id === "supervisor") {
-    return "Hi! I'm the **Hub Supervisor**, the lead of the hub team. Say `fix bugs` and I send the work to the Patch Agent. I can also `status`, `import owner/repo`, `patch <tool>`, `run df -h`, and `compliance`.";
+    return "Hi! I'm the **Hub Supervisor**. I supervise the team: say `fix bugs` and I send each tool to its supervisor and the Patch Agent, then they report back. You can also talk to any agent directly. **Stop** ends the request that is running. **New conversation** starts again.";
   }
-  const rules = a.provider_kind === "rules" ? " I run on rules: I can check health, run data flows and summarize the state." : "";
-  return `Hi! I'm **${a.name}**, ${a.title} in the ${a.team_name || a.team} team.${rules}`;
+  return `Hi! I'm **${a.name}**. Talk to me directly. I do the work and report it to the Hub Supervisor. **Stop** ends the request that is running.`;
 }
 
 function chatView(agents) {
-  const list = agents.filter(chatty);
+  const list = agents.filter(chatty).sort((a, b) => (CHAT_RANK[a.role] ?? 9) - (CHAT_RANK[b.role] ?? 9) || a.name.localeCompare(b.name));
   const a = list.find((x) => x.id === chat.agent) || list[0];
   const log = chat.logs[a?.id] || [];
   const busy = chat.busy.has(a?.id);
@@ -152,7 +157,8 @@ function chatView(agents) {
         ${busy ? html`<div class="bubble bot faint">Thinking${a.id === "supervisor" ? " and asking the other agents" : ""}...</div>` : ""}`
       : html`<div class="bubble bot">${md(greeting(a))}</div>`}</div>
     <form id="chat-form" data-min-role="operator"><input name="text" placeholder="Message ${a?.name || "the agent"}..." autocomplete="off" aria-label="Message" ${busy || off ? "disabled" : ""}>
-      <button class="btn primary" ${busy || off ? "disabled" : ""} aria-label="Send">${icon("send")}</button></form>
+      ${busy ? html`<button type="button" class="btn danger" data-act="stop" data-min-role="operator">Stop</button>`
+        : html`<button class="btn primary" ${off ? "disabled" : ""} aria-label="Send">${icon("send")}</button>`}</form>
     ${can("operator") ? "" : html`<p class="faint" style="font-size:12.5px">Chatting with agents needs the operator role.</p>`}`;
 }
 
@@ -221,13 +227,18 @@ export async function render(el, ctx) {
     log.push({ me: true, text });
     busy.add(id);
     input.value = "";
+    const clientId = crypto.randomUUID();
+    chat.clientIds.set(id, clientId);
     drawChat();
+    const controller = new AbortController();
+    chat.controllers.set(id, controller);
     try {
-      const reply = await post(`/agents/${enc(id)}/chat`, { text });
-      log.push({ me: false, text: reply.reply, mode: reply.mode, delegated: reply.delegated || [] });
+      const reply = await post(`/agents/${enc(id)}/chat`, { text, client_id: clientId }, { signal: controller.signal });
+      if (!controller.signal.aborted) log.push({ me: false, text: reply.reply, mode: reply.mode, delegated: reply.delegated || [] });
     } catch (err) {
-      log.push({ me: false, text: `Error: ${err.message}` });
+      if (!controller.signal.aborted && err.name !== "AbortError") log.push({ me: false, text: `Error: ${err.message}` });
     } finally {
+      chat.controllers.delete(id);
       busy.delete(id);
       if (logs === chat.logs && chat.agent === id) chat.redraw?.();
     }
@@ -283,11 +294,41 @@ export async function render(el, ctx) {
       const t = overview.teams.find((x) => x.team === d.team);
       if (t) proposeModal(t);
     },
+    async stop() {
+      const id = chat.agent;
+      const clientId = chat.clientIds.get(id);
+      let stopped = false;
+      try {
+        stopped = (await post(`/agents/${enc(id)}/chat/stop`, clientId ? { client_id: clientId } : {})).stopped;
+      } catch (err) {
+        toast(err.message, "bad");
+      }
+      chat.controllers.get(id)?.abort();
+      if (stopped) {
+        const log = (chat.logs[id] ||= []);
+        if (!log.length || log[log.length - 1].mode !== "stopped") {
+          log.push({ me: false, text: "Stopped. Send another message, or start a new conversation.", mode: "stopped" });
+        }
+      }
+      chat.busy.delete(id);
+      drawChat(true);
+    },
     async reset() {
       const id = chat.agent;
+      if (chat.busy.has(id)) {
+        const clientId = chat.clientIds.get(id);
+        try {
+          await post(`/agents/${enc(id)}/chat/stop`, clientId ? { client_id: clientId } : {});
+        } catch (err) {
+          toast(err.message, "bad");
+        }
+        chat.controllers.get(id)?.abort();
+        chat.busy.delete(id);
+      }
       try {
         await post(`/agents/${enc(id)}/chat/reset`);
         chat.logs[id] = [];
+        chat.clientIds.delete(id);
         drawChat(true);
       } catch (err) {
         toast(err.message, "bad");
@@ -469,8 +510,26 @@ export async function render(el, ctx) {
   drawGroups();
   drawChat();
   ctx.live(["agent", "agent_removed", "approval", "llm_provider", "tool", "tool_removed"], reload, 400);
+  const noteReports = (list) => {
+    let added = false;
+    for (const m of list) {
+      if (m.subject !== "team.report" || m.recipient !== "supervisor" || chat.seenReports.has(m.id)) continue;
+      chat.seenReports.add(m.id);
+      const body = m.body || {};
+      (chat.logs.supervisor ||= []).push({
+        me: false,
+        text: `**${body.agent || m.sender}** reported:\n\n${body.reply || ""}`,
+        mode: "team",
+        delegated: body.agent_id ? [body.agent_id] : [],
+      });
+      added = true;
+    }
+    if (added && chat.agent === "supervisor") chat.redraw?.();
+  };
+  for (const m of messages) if (m.subject === "team.report") chat.seenReports.add(m.id);
   ctx.live(["message"], async () => {
     messages = await get("/messages?limit=80");
+    noteReports(messages);
     const stream = el.querySelector("#msg-stream");
     if (stream) setHTML(stream, streamView(messages));
   }, 400);

@@ -54,6 +54,13 @@ class CommandBody(BaseModel):
 
 class ChatBody(BaseModel):
     text: str
+    client_id: str | None = Field(None, max_length=80, pattern=r"^[A-Za-z0-9_-]+$")
+
+
+class StopBody(BaseModel):
+    """The same client_id as the chat this button belongs to, so an early Stop cannot cancel the next message."""
+
+    client_id: str | None = Field(None, max_length=80, pattern=r"^[A-Za-z0-9_-]+$")
 
 
 class AgentPatch(BaseModel):
@@ -771,25 +778,40 @@ def build_router(hub: Hub) -> APIRouter:
         await teams.remove(hub, agent_id, p.actor)
         return {"ok": True}
 
-    @router.post("/agents/{agent_id}/chat")
-    async def chat_with_agent(agent_id: str, body: ChatBody, p: CurrentPrincipal) -> dict[str, Any]:
-        """Chat with the Hub Supervisor or any team agent (Claude, a local model, or rules)."""
+    def chat_agent(agent_id: str):
         agent = agent_or_404(agent_id)
-        if agent_id != "supervisor" and agent.kind != "custom":
-            raise HTTPException(400, f"{agent.name} does not chat - chat with the Hub Supervisor or a team agent")
-        if agent.paused:
-            raise HTTPException(409, f"{agent.name} is {'disabled' if agent.kind == 'custom' else 'paused'}")
-        if not body.text.strip():
-            raise HTTPException(400, "Say something")
-        return {**await ask(p, agent_id, "chat", {"text": body.text}, timeout=900), "agent_id": agent_id}
-
-    @router.post("/agents/{agent_id}/chat/reset")
-    async def reset_agent_chat(agent_id: str, p: CurrentPrincipal) -> dict[str, Any]:
-        agent = agent_or_404(agent_id)
-        if agent_id != "supervisor" and agent.kind != "custom":
+        if not agent.record().get("chats", True):
             raise HTTPException(400, f"{agent.name} does not chat")
         if agent.paused:
             raise HTTPException(409, f"{agent.name} is {'disabled' if agent.kind == 'custom' else 'paused'}")
+        return agent
+
+    @router.post("/agents/{agent_id}/chat")
+    async def chat_with_agent(agent_id: str, body: ChatBody, p: CurrentPrincipal) -> dict[str, Any]:
+        """Chat with the Hub Supervisor, a specialist, a tool supervisor, or a team agent."""
+        agent = chat_agent(agent_id)
+        if not body.text.strip():
+            raise HTTPException(400, "Say something")
+        payload: dict[str, Any] = {"text": body.text}
+        if body.client_id:
+            payload["client_id"] = body.client_id
+        try:
+            return {**await ask(p, agent_id, "chat", payload, timeout=900), "agent_id": agent_id}
+        except asyncio.CancelledError:
+            agent.cancel_chat(body.client_id)
+            raise
+
+    @router.post("/agents/{agent_id}/chat/stop")
+    async def stop_agent_chat(agent_id: str, p: CurrentPrincipal, body: StopBody | None = None) -> dict[str, Any]:
+        """Stop the chat this agent is answering, so the person can send something else."""
+        agent = chat_agent(agent_id)
+        client_id = body.client_id if body else None
+        return {"ok": True, "stopped": await agent.cancel_chat_wait(client_id)}
+
+    @router.post("/agents/{agent_id}/chat/reset")
+    async def reset_agent_chat(agent_id: str, p: CurrentPrincipal) -> dict[str, Any]:
+        agent = chat_agent(agent_id)
+        await agent.cancel_chat_wait()
         return await ask(p, agent_id, "chat.reset")
 
     @router.post("/agents/{agent_id}/run")

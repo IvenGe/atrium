@@ -16,6 +16,7 @@ from ..integration.identity import SSO_STRATEGIES
 from .. import llm_providers
 from ..models import AGENT_PERMISSIONS
 from . import teams, toolkit
+from .patcher import describe_patches
 from .base import BaseAgent
 
 HELP = (
@@ -291,29 +292,56 @@ class HubSupervisor(BaseAgent):
                 return {"reply": note + await self._rules_chat(text), "mode": "rules"}
         return {"reply": await self._rules_chat(text), "mode": "rules"}
 
+    async def on_team_report(self, body: dict[str, Any], msg: Message) -> dict[str, Any]:
+        """An agent the person talked to directly reports what it did."""
+        agent = str(body.get("agent") or msg.sender)
+        reply = " ".join(str(body.get("reply") or "").split())
+        self.log("info", f"{agent} reported: {reply[:240]}", agent_id=str(body.get("agent_id") or msg.sender))
+        return {"ok": True}
+
     async def _team_reply(self, text: str) -> dict[str, Any] | None:
-        """A fix request is work for the team, not a solo answer. The Patch Agent proposes the patches."""
+        """A fix request is work for the team. Each tool's supervisor looks, then the Patch Agent proposes patches,
+        including a patch for an error the tool is reporting now."""
         low = text.lower()
-        if not any(word in low for word in ("fix", "bug", "patch", "broken", "repair")):
+        if not any(word in low for word in ("fix", "bug", "patch", "broken", "repair", "error", "fail")):
             return None
-        waiting = [t for t in self.hub.tools() if t.status in ("needs_patch", "error") or (
-            t.report and any(c.status != "pass" and c.fix for c in t.report.checks))]
+        named = [t for t in self.hub.tools() if t.id in low or t.name.lower() in low]
+        waiting = named or [t for t in self.hub.tools() if t.status in ("needs_patch", "error") or t.error
+                            or (t.health or {}).get("ok") is False or (
+                                t.report and any(c.status != "pass" and c.fix for c in t.report.checks))]
         waiting.sort(key=lambda t: (t.status not in ("needs_patch", "error"), t.name.lower()))
         chosen, rest = waiting[:5], waiting[5:]
-        lines = ["I handed this to the team."]
+        lines = ["I asked the team. They report back here."]
         delegated: list[str] = []
         if not chosen:
-            lines.append("Nothing is waiting on the Patch Agent. Say `patch <tool>` to send one tool anyway.")
+            lines.append("Nothing is waiting. Say `patch <tool>` to send one tool to its supervisor and the Patch Agent.")
             return {"reply": "\n\n".join(lines), "mode": "team", "delegated": delegated}
         for tool in chosen:
+            error = tool.error or ""
+            sup_id = f"tool:{tool.id}"
+            if self.hub.agents.get(sup_id) is not None:
+                try:
+                    health = await self.ask(sup_id, "health", timeout=20)
+                    detail = health.get("detail") or ("up" if health.get("ok") else "no health check")
+                    lines.append(f"- **{tool.name} Supervisor** — {detail}")
+                    if health.get("ok") is False and not error:
+                        error = str(detail)
+                except Exception as exc:
+                    lines.append(f"- **{tool.name} Supervisor** — {exc}")
+                    error = error or str(exc)
+                delegated.append(sup_id)
             try:
-                result = await self.ask("patcher", "propose", {"tool_id": tool.id}, timeout=90)
-                count = len(result.get("patches") or [])
-                lines.append(f"- **Patch Agent** — {tool.name}: "
-                             + (f"{count} patch(es) waiting in Approvals." if count else
-                                "no new patch. One may already be waiting in Approvals."))
+                result = await self.ask("patcher", "propose", {"tool_id": tool.id, "error": error}, timeout=90)
+                lines.append(f"- **Patch Agent** — {tool.name}: {describe_patches(self.hub, result.get('patches') or [])}")
             except Exception as exc:
                 lines.append(f"- **Patch Agent** — {tool.name}: {exc}")
+                try:
+                    repair = await self.ask("patcher", "propose", {"tool_id": tool.id, "error": str(exc)}, timeout=60)
+                    count = len(repair.get("patches") or [])
+                    if count:
+                        lines.append(f"- **Patch Agent** — patched that error: {count} patch(es) waiting in Approvals.")
+                except Exception as again:
+                    lines.append(f"- **Patch Agent** — could not patch that error: {again}")
             delegated.append(f"patcher:{tool.id}")
         if rest:
             lines.append(f"{len(rest)} more tools still need a look. Say `patch <name>` for one of them.")

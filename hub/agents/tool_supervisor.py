@@ -18,6 +18,7 @@ from ..integration.analyzer import analyze_repo, analyze_saas, list_files, readm
 from ..models import AGENT_PERMISSIONS, Manifest, Tool
 from . import teams
 from .base import BaseAgent
+from .patcher import describe_patches
 
 PUSH_ACTIONS = ("created", "updated", "skipped", "failed")
 
@@ -83,6 +84,43 @@ class ToolSupervisor(BaseAgent):
         if tool is None:
             raise ValueError(f"Tool {self.tool_id} no longer exists")
         return tool
+
+    async def direct_chat(self, text: str, msg: Message) -> dict[str, Any]:
+        """A person talking to this tool's supervisor. Changes go to the Operator or the Patch Agent, then up."""
+        tool = self._tool()
+        low = text.lower().strip()
+        if not low or low in ("help", "?", "hi", "hello"):
+            return {"reply": (f"I am the supervisor of **{tool.name}**. Say `health`, `status`, `start`, `stop`, or `fix`. "
+                              "I report what I find to the Hub Supervisor."), "mode": "rules"}
+        if low in ("status", "describe", "report", "overview"):
+            error = tool.error
+            return {"reply": f"**{tool.name}** is {tool.status}." + (f" Error: {error}" if error else " No error."),
+                    "mode": "rules"}
+        if low == "health":
+            health = await self.on_health({}, msg)
+            detail = health.get("detail") or "checked"
+            reply = f"**{tool.name}**: {detail}"
+            if health.get("ok") is False or tool.error:
+                asked = await self._ask_patcher(tool, str(tool.error or detail), msg)
+                reply += "\n\n" + asked
+            return {"reply": reply, "mode": "team" if health.get("ok") is False or tool.error else "rules",
+                    "delegated": [f"patcher:{tool.id}"] if health.get("ok") is False or tool.error else []}
+        if low in ("start", "stop"):
+            result = await (self.on_start if low == "start" else self.on_stop)({}, msg)
+            return {"reply": f"{low.capitalize()} **{tool.name}**: {result.get('status', result)}", "mode": "rules",
+                    "delegated": ["operator"]}
+        if any(word in low for word in ("fix", "error", "patch", "repair", "broken", "bug")):
+            note = tool.error or (str((tool.health or {}).get("detail")) if (tool.health or {}).get("ok") is False else "")
+            return {"reply": await self._ask_patcher(tool, note, msg), "mode": "team",
+                    "delegated": [f"patcher:{tool.id}"]}
+        return {"reply": f"Say `health`, `status`, `start`, `stop`, or `fix` for **{tool.name}**.", "mode": "rules"}
+
+    async def _ask_patcher(self, tool: Tool, error: str, msg: Message) -> str:
+        result = await self.ask("patcher", "propose", {"tool_id": tool.id, "error": error}, timeout=90)
+        outcome = describe_patches(self.hub, result.get("patches") or [])
+        if outcome.startswith("no new patch"):
+            return f"The Patch Agent has nothing new for **{tool.name}**. One may already be waiting in Approvals."
+        return f"I asked the Patch Agent to patch **{tool.name}**: {outcome}"
 
     # -- requests --------------------------------------------------------------------
 

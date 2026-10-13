@@ -24,7 +24,9 @@ from ..extensions import selfpatch
 from ..integration import connections, flows, identity
 from ..integration.analyzer import list_files
 from ..integration.identity import SSO_STRATEGIES
-from ..integration.patches import apply_patch, attach_sso, plan_patch, safe_relative, selected_provider, sso_code_goal
+from ..integration.patches import (
+    apply_patch, attach_sso, plan_error_repair, plan_patch, safe_relative, selected_provider, sso_code_goal,
+)
 from ..models import FileChange, Flow, Patch, Tool
 from ..store import new_id
 from .base import BaseAgent
@@ -129,10 +131,20 @@ class PatchAgent(BaseAgent):
         tool = self._tool(body.get("tool_id"))
         async with self._lock(tool.id):
             tool = self._tool(tool.id)
-            fixes = body.get("fixes") or [c.fix for c in (tool.report.checks if tool.report else []) if c.fix and c.status != "pass"]
+            fixes = list(body.get("fixes") or [c.fix for c in (tool.report.checks if tool.report else []) if c.fix and c.status != "pass"])
             others = [t for t in self.hub.tools() if t.id != tool.id]
             existing = {p.strategy for p in self.hub.patches(tool.id) if p.status in ("proposed", "applied")}
             created: list[Patch] = []
+            error_text = str(body.get("error") or tool.error or "").strip()
+            health_down = (tool.health or {}).get("ok") is False
+            if (error_text or tool.status == "error" or health_down) and "error_repair" not in existing:
+                repair = plan_error_repair(
+                    tool, error_text or str((tool.health or {}).get("detail") or ""), hub_url=self.hub_url)
+                if repair is not None:
+                    created.append(await self._submit(tool, repair, msg.sender))
+                    existing.add("error_repair")
+                    if any(change.path == "health.yaml" for change in repair.changes):
+                        fixes = [fix for fix in fixes if fix not in ("health_probe", "health_endpoint")]
             for fix in dict.fromkeys(fixes):
                 if fix in SSO_STRATEGIES:
                     patch = await self._sso_patch(tool, others, fix)
@@ -152,6 +164,30 @@ class PatchAgent(BaseAgent):
         if created:
             self.log("info", f"Proposed {len(created)} patch(es) for {tool.name}: " + "; ".join(p.title for p in created))
         return {"patches": [p.id for p in created]}
+
+    async def direct_chat(self, text: str, msg: Message) -> dict[str, Any]:
+        """A person talking to the Patch Agent: patch the tools they name, and the errors those tools have."""
+        low = text.lower().strip()
+        if not low or low in ("help", "?", "hi", "hello"):
+            return {"reply": ("I am the **Patch Agent**. Say `patch <tool>` or `fix errors` and I propose the patches, "
+                              "including errors a tool has just reported. I report the result to the Hub Supervisor."),
+                    "mode": "rules"}
+        named = [t for t in self.hub.tools() if t.id in low or t.name.lower() in low]
+        if not named and any(word in low for word in ("error", "fix", "bug", "patch", "broken", "repair", "fail")):
+            named = [t for t in self.hub.tools() if t.status in ("error", "needs_patch") or t.error
+                     or (t.health or {}).get("ok") is False]
+            named.sort(key=lambda t: (t.status not in ("error", "needs_patch"), t.name.lower()))
+        named = named[:5]
+        if not named:
+            return {"reply": "Name the tool to patch, or say `fix errors`.", "mode": "rules"}
+        lines = ["I am patching this and I will report it to the Hub Supervisor."]
+        delegated: list[str] = []
+        for tool in named:
+            result = await self.on_propose({"tool_id": tool.id, "error": tool.error or ""}, msg)
+            outcome = describe_patches(self.hub, result.get("patches") or [])
+            lines.append(f"- **{tool.name}**: {outcome}")
+            delegated.append(f"patcher:{tool.id}")
+        return {"reply": "\n".join(lines), "mode": "rules", "delegated": delegated}
 
     async def on_sso_plan(self, body: dict[str, Any], msg: Message) -> dict[str, Any]:
         """(Re)plan single sign-on for one tool after its provider choice, the suite default or the providers changed.
@@ -734,6 +770,20 @@ async def load_openapi(tool: Tool) -> tuple[str, str | None]:
     known = (m.api.base_url if m and m.api.base_url else None) or (servers[0] if servers else None) \
         or (tool.source if tool.source_type == "saas" else None)
     return json.dumps(_condense(doc), default=str)[:SPEC_PROMPT_CHARS], known
+
+
+def describe_patches(hub, patch_ids: list[str]) -> str:
+    """What happened to the patches just proposed: applied now, or waiting for a person."""
+    patches = [hub.get_patch(pid) for pid in patch_ids]
+    applied = sum(1 for patch in patches if patch and patch.status == "applied")
+    waiting = sum(1 for patch in patches if patch and patch.status == "proposed")
+    if applied and not waiting:
+        return f"{applied} patch(es) applied."
+    if waiting and not applied:
+        return f"{waiting} patch(es) waiting in Approvals."
+    if applied or waiting:
+        return f"{applied} applied, {waiting} waiting in Approvals."
+    return "no new patch. One may already be waiting in Approvals."
 
 
 def render_diff(tool: Tool, patch: Patch) -> str:

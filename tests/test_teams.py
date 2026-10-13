@@ -420,7 +420,7 @@ def test_supervisor_chat_offers_every_tool(client):
     assert client.post("/api/agents/supervisor/chat", json={"text": "hello"}).json() == {
         "reply": "Hi.", "mode": "llm", "agent_id": "supervisor"}
     assert {t["name"] for t in fake.calls[0]["tools"]} == set(toolkit.TOOLS)
-    assert client.post("/api/agents/operator/chat", json={"text": "hi"}).status_code == 400
+    assert "run" in client.post("/api/agents/operator/chat", json={"text": "hi"}).json()["reply"].lower()
     assert client.post("/api/agents/nope/chat", json={"text": "hi"}).status_code == 404
 
 
@@ -503,6 +503,104 @@ class FakeLocalServer:
         return httpx.Response(404, json={"error": "not found"})
 
 
+def test_you_can_talk_to_an_agent_and_it_reports_to_the_supervisor(client):
+    tool = add_tool(client, "flask", "Flask")
+    tool.status = "error"
+    tool.error = "connection refused"
+    client.app.state.hub.save_tool(tool)
+    reply = client.post("/api/agents/patcher/chat", json={"text": "patch the error on Flask"}).json()
+    assert "Flask" in reply["reply"] and "1 patch" in reply["reply"]
+    patches = client.get("/api/tools/flask").json()["patches"]
+    repair = next(p for p in patches if p["strategy"] == "error_repair")
+    assert "connection refused" in repair["rationale"]
+    reports = [m for m in client.get("/api/messages?limit=100").json()
+               if m["subject"] == "team.report" and m["recipient"] == "supervisor"]
+    assert reports and reports[-1]["body"]["agent"] == "Patch Agent"
+    status = client.post("/api/agents/module:assets/chat", json={"text": "status"}).json()
+    assert "total" in status["reply"]
+    idle = client.post("/api/agents/patcher/chat/stop").json()
+    assert idle["ok"] is True and idle["stopped"] is False
+    again = client.post("/api/agents/patcher/chat", json={"text": "help"}).json()
+    assert again.get("cancelled") is not True and "Patch Agent" in again["reply"]
+    early = client.post("/api/agents/operator/chat/stop", json={"client_id": "chat-early-1"}).json()
+    assert early["stopped"] is True
+    stopped = client.post("/api/agents/operator/chat", json={"text": "help", "client_id": "chat-early-1"}).json()
+    assert stopped["cancelled"] is True and "Stopped" in stopped["reply"]
+    nxt = client.post("/api/agents/operator/chat", json={"text": "help", "client_id": "chat-early-2"}).json()
+    assert nxt.get("cancelled") is not True and "run" in nxt["reply"].lower()
+
+
+def test_a_running_chat_can_be_stopped_and_restarted(client):
+    import asyncio
+
+    hub = client.app.state.hub
+    agent = hub.agents.get("operator")
+    started = asyncio.Event()
+    release = asyncio.Event()
+    original = agent.direct_chat
+
+    async def slow(text, msg):
+        started.set()
+        await release.wait()
+        return {"reply": "finished", "mode": "rules"}
+
+    agent.direct_chat = slow
+
+    async def run():
+        chat = asyncio.create_task(hub.bus.request("user:admin", "operator", "chat", {"text": "wait please"}, 30))
+        await asyncio.wait_for(started.wait(), 5)
+        assert agent.cancel_chat() is True
+        body = await asyncio.wait_for(chat, 5)
+        assert body["cancelled"] is True and "Stopped" in body["reply"]
+        reset = await hub.bus.request("user:admin", "operator", "chat.reset", {}, 10)
+        assert reset["ok"] is True
+        agent.direct_chat = original
+        again = await hub.bus.request("user:admin", "operator", "chat", {"text": "help"}, 10)
+        assert "run" in again["reply"].lower() and again.get("cancelled") is not True
+
+    client.portal.call(run)
+
+
+def test_stopping_a_command_kills_it_and_the_next_chat_still_runs(client):
+    import asyncio
+    import subprocess
+
+    hub = client.app.state.hub
+
+    async def run():
+        chat = asyncio.create_task(hub.bus.request("user:admin", "operator", "chat", {"text": "run sleep 30"}, 20))
+        await asyncio.sleep(0.5)
+        assert hub.agents.get("operator").cancel_chat() is True
+        body = await asyncio.wait_for(chat, 8)
+        assert body["cancelled"] is True and "Stopped" in body["reply"]
+        reset = await hub.bus.request("user:admin", "operator", "chat.reset", {}, 10)
+        assert reset["ok"] is True
+        again = await hub.bus.request("user:admin", "operator", "chat", {"text": "help"}, 10)
+        assert "run" in again["reply"].lower() and again.get("cancelled") is not True
+
+    client.portal.call(run)
+    procs = subprocess.run(["ps", "-eo", "args"], check=False, capture_output=True, text=True).stdout
+    assert not any(line.strip() == "sleep 30" for line in procs.splitlines())
+
+
+def test_the_supervisor_asks_for_a_patch_when_a_tool_errors(client):
+    tool = add_tool(client, "flask", "Flask")
+    tool.status = "error"
+    tool.error = "connection refused"
+    client.app.state.hub.save_tool(tool)
+    reply = client.post("/api/chat", json={"text": "flask has an error"}).json()
+    assert reply["mode"] == "team"
+    assert "Patch Agent" in reply["reply"] and "Flask Supervisor" in reply["reply"]
+    patches = client.get("/api/tools/flask").json()["patches"]
+    repair = next(p for p in patches if p["strategy"] == "error_repair")
+    assert "connection refused" in repair["rationale"]
+    direct = client.post("/api/agents/tool:flask/chat", json={"text": "fix the error"}).json()
+    assert "Patch Agent" in direct["reply"]
+    reports = [m for m in client.get("/api/messages?limit=100").json()
+               if m["subject"] == "team.report" and m["body"].get("agent_id") == "tool:flask"]
+    assert reports
+
+
 def test_the_supervisor_hands_a_fix_to_the_patch_agent(client):
     tool = add_tool(client, "flask", "Flask")
     tool.status = "needs_patch"
@@ -510,7 +608,8 @@ def test_the_supervisor_hands_a_fix_to_the_patch_agent(client):
     reply = client.post("/api/chat", json={"text": "fix bugs"}).json()
     assert reply["mode"] == "team"
     assert "Patch Agent" in reply["reply"] and "Flask" in reply["reply"]
-    assert reply["delegated"] == ["patcher:flask"]
+    assert "Flask Supervisor" in reply["reply"]
+    assert reply["delegated"] == ["tool:flask", "patcher:flask"]
     supervisor = agent(client, "supervisor")
     assert supervisor["provider_label"] == "Rules" and supervisor["model"] == ""
 

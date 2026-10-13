@@ -44,9 +44,11 @@ badge (Claude, the provider's name, or Rules, amber when that provider cannot be
 permissions, a "not granted" badge for permissions its parent lacks, the schedule, the next and the last run. Viewers
 and operators get a read-only details view.
 
-Operators **chat** with any team agent (the chat panel has an agent selector; each agent keeps its own conversation)
-and **run** its standing task now, optionally with a one-off task. A reply says whether it came from a model (`llm`),
-a local model (`local`) or rules (`rules`).
+Operators **chat** with any agent (the Hub Supervisor, the Patch Agent, the Operator, a module supervisor, a tool
+supervisor, or a team agent). The chat panel has an agent selector and each agent keeps its own conversation. A
+specialist does the work and reports it to the Hub Supervisor. **Stop** ends the request that is running.
+**New conversation** starts again. **Run** starts a team agent's standing task now, optionally with a one-off task.
+A reply says whether it came from a model (`llm`), a local model (`local`), the team (`team`) or rules (`rules`).
 
 | Endpoint | Role | Purpose |
 | --- | --- | --- |
@@ -55,7 +57,8 @@ a local model (`local`) or rules (`rules`).
 | `POST /api/agents` | admin | create a team agent; the answer lists permissions that were not granted (`clamped`) |
 | `PATCH /api/agents/{id}` | admin | team agents: any field; core agents: only `paused`, `model`, `instructions` |
 | `DELETE /api/agents/{id}` | admin | remove a team agent (its members move to its parent; its pending proposals are withdrawn) |
-| `POST /api/agents/{id}/chat` | operator | `{text}`; the Hub Supervisor or a team agent |
+| `POST /api/agents/{id}/chat` | operator | `{text, client_id?}` to any agent that chats |
+| `POST /api/agents/{id}/chat/stop` | operator | stop the chat in progress (`{client_id}` matches the message) |
 | `POST /api/agents/{id}/chat/reset` | operator | start a new conversation |
 | `POST /api/agents/{id}/run` | operator | `{task?}`: run the standing task (or a one-off task) now |
 
@@ -161,8 +164,10 @@ Team agents can run on any server with an OpenAI-compatible API (`hub/llm_provid
 
 The default is chosen under **Settings > AI model**: Claude, ChatGPT, Grok, a local provider, or rules, plus the
 model name. New team agents use that provider. The Hub Supervisor's chat uses it too, and the chat badge names that
-provider. A message about a fix, a bug or a patch is handed to the Patch Agent first (up to five tools that need a
-patch) and the reply says which agent took the work. Code patches, extension packs
+provider. A message about a fix, a bug, a patch or an error goes to each tool's supervisor and then to the Patch
+Agent (up to five tools). The Patch Agent also proposes a patch when a tool is reporting an error. You can talk to
+the Patch Agent, the Operator, a module supervisor or a tool supervisor directly; they do the work and report it to
+the Hub Supervisor. **Stop** ends the request that is running, and **New conversation** starts again. Code patches, extension packs
 and self-patches still call Claude, and they stay on rules when no Claude key is set. A team agent can still name
 its own provider and model.
 

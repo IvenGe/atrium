@@ -77,6 +77,11 @@ async def run_local(
     )
     try:
         out, _ = await asyncio.wait_for(proc.communicate(), timeout)
+    except asyncio.CancelledError:
+        await kill_tree(proc.pid)
+        with contextlib.suppress(Exception):
+            await proc.wait()
+        raise
     except asyncio.TimeoutError:
         await kill_tree(proc.pid)
         await proc.wait()
