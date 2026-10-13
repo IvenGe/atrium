@@ -14,7 +14,7 @@ import * as assets from "./views/assets.js";
 import * as people from "./views/people.js";
 import * as vulnerabilities from "./views/vulnerabilities.js";
 import * as compliance from "./views/compliance.js";
-import * as settings from "./views/settings.js";
+import * as settings from "./views/settings.js?v=3";
 import * as users from "./views/users.js";
 import * as portal from "./views/portal.js";
 import * as extensions from "./views/extensions.js";

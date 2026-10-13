@@ -1,6 +1,6 @@
 import { del, get, patch, post } from "../api.js";
 import { mountSso } from "../signin.js";
-import { actions, badge, can, confirmDialog, emptyState, field, html, icon, modal, options, setHTML, timeAgo, toast } from "../ui.js";
+import { actions, badge, can, confirmDialog, emptyState, field, html, icon, modal, setHTML, timeAgo, toast } from "../ui.js";
 
 const LEVELS = [
   ["manual", "Manual", "Every agent command and patch waits for your approval."],
@@ -32,6 +32,12 @@ function choiceModels(choice) {
   return [...new Set([choice.default_model, ...(choice.models || [])].filter(Boolean))];
 }
 
+function providerModel(choice, current) {
+  const models = choiceModels(choice);
+  if (models.includes(current)) return current;
+  return models[0] || choice.default_model || "";
+}
+
 function modelBadge(choice, llm) {
   if (!choice || choice.id === "anthropic") return llm?.available ? badge("Claude connected", "ok") : badge("rules mode", "warn");
   if (choice.id === "rules") return badge("rules", "info");
@@ -39,14 +45,39 @@ function modelBadge(choice, llm) {
   return badge(choice.available ? "connected" : "not tested", choice.available ? "ok" : "warn");
 }
 
-function modelNotice(choice, llm) {
-  if (!choice || choice.id === "anthropic") {
-    return llm?.available ? "" : html`<div class="notice">${icon("bot")}<div class="muted">No Claude credentials found. Set <code>ANTHROPIC_API_KEY</code> (or run <code>ant auth login</code>)
-      and restart the hub. Until then, pick ChatGPT, Grok or a local provider here, or the agents stay on rules.</div></div>`;
+function modelBlurb(choice, llm, model) {
+  if (choice.id === "rules") return "No API key. Agents follow built-in commands.";
+  if (choice.id === "anthropic") {
+    return llm?.available ? `Connected. Model ${model}.` : "No Claude key is set on this hub, so this choice does nothing until a key is added and the hub is restarted.";
   }
-  if (choice.id === "rules") return html`<p class="faint" style="font-size:12.5px">Agents answer from built-in commands. No model is called.</p>`;
-  if (choice.configured === false) return html`<div class="notice">${icon("bot")}<div class="muted">Add ${choice.label} under AI providers and store an API key, then save this setting.</div></div>`;
-  return html`<p class="faint" style="font-size:12.5px">The Hub Supervisor and new team agents use ${choice.label}. Code patches still use Claude when a Claude key is set.</p>`;
+  if (choice.configured === false) return "Needs an API key. Add it here, and agents switch to it.";
+  return `Key saved. Model ${model || choice.default_model || "the provider default"}.`;
+}
+
+function modelCard(s, pv, admin) {
+  const choices = modelChoices(pv);
+  const selected = s.model_provider || "anthropic";
+  const current = choices.find((c) => c.id === selected) || choices[0];
+  return html`<header><h2>Which model should agents use?</h2>${modelBadge(current, s.llm)}</header>
+    <p class="muted" style="margin-bottom:12px">Pick one. It applies straight away to the Hub Supervisor and to new team agents.</p>
+    <div class="stack" style="gap:10px">
+      ${choices.map((c) => {
+        const models = choiceModels(c);
+        const model = models.includes(s.model) ? s.model : (models[0] || c.default_model || "");
+        const on = c.id === selected;
+        return html`<label class="radio-card">
+          <input type="radio" name="model_provider" value="${c.id}" ${on ? "checked" : ""} ${admin ? "" : "disabled"} aria-label="${c.label}">
+          <div style="flex:1;min-width:0">
+            <b>${c.label}</b>
+            <p class="muted">${modelBlurb(c, s.llm, model)}</p>
+            ${on && c.configured !== false && models.length > 1 ? html`<span class="faint" style="font-size:12px">Model
+              <select data-model-for="${c.id}" ${admin ? "" : "disabled"} style="margin-left:8px">${models.map((m) => html`<option value="${m}" ${m === model ? "selected" : ""}>${m}</option>`)}</select></span>` : ""}
+            ${c.configured === false ? html`<button type="button" class="btn sm" data-act="add-key" data-id="${c.id}" data-min-role="admin" style="margin-top:8px">${icon("plus")}Add API key</button>` : ""}
+          </div></label>`;
+      })}
+    </div>
+    <input type="hidden" name="model" id="model-name" value="${current?.id === "rules" ? s.model : (choiceModels(current).includes(s.model) ? s.model : (choiceModels(current)[0] || s.model || ""))}">
+    <p class="faint" style="font-size:12.5px;margin-top:10px">Code patches still use Claude when a Claude key is set.</p>`;
 }
 const hosted = (pv, id) => (pv.providers || []).some((p) => p.preset === id || p.id === id);
 // Switches that allow a capability are on by default, but off is their protective side (safe_value in hub/guardrails.py):
@@ -100,11 +131,10 @@ function providersView(pv) {
         ${presets.map((preset) => html`<button type="button" class="btn sm" data-act="prov-preset" data-id="${preset.id}" ${hosted(pv, preset.id) ? "disabled" : ""}>${icon("plus")}${preset.name}</button>`)}
         <button type="button" class="btn sm" data-act="prov-add">${icon("plus")}Add local provider</button>
       </span></header>
-    <p class="muted" style="margin-bottom:12px">Team agents run on Claude, on ChatGPT or Grok, on a local model server with an OpenAI-compatible API
-      (Ollama, LM Studio, vLLM, llama.cpp server), or on rules. Pick the provider per agent on the Agents page. The Hub Supervisor and the Patch Agent stay on Claude.</p>
+    <p class="muted" style="margin-bottom:12px">Keys for the choices above. Test checks that the key works and lists its models.</p>
     <div class="stack" style="gap:8px">
       <div class="provider"><div class="row" style="gap:6px"><b>Claude</b>${claude.available ? badge("connected", "ok") : badge("not connected", "warn")}</div>
-        <div class="faint" style="font-size:12px">Anthropic API - see "AI model" for the default model.</div></div>
+        <div class="faint" style="font-size:12px">Anthropic API. Choose Claude above to use it.</div></div>
       ${pv.providers.map((p) => html`<div class="provider">
         <div class="row" style="gap:6px"><b>${p.name}</b>${badge(p.preset ? "hosted" : "local", "info")}
           ${p.last_test ? badge(p.last_test.ok ? "tested ok" : "test failed", p.last_test.ok ? "ok" : "bad") : badge("not tested", "warn")}
@@ -167,14 +197,7 @@ export async function render(el, ctx) {
           <p class="faint" style="font-size:12.5px">Whether scheduled and agent-started scans wait for approval is an agent guardrail (below).</p></div>
       </section>
       <section class="stack">
-        <div class="card" id="ai-model-card"><header><h2>AI model</h2><span id="ai-model-badge">${modelBadge(modelChoices(pv).find((c) => c.id === (s.model_provider || "anthropic")), s.llm)}</span></header>
-          ${field("Runs on", html`<select name="model_provider" id="model-provider">${options(modelChoices(pv).map((c) => [c.id, c.configured === false ? `${c.label} (add a key first)` : c.label]), s.model_provider || "anthropic")}</select>`,
-            "Claude, ChatGPT, Grok, a local model server, or rules.")}
-          ${field("Model", html`<input name="model" id="model-name" list="model-list" value="${s.model}">
-            <datalist id="model-list"></datalist>`,
-            "For ChatGPT, Grok or a local server, this is the model name. Leave it empty to use the provider's own default. Team agents can still override it.")}
-          <div id="model-notice">${modelNotice(modelChoices(pv).find((c) => c.id === (s.model_provider || "anthropic")), s.llm)}</div>
-          ${s.llm.last_error ? html`<p style="color:var(--bad);margin-top:8px;font-size:12.5px">Last error: ${s.llm.last_error}</p>` : ""}</div>
+        <div class="card" id="ai-model-card"></div>
         <div class="card" data-min-role="admin"><header><h2>Users &amp; access</h2>${icon("users")}</header>
           <p class="muted" style="margin-bottom:10px">Accounts, roles and API tokens for scripts and integrations; single sign-on below.</p>
           <div class="row"><a class="btn" href="#/users">${icon("arrow")}Manage users</a><a class="btn" href="#/settings/sso" data-act="to-sso">${icon("shield")}Sign-in &amp; SSO</a></div></div>
@@ -193,39 +216,42 @@ export async function render(el, ctx) {
   const ssoEl = el.querySelector("#sso-card");
   const drawGuards = () => setHTML(guardEl, guardrailsView(s.guardrail_catalog || [], admin));
   const drawProviders = () => setHTML(provEl, providersView(pv));
+  const drawModel = () => setHTML(el.querySelector("#ai-model-card"), modelCard(s, pv, admin));
   drawGuards();
   drawProviders();
+  drawModel();
   if (ssoEl) {
     mountSso(ssoEl).catch((err) => setHTML(ssoEl, emptyState("alert", "Sign-in settings unavailable", err.message)));
     if (ctx.params[0] === "sso") setTimeout(() => ssoEl.scrollIntoView({ behavior: "smooth", block: "start" }), 120);
   }
 
   const form = el.querySelector("#settings-form");
-  const choices = modelChoices(pv);
-  const modelSelect = form.querySelector("#model-provider");
-  const modelInput = form.querySelector("#model-name");
-  function paintModel(providerId, keepTyped) {
-    const choice = choices.find((c) => c.id === providerId) || choices[0];
-    const models = choiceModels(choice);
-    const list = form.querySelector("#model-list");
-    list.replaceChildren(...models.map((m) => {
-      const option = document.createElement("option");
-      option.value = m;
-      return option;
-    }));
-    if (!keepTyped && !models.includes(modelInput.value.trim())) {
-      modelInput.value = choice.id === "anthropic" ? (models.includes(s.model) ? s.model : CLAUDE_MODELS[0]) : (choice.default_model || "");
-    }
-    modelInput.disabled = !admin || choice.id === "rules";
-    if (choice.id === "rules") modelInput.value = "";
-    const badgeEl = form.querySelector("#ai-model-badge");
-    const noticeEl = form.querySelector("#model-notice");
-    if (badgeEl) setHTML(badgeEl, modelBadge(choice, s.llm));
-    if (noticeEl) setHTML(noticeEl, modelNotice(choice, s.llm));
-  }
-  paintModel(modelSelect.value, true);
-  modelSelect.addEventListener("change", () => paintModel(modelSelect.value, false));
   if (!admin) form.querySelectorAll("input, select").forEach((input) => { input.disabled = true; });
+  async function saveModel(provider, model) {
+    const body = { model_provider: provider };
+    if (provider !== "rules") body.model = model || "";
+    try {
+      s = await patch("/settings", body);
+      const choice = modelChoices(pv).find((c) => c.id === provider);
+      toast(provider === "rules" ? "Agents use built-in commands" : `Agents use ${choice?.label || provider}`, "ok");
+    } catch (err) {
+      toast(err.message, "bad");
+    }
+    if (el.isConnected) drawModel();
+  }
+  form.addEventListener("change", (e) => {
+    if (!admin) return;
+    if (e.target.name === "model_provider") {
+      const choice = modelChoices(pv).find((c) => c.id === e.target.value);
+      if (!choice || choice.configured === false) {
+        drawModel();
+        return;
+      }
+      const model = providerModel(choice, s.model);
+      saveModel(choice.id, model);
+    }
+    if (e.target.matches("[data-model-for]")) saveModel(e.target.dataset.modelFor, e.target.value);
+  });
   form.addEventListener("submit", async (e) => {
     e.preventDefault();
     if (!admin) return;
@@ -279,7 +305,7 @@ export async function render(el, ctx) {
     await loadProviders();
   }
 
-  function providerForm(p, preset) {
+  function providerForm(p, preset, useAsDefault) {
     const models = [...new Set([...(preset?.suggested_models || []), ...(p?.models || [])])];
     const needsKey = Boolean(preset?.requires_key) && !p?.api_key_set;
     modal({
@@ -328,8 +354,9 @@ export async function render(el, ctx) {
         }
         const saved = p ? await patch(`/llm/providers/${encodeURIComponent(p.id)}`, body) : await post("/llm/providers", body);
         toast(`${saved.name} ${p ? "saved" : "added"}`, "ok");
-        if (p) await loadProviders();
-        else testProvider(saved.id);
+        if (!p) await testProvider(saved.id);
+        else await loadProviders();
+        if (useAsDefault) await saveModel(saved.id, saved.default_model || body.default_model);
       },
     });
   }
@@ -350,6 +377,10 @@ export async function render(el, ctx) {
       setGuardrail(d.key, value);
     },
     "prov-add"() { providerForm(null, null); },
+    "add-key"(d) {
+      const preset = (pv.presets || []).find((x) => x.id === d.id);
+      if (preset && !hosted(pv, preset.id)) providerForm(null, preset, true);
+    },
     "prov-preset"(d) {
       const preset = (pv.presets || []).find((x) => x.id === d.id);
       if (preset && !hosted(pv, preset.id)) providerForm(null, preset);
