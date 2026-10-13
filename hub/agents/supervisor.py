@@ -15,7 +15,7 @@ from ..integration.compatibility import evaluate_suite, suite_matrix
 from ..integration.identity import SSO_STRATEGIES
 from .. import llm_providers
 from ..models import AGENT_PERMISSIONS
-from . import teams, toolkit
+from . import cycle, teams, toolkit
 from .patcher import describe_patches
 from .base import BaseAgent
 
@@ -41,10 +41,10 @@ Your team:
   Vulnerability Supervisor - scans of in-scope assets, findings and their remediation deadlines.
 - Data flows move assets, vulnerabilities, controls and risks between tools (through their connectors) and the
   hub's apps; you propose them, the module supervisors run them.
-- Agent teams: you lead the hub team. For a fix, a bug or a patch, the chat already hands the work to the
-  Patch Agent and the tool supervisors before you speak. When you do answer, use ask_agent to give a task to
-  another agent (the Patch Agent, a tool supervisor, a module supervisor, or a team member) and report what
-  they did. Do not invent a diagnosis they did not return.
+- Agent teams: you lead the hub team. A maintenance cycle — a plan, a fix, a patch, or assembling AI teams —
+  is dispatched to the specialists before you speak, and their reports are the answer. When you do answer,
+  use ask_agent to give a task to another agent (the Patch Agent, a tool supervisor, a module supervisor, or
+  a team member) and report what they did. Do not invent a diagnosis they did not return.
 
 How to work:
 - Use the tools to look at real state before answering; do not guess tool ids, host ids or scores.
@@ -270,8 +270,19 @@ class HubSupervisor(BaseAgent):
 
     # -- chat --------------------------------------------------------------------------
 
+    def _chat_provider(self) -> Any:
+        """The model selected in Settings, when it is a configured ChatGPT, Grok or local provider."""
+        chosen = teams.saved_provider(self.hub)
+        if not chosen or chosen in ("anthropic", "rules"):
+            return None
+        return llm_providers.get(self.hub, chosen)
+
     async def on_chat(self, body: dict[str, Any], msg: Message) -> dict[str, Any]:
         text = str(body.get("text", "")).strip()
+        if cycle.wants(text):
+            provider = self._chat_provider()
+            if provider is not None:
+                return await cycle.run(self, text, msg.sender, provider)
         team = await self._team_reply(text, msg.sender)
         if team is not None:
             return team
@@ -317,55 +328,68 @@ class HubSupervisor(BaseAgent):
             lines.append("Nothing is waiting. Say `patch <tool>` to send one tool to its supervisor and the Patch Agent.")
             return {"reply": "\n\n".join(lines), "mode": "team", "delegated": delegated}
         for tool in chosen:
-            error = tool.error or ""
-            sup_id = f"tool:{tool.id}"
-            if self.hub.agents.get(sup_id) is not None:
-                try:
-                    health = await self.ask(sup_id, "health", timeout=20)
-                    detail = health.get("detail") or ("up" if health.get("ok") else "no health check")
-                    lines.append(f"- **{tool.name} Supervisor** — {detail}")
-                    if health.get("ok") is False and not error:
-                        error = str(detail)
-                except Exception as exc:
-                    lines.append(f"- **{tool.name} Supervisor** — {exc}")
-                    error = error or str(exc)
-                delegated.append(sup_id)
-            fixed = False
-            try:
-                repair = await self.ask(
-                    "patcher", "repair", {"tool_id": tool.id, "error": error, "origin": requester}, timeout=300)
-                if repair.get("fixed"):
-                    lines.append(f"- **Patch Agent** — {repair.get('detail')}")
-                    fixed = True
-                elif repair.get("detail") and repair.get("status") != "not_runtime":
-                    lines.append(f"- **Patch Agent** — {repair.get('detail')}")
-            except Exception as exc:
-                lines.append(f"- **Patch Agent** — could not start {tool.name}: {exc}")
-            if not fixed:
-                fresh = self.hub.get_tool(tool.id) or tool
-                healthy = (fresh.status not in ("error", "needs_patch") and not fresh.error
-                           and (fresh.health or {}).get("ok") is not False)
-                about_down = any(word in low for word in ("error", "broken", "fail", "down", "refused"))
-                if healthy and about_down:
-                    lines.append(f"- **Patch Agent** — {fresh.name} is up. There is no error to fix.")
-                else:
-                    try:
-                        result = await self.ask("patcher", "propose", {"tool_id": tool.id, "error": error}, timeout=90)
-                        outcome = describe_patches(self.hub, result.get("patches") or [])
-                        lines.append(f"- **Patch Agent** — {tool.name}: {outcome}")
-                    except Exception as exc:
-                        lines.append(f"- **Patch Agent** — {tool.name}: {exc}")
-                        try:
-                            again = await self.ask("patcher", "propose", {"tool_id": tool.id, "error": str(exc)}, timeout=60)
-                            count = len(again.get("patches") or [])
-                            if count:
-                                lines.append(f"- **Patch Agent** — patched that error: {count} patch(es) waiting in Approvals.")
-                        except Exception as second:
-                            lines.append(f"- **Patch Agent** — could not patch that error: {second}")
-            delegated.append(f"patcher:{tool.id}")
+            reports, ids = await self._tool_fix(tool, low, requester)
+            for report in reports:
+                lines.append(f"- **{report['who']}** — {report['text']}")
+            delegated.extend(ids)
         if rest:
             lines.append(f"{len(rest)} more tools still need a look. Say `patch <name>` for one of them.")
         return {"reply": "\n".join(lines), "mode": "team", "delegated": delegated}
+
+    async def _tool_fix(self, tool: Any, low: str, requester: str) -> tuple[list[dict[str, str]], list[str]]:
+        """Ask the tool's supervisor, then the Patch Agent. A down tool is started; otherwise a patch is filed."""
+        reports: list[dict[str, str]] = []
+        delegated: list[str] = []
+        error = tool.error or ""
+        sup_id = f"tool:{tool.id}"
+        if self.hub.agents.get(sup_id) is not None:
+            try:
+                health = await self.ask(sup_id, "health", timeout=20)
+                detail = health.get("detail") or ("up" if health.get("ok") else "no health check")
+                reports.append({"who": f"{tool.name} Supervisor", "text": str(detail)})
+                if health.get("ok") is False and not error:
+                    error = str(detail)
+            except Exception as exc:
+                reports.append({"who": f"{tool.name} Supervisor", "text": str(exc)})
+                error = error or str(exc)
+            delegated.append(sup_id)
+        fixed = False
+        patch_bits: list[str] = []
+        try:
+            repair = await self.ask(
+                "patcher", "repair", {"tool_id": tool.id, "error": error, "origin": requester}, timeout=300)
+            if repair.get("fixed"):
+                patch_bits.append(str(repair.get("detail") or ""))
+                fixed = True
+            elif repair.get("detail") and repair.get("status") != "not_runtime":
+                patch_bits.append(str(repair.get("detail")))
+        except Exception as exc:
+            patch_bits.append(f"could not start {tool.name}: {exc}")
+        if not fixed:
+            fresh = self.hub.get_tool(tool.id) or tool
+            healthy = (fresh.status not in ("error", "needs_patch") and not fresh.error
+                       and (fresh.health or {}).get("ok") is not False)
+            about_down = any(word in low for word in ("error", "broken", "fail", "down", "refused"))
+            if healthy and about_down:
+                patch_bits.append(f"{fresh.name} is up. There is no error to fix.")
+            else:
+                try:
+                    result = await self.ask("patcher", "propose", {"tool_id": tool.id, "error": error}, timeout=90)
+                    outcome = describe_patches(self.hub, result.get("patches") or [])
+                    patch_bits.append(f"{tool.name}: {outcome}")
+                except Exception as exc:
+                    patch_bits.append(f"{tool.name}: {exc}")
+                    try:
+                        again = await self.ask("patcher", "propose", {"tool_id": tool.id, "error": str(exc)}, timeout=60)
+                        count = len(again.get("patches") or [])
+                        if count:
+                            patch_bits.append(f"patched that error: {count} patch(es) waiting in Approvals.")
+                    except Exception as second:
+                        patch_bits.append(f"could not patch that error: {second}")
+        if patch_bits:
+            reports.append({"who": "Patch Agent", "text": " ".join(bit for bit in patch_bits if bit)})
+        delegated.append(f"patcher:{tool.id}")
+        return reports, delegated
 
     async def on_chat_reset(self, body: dict[str, Any], msg: Message) -> dict[str, Any]:
         async with self._chat_lock:

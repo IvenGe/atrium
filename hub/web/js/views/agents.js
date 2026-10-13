@@ -3,7 +3,7 @@ import { scheduleLabel } from "../flows.js";
 import { actions, badge, builtinIcon, can, colorFor, confirmDialog, field, html, icon, md, modal, options, setHTML, timeAgo, timeIn, toast } from "../ui.js";
 
 // Chat transcripts (one per agent) survive navigation inside the app; redraw belongs to the Agents page currently shown.
-const chat = { agent: "supervisor", logs: {}, busy: new Set(), controllers: new Map(), clientIds: new Map(), seenReports: new Set(), redraw: null };
+const chat = { agent: "supervisor", logs: {}, busy: new Set(), controllers: new Map(), clientIds: new Map(), epochs: new Map(), seenReports: new Set(), redraw: null };
 
 /** Forget the transcripts, e.g. on sign-out, so the next person starts fresh. */
 export function resetChat() {
@@ -13,6 +13,7 @@ export function resetChat() {
   chat.controllers.forEach((c) => c.abort());
   chat.controllers.clear();
   chat.clientIds = new Map();
+  chat.epochs = new Map();
   chat.seenReports = new Set();
 }
 
@@ -135,7 +136,7 @@ function groupsView(agents, overview) {
 
 function greeting(a) {
   if (!a || a.id === "supervisor") {
-    return "Hi! I'm the **Hub Supervisor**. I supervise the team: say `fix bugs` and I send each tool to its supervisor and the Patch Agent, then they report back. You can also talk to any agent directly. **Stop** ends the request that is running. **New conversation** starts again.";
+    return "Hi! I'm the **Hub Supervisor**. Ask me to plan a maintenance cycle, fix a tool, or assemble AI teams for the installed software. I plan the work, hand it to the specialists, and each report shows up here. **Stop** ends the request that is running. A new instruction does too. **New conversation** starts again.";
   }
   return `Hi! I'm **${a.name}**. Talk to me directly. I do the work and report it to the Hub Supervisor. **Stop** ends the request that is running.`;
 }
@@ -152,14 +153,29 @@ function chatView(agents) {
       <button type="button" class="btn sm ghost" data-act="reset" data-min-role="operator" ${off ? "disabled" : ""}>${icon("refresh")}New conversation</button></header>
     ${a ? html`<div class="row" style="gap:6px;margin-bottom:8px;font-size:12px">${providerBadge(a)}${a.model ? html`<span class="faint mono">${a.model}</span>` : ""}
       ${off ? badge(a.kind === "custom" ? "disabled" : "paused", "warn") : ""}${a.outside_guardrails ? badge("held", "warn") : ""}</div>` : ""}
-    <div class="msgs" id="chat-msgs">${log.length ? html`${log.map((m) => html`<div class="bubble ${m.me ? "me" : "bot"}">${m.me ? m.text : md(m.text)}
+    <div class="msgs" id="chat-msgs">${log.length ? html`${log.map((m) => html`<div class="bubble ${m.me ? "me" : "bot"}${m.handoff ? " handoff" : ""}">${!m.me && m.who ? html`<div class="who">${m.who}</div>` : ""}${m.me ? m.text : md(m.text)}
         ${!m.me && m.mode ? html`<div class="faint" style="font-size:11px;margin-top:4px">via ${MODE[m.mode] || m.mode}${m.delegated?.length ? ` — ${[...new Set(m.delegated.map((id) => AGENT_NAME[id.split(":")[0]] || id.split(":")[0]))].join(", ")}` : ""}</div>` : ""}</div>`)}
-        ${busy ? html`<div class="bubble bot faint">Thinking${a.id === "supervisor" ? " and asking the other agents" : ""}...</div>` : ""}`
+        ${busy ? html`<div class="bubble bot faint">${a.id === "supervisor" ? "Agents are working… stop them, or send a new instruction below (it stops the current work first)." : "Working…"}</div>` : ""}`
       : html`<div class="bubble bot">${md(greeting(a))}</div>`}</div>
-    <form id="chat-form" data-min-role="operator"><input name="text" placeholder="Message ${a?.name || "the agent"}..." autocomplete="off" aria-label="Message" ${busy || off ? "disabled" : ""}>
+    <form id="chat-form" data-min-role="operator"><input name="text" placeholder="${busy ? "New instruction — stops the current work first" : `Message ${a?.name || "the agent"}...`}" autocomplete="off" aria-label="Message" ${off ? "disabled" : ""}>
       ${busy ? html`<button type="button" class="btn danger" data-act="stop" data-min-role="operator">Stop</button>`
         : html`<button class="btn primary" ${off ? "disabled" : ""} aria-label="Send">${icon("send")}</button>`}</form>
     ${can("operator") ? "" : html`<p class="faint" style="font-size:12.5px">Chatting with agents needs the operator role.</p>`}`;
+}
+
+function pushReply(log, reply) {
+  const steps = Array.isArray(reply.steps) ? reply.steps.filter((step) => step && step.text) : [];
+  if (!steps.length) {
+    log.push({ me: false, text: reply.reply, mode: reply.mode, delegated: reply.delegated || [] });
+    return;
+  }
+  steps.forEach((step, index) => {
+    const last = index === steps.length - 1;
+    log.push({
+      me: false, who: step.who || "", text: step.text, handoff: !!step.handoff,
+      mode: last ? reply.mode : "", delegated: last ? [] : [],
+    });
+  });
 }
 
 function streamView(messages) {
@@ -220,9 +236,21 @@ export async function render(el, ctx) {
     const input = e.target.querySelector("input");
     const text = input.value.trim();
     const id = chat.agent;
-    if (!text || chat.busy.has(id)) return;
+    if (!text || input.disabled) return;
     const logs = chat.logs; // a sign-out meanwhile swaps in new transcripts; the reply stays with these
     const busy = chat.busy;
+    const epoch = (chat.epochs.get(id) || 0) + 1;
+    chat.epochs.set(id, epoch);
+    if (busy.has(id)) {
+      const clientId = chat.clientIds.get(id);
+      chat.controllers.get(id)?.abort();
+      try {
+        await post(`/agents/${enc(id)}/chat/stop`, clientId ? { client_id: clientId } : {});
+      } catch (err) {
+        toast(err.message, "bad");
+      }
+    }
+    if (chat.epochs.get(id) !== epoch || logs !== chat.logs) return;
     const log = (logs[id] ||= []);
     log.push({ me: true, text });
     busy.add(id);
@@ -234,13 +262,15 @@ export async function render(el, ctx) {
     chat.controllers.set(id, controller);
     try {
       const reply = await post(`/agents/${enc(id)}/chat`, { text, client_id: clientId }, { signal: controller.signal });
-      if (!controller.signal.aborted) log.push({ me: false, text: reply.reply, mode: reply.mode, delegated: reply.delegated || [] });
+      if (!controller.signal.aborted && chat.epochs.get(id) === epoch) pushReply(log, reply);
     } catch (err) {
-      if (!controller.signal.aborted && err.name !== "AbortError") log.push({ me: false, text: `Error: ${err.message}` });
+      if (!controller.signal.aborted && err.name !== "AbortError" && chat.epochs.get(id) === epoch) log.push({ me: false, text: `Error: ${err.message}` });
     } finally {
-      chat.controllers.delete(id);
-      busy.delete(id);
-      if (logs === chat.logs && chat.agent === id) chat.redraw?.();
+      if (chat.epochs.get(id) === epoch) {
+        chat.controllers.delete(id);
+        busy.delete(id);
+        if (logs === chat.logs && chat.agent === id) chat.redraw?.();
+      }
     }
   });
   el.addEventListener("change", (e) => {

@@ -7,7 +7,7 @@ import * as home from "./views/home.js";
 import * as tools from "./views/tools.js";
 import * as integration from "./views/integration.js";
 import * as network from "./views/network.js";
-import * as agents from "./views/agents.js?v=8";
+import * as agents from "./views/agents.js?v=9";
 import * as approvals from "./views/approvals.js";
 import * as operator from "./views/operator.js";
 import * as assets from "./views/assets.js";

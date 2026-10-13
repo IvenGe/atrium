@@ -720,6 +720,95 @@ def test_the_supervisor_hands_a_fix_to_the_patch_agent(client):
     assert supervisor["provider_label"] == "Rules" and supervisor["model"] == ""
 
 
+def test_the_supervisor_plans_a_cycle_with_the_selected_model(client):
+    hub = client.app.state.hub
+    seen = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path != "/v1/chat/completions":
+            return httpx.Response(200, json={"object": "list", "data": [{"id": "gpt-5.6-terra"}, {"id": "gpt-3.5-turbo"}]})
+        body = json.loads(request.content)
+        seen.append(body)
+        system = body["messages"][0]["content"]
+        if "Reply with JSON only" in system and body["model"] == "gpt-3.5-turbo":
+            return httpx.Response(404, json={"error": {"message": "model not found"}})
+        if "Reply with JSON only" in system:
+            facts = json.loads(body["messages"][-1]["content"])
+            items = [{"id": item["id"], "priority": 1 if item["id"] == "grc" else 2,
+                      "goal": "Cycle goal for " + item["id"]} for item in facts["work"]]
+            content = json.dumps({"items": items})
+            return httpx.Response(200, json={"choices": [{"finish_reason": "stop", "message": {"content": content}}]})
+        return httpx.Response(200, json={"choices": [{"finish_reason": "stop", "message": {"content": "From ChatGPT."}}]})
+
+    hub.llm_transport = httpx.MockTransport(handler)
+    client.post("/api/llm/providers", json={"preset": "chatgpt", "name": "ChatGPT", "api_key": "sk-test"})
+    saved = client.patch("/api/settings", json={"model_provider": "chatgpt", "model": "gpt-3.5-turbo",
+                                                "autonomy": "autonomous"}).json()
+    assert saved["model_provider"] == "chatgpt" and saved["model"] == "gpt-3.5-turbo"
+
+    hello = client.post("/api/chat", json={"text": "hello there"}).json()
+    assert hello["mode"] == "local" and hello["reply"] == "From ChatGPT."
+    assert not hello.get("steps")
+
+    tool = add_tool(client, "flask", "Flask")
+    tool.status = "error"
+    tool.error = "connection refused"
+    hub.save_tool(tool)
+    repair = client.post("/api/chat", json={"text": "flask has an error"}).json()
+    assert repair["mode"] == "local"
+    assert repair["delegated"] == ["tool:flask", "patcher:flask"]
+    assert "Nothing is waiting" not in repair["reply"]
+    assert "Cycle goal for health:flask" in repair["reply"] and "Cycle goal for repair:flask" in repair["reply"]
+    assert "Dispatching 2 work item(s)" in repair["reply"]
+    assert "Supervisor hands off to Flask Supervisor" in repair["reply"]
+    assert "Supervisor hands off to Patch Agent" in repair["reply"]
+    assert any(step.get("handoff") and step["text"] == "Supervisor hands off to Patch Agent" for step in repair["steps"])
+    assert any(step["who"] == "Patch Agent" for step in repair["steps"])
+    patches = client.get("/api/tools/flask").json()["patches"]
+    filed = next(p for p in patches if p["strategy"] == "error_repair")
+    assert "connection refused" in filed["rationale"]
+    assert not [t for t in client.get("/api/agents/teams").json()["teams"] if t["team"] == "flask" and t["size"]]
+
+    cycle = client.post("/api/chat", json={
+        "text": "Plan this maintenance cycle. Assemble an AI team for the installed software."}).json()
+    assert cycle["mode"] == "local"
+    assert "Nothing is waiting" not in cycle["reply"]
+    assert "Cycle goal for grc" in cycle["reply"] and "Cycle goal for team:flask" in cycle["reply"]
+    assert "Dispatching 3 work item(s)" in cycle["reply"]
+    assert "Supervisor hands off to GRC Supervisor" in cycle["reply"]
+    assert any(step["who"] == "GRC Supervisor" and "Frameworks:" in step["text"] for step in cycle["steps"])
+    assert any(step["who"] == "Flask Supervisor" and "Created" in step["text"] for step in cycle["steps"])
+    flask_team = next(t for t in client.get("/api/agents/teams").json()["teams"] if t["team"] == "flask")
+    assert flask_team["size"] == 1 and flask_team["members"][0]["title"] == "Maintainer"
+
+    plan_calls = [body for body in seen if "Reply with JSON only" in body["messages"][0]["content"]]
+    assert [body["model"] for body in plan_calls] == ["gpt-3.5-turbo", "gpt-5.6-terra", "gpt-3.5-turbo", "gpt-5.6-terra"]
+    assert all("tools" not in body for body in plan_calls)
+    assert seen[0]["model"] == "gpt-3.5-turbo" and seen[0]["messages"][-1]["content"] == "hello there"
+
+
+def test_a_cycle_repairs_a_down_tool_and_not_a_healthy_gap(client):
+    from hub.agents.cycle import _catalog
+    from hub.models import Check, CompatibilityReport
+
+    gap = add_tool(client, "flask", "Flask")
+    gap.status = "ready"
+    gap.report = CompatibilityReport(score=50, level="patchable", checks=[
+        Check(id="sso", title="Single sign-on", status="fail", fix="sso_proxy")])
+    client.app.state.hub.save_tool(gap)
+    down = add_tool(client, "bell", "Bell")
+    down.status = "error"
+    down.error = "connection refused"
+    client.app.state.hub.save_tool(down)
+    items, _left = _catalog(client.app.state.hub.agents.get("supervisor"),
+                            "Fix all the issues if needed and assemble an AI team for the installed software.")
+    kinds = {(item["kind"], item.get("tool_id")) for item in items}
+    assert ("repair", "bell") in kinds and ("health", "bell") in kinds
+    assert ("repair", "flask") not in kinds and ("health", "flask") not in kinds
+    assert ("team", "flask") in kinds
+    assert any(item["kind"] == "grc" for item in items)
+
+
 def test_chatgpt_and_grok_presets(client):
     view = client.get("/api/llm/providers").json()
     presets = {p["id"]: p for p in view["presets"]}
