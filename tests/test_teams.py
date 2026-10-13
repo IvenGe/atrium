@@ -532,6 +532,36 @@ def test_chatgpt_and_grok_presets(client):
     assert record["provider_label"] == "ChatGPT" and record["provider_kind"] == "local" and record["model"] == "gpt-4o"
 
 
+def test_the_default_model_can_be_chatgpt_grok_or_a_local_server(client):
+    hub = client.app.state.hub
+    seen = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/chat/completions":
+            seen.append(json.loads(request.content))
+            return httpx.Response(200, json={"choices": [{"finish_reason": "stop", "message": {"content": "From Grok."}}]})
+        return httpx.Response(200, json={"object": "list", "data": [{"id": "grok-4.7"}]})
+
+    hub.llm_transport = httpx.MockTransport(handler)
+    assert client.patch("/api/settings", json={"model_provider": "grok", "model": "grok-4.7"}).status_code == 400
+    client.post("/api/llm/providers", json={"preset": "grok", "name": "Grok", "api_key": "xai-test"})
+    saved = client.patch("/api/settings", json={"model_provider": "grok", "model": "grok-4.7"}).json()
+    assert saved["model_provider"] == "grok" and saved["model"] == "grok-4.7"
+    assert client.patch("/api/settings", json={"model_provider": "anthropic", "model": " "}).status_code == 400
+
+    record = client.post("/api/agents", json={"name": "Defaulted"}).json()
+    assert record["provider"] == "grok" and record["model"] == "grok-4.7"
+    reply = client.post("/api/chat", json={"text": "hello there"}).json()
+    assert reply["mode"] == "local" and reply["reply"] == "From Grok."
+    assert seen[-1]["model"] == "grok-4.7" and seen[-1]["messages"][1]["content"] == "hello there"
+
+    client.post("/api/llm/providers", json={"name": "Ollama", "base_url": "http://localhost:11434/v1",
+                                            "default_model": "qwen3:8b"})
+    local = client.patch("/api/settings", json={"model_provider": "ollama", "model": "qwen3:8b"}).json()
+    assert local["model_provider"] == "ollama"
+    assert client.post("/api/agents", json={"name": "On box"}).json()["provider"] == "ollama"
+
+
 def test_local_provider_and_the_openai_compatible_tool_loop(client, sign_in):
     hub = client.app.state.hub
     server = FakeLocalServer()

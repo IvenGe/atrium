@@ -158,14 +158,15 @@ deterministically. With Claude:
 
 Set `ANTHROPIC_API_KEY` (or run `ant auth login`) before starting the hub, or put it in a `.env`
 file - see [`.env.example`](.env.example). The default model is `claude-opus-5-5`; change it in
-**Settings** or per agent. Requests opt into server-side refusal fallbacks
+**Settings**. The default can be Claude, ChatGPT, Grok, a local model, or rules, and each agent can override it.
+Claude requests opt into server-side refusal fallbacks
 (`server-side-fallback-2026-07-01`, `fallbacks: "default"`).
 
 Team agents can also run on **ChatGPT**, **Grok**, or a **local model**: add the provider under **Settings > AI providers**
 (ChatGPT and Grok need an API key; a local server is any OpenAI-compatible API, default `http://localhost:11434/v1` for
-Ollama), test it to list its models, and pick it for the agent. Tool calling needs a model and server that support it
-(vLLM: `--enable-auto-tool-choice` with a `--tool-call-parser`; llama.cpp: `--jinja`); otherwise switch the provider's
-tools off and its agents answer in plain text. The Hub Supervisor and the Patch Agent stay on Claude. See
+Ollama), test it to list its models, and pick it for the agent or as the suite default. Tool calling needs a model and
+server that support it (vLLM: `--enable-auto-tool-choice` with a `--tool-call-parser`; llama.cpp: `--jinja`); otherwise
+switch the provider's tools off and its agents answer in plain text. Code patches stay on Claude. See
 [docs/AGENTS.md](docs/AGENTS.md#local-and-hosted-models).
 
 ## How it works

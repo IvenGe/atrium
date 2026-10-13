@@ -1,6 +1,6 @@
 import { del, get, patch, post } from "../api.js";
 import { mountSso } from "../signin.js";
-import { actions, badge, can, confirmDialog, emptyState, field, html, icon, modal, setHTML, timeAgo, toast } from "../ui.js";
+import { actions, badge, can, confirmDialog, emptyState, field, html, icon, modal, options, setHTML, timeAgo, toast } from "../ui.js";
 
 const LEVELS = [
   ["manual", "Manual", "Every agent command and patch waits for your approval."],
@@ -13,7 +13,41 @@ const GUARD_GROUPS = {
   extensions: "Extensions", self_patching: "Self-patching (changes to Atrium's own code)",
   network: "Network changes",
 };
+const CLAUDE_MODELS = ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5", "claude-fable-5-1"];
 const SERVERS = "Ollama: http://localhost:11434/v1 - LM Studio: http://localhost:1234/v1 - vLLM: http://<host>:8000/v1 - llama.cpp server: http://<host>:8080/v1";
+
+/** Claude, rules, configured providers, and ChatGPT/Grok presets that still need a key. */
+function modelChoices(pv) {
+  const choices = pv.choices || [];
+  const extra = (pv.presets || []).filter((p) => !choices.some((c) => c.id === p.id)).map((p) => ({
+    id: p.id, label: p.name, kind: "hosted", available: false, configured: false,
+    default_model: p.default_model, models: p.suggested_models || [],
+  }));
+  return [...choices.map((c) => ({ ...c, configured: true })), ...extra];
+}
+
+function choiceModels(choice) {
+  if (!choice || choice.id === "rules") return [];
+  if (choice.id === "anthropic") return CLAUDE_MODELS;
+  return [...new Set([choice.default_model, ...(choice.models || [])].filter(Boolean))];
+}
+
+function modelBadge(choice, llm) {
+  if (!choice || choice.id === "anthropic") return llm?.available ? badge("Claude connected", "ok") : badge("rules mode", "warn");
+  if (choice.id === "rules") return badge("rules", "info");
+  if (choice.configured === false) return badge("needs a key", "warn");
+  return badge(choice.available ? "connected" : "not tested", choice.available ? "ok" : "warn");
+}
+
+function modelNotice(choice, llm) {
+  if (!choice || choice.id === "anthropic") {
+    return llm?.available ? "" : html`<div class="notice">${icon("bot")}<div class="muted">No Claude credentials found. Set <code>ANTHROPIC_API_KEY</code> (or run <code>ant auth login</code>)
+      and restart the hub. Until then, pick ChatGPT, Grok or a local provider here, or the agents stay on rules.</div></div>`;
+  }
+  if (choice.id === "rules") return html`<p class="faint" style="font-size:12.5px">Agents answer from built-in commands. No model is called.</p>`;
+  if (choice.configured === false) return html`<div class="notice">${icon("bot")}<div class="muted">Add ${choice.label} under AI providers and store an API key, then save this setting.</div></div>`;
+  return html`<p class="faint" style="font-size:12.5px">The Hub Supervisor and new team agents use ${choice.label}. Code patches still use Claude when a Claude key is set.</p>`;
+}
 const hosted = (pv, id) => (pv.providers || []).some((p) => p.preset === id || p.id === id);
 // Switches that allow a capability are on by default, but off is their protective side (safe_value in hub/guardrails.py):
 // switching them back on is logged as relaxing. The catalog does not carry that yet, so it is named here (or read from `safe`).
@@ -133,12 +167,13 @@ export async function render(el, ctx) {
           <p class="faint" style="font-size:12.5px">Whether scheduled and agent-started scans wait for approval is an agent guardrail (below).</p></div>
       </section>
       <section class="stack">
-        <div class="card"><header><h2>AI model</h2>${s.llm.available ? badge("Claude connected", "ok") : badge("rules mode", "warn")}</header>
-          ${field("Default model for all agents", html`<input name="model" list="model-list" value="${s.model}">
-            <datalist id="model-list"><option value="claude-opus-5-5"><option value="claude-sonnet-5-5"><option value="claude-haiku-5-5"><option value="claude-fable-5-1"></datalist>`,
-            "Individual agents can override this on the Agents page.")}
-          ${s.llm.available ? "" : html`<div class="notice">${icon("bot")}<div class="muted">No Claude credentials found. Set <code>ANTHROPIC_API_KEY</code> (or run <code>ant auth login</code>)
-            and restart the hub. Without it the agents use deterministic rules and templates, or a local model provider.</div></div>`}
+        <div class="card" id="ai-model-card"><header><h2>AI model</h2><span id="ai-model-badge">${modelBadge(modelChoices(pv).find((c) => c.id === (s.model_provider || "anthropic")), s.llm)}</span></header>
+          ${field("Runs on", html`<select name="model_provider" id="model-provider">${options(modelChoices(pv).map((c) => [c.id, c.configured === false ? `${c.label} (add a key first)` : c.label]), s.model_provider || "anthropic")}</select>`,
+            "Claude, ChatGPT, Grok, a local model server, or rules.")}
+          ${field("Model", html`<input name="model" id="model-name" list="model-list" value="${s.model}">
+            <datalist id="model-list"></datalist>`,
+            "For ChatGPT, Grok or a local server, this is the model name. Leave it empty to use the provider's own default. Team agents can still override it.")}
+          <div id="model-notice">${modelNotice(modelChoices(pv).find((c) => c.id === (s.model_provider || "anthropic")), s.llm)}</div>
           ${s.llm.last_error ? html`<p style="color:var(--bad);margin-top:8px;font-size:12.5px">Last error: ${s.llm.last_error}</p>` : ""}</div>
         <div class="card" data-min-role="admin"><header><h2>Users &amp; access</h2>${icon("users")}</header>
           <p class="muted" style="margin-bottom:10px">Accounts, roles and API tokens for scripts and integrations; single sign-on below.</p>
@@ -166,7 +201,31 @@ export async function render(el, ctx) {
   }
 
   const form = el.querySelector("#settings-form");
-  if (!admin) form.querySelectorAll("input").forEach((input) => { input.disabled = true; });
+  const choices = modelChoices(pv);
+  const modelSelect = form.querySelector("#model-provider");
+  const modelInput = form.querySelector("#model-name");
+  function paintModel(providerId, keepTyped) {
+    const choice = choices.find((c) => c.id === providerId) || choices[0];
+    const models = choiceModels(choice);
+    const list = form.querySelector("#model-list");
+    list.replaceChildren(...models.map((m) => {
+      const option = document.createElement("option");
+      option.value = m;
+      return option;
+    }));
+    if (!keepTyped && !models.includes(modelInput.value.trim())) {
+      modelInput.value = choice.id === "anthropic" ? (models.includes(s.model) ? s.model : CLAUDE_MODELS[0]) : (choice.default_model || "");
+    }
+    modelInput.disabled = !admin || choice.id === "rules";
+    if (choice.id === "rules") modelInput.value = "";
+    const badgeEl = form.querySelector("#ai-model-badge");
+    const noticeEl = form.querySelector("#model-notice");
+    if (badgeEl) setHTML(badgeEl, modelBadge(choice, s.llm));
+    if (noticeEl) setHTML(noticeEl, modelNotice(choice, s.llm));
+  }
+  paintModel(modelSelect.value, true);
+  modelSelect.addEventListener("change", () => paintModel(modelSelect.value, false));
+  if (!admin) form.querySelectorAll("input, select").forEach((input) => { input.disabled = true; });
   form.addEventListener("submit", async (e) => {
     e.preventDefault();
     if (!admin) return;
@@ -177,7 +236,12 @@ export async function render(el, ctx) {
       return;
     }
     try {
-      s = await patch("/settings", { autonomy: data.get("autonomy"), model: String(data.get("model") || "").trim() || null, vuln_sla_days: sla });
+      s = await patch("/settings", {
+        autonomy: data.get("autonomy"),
+        model: String(data.get("model") || "").trim(),
+        model_provider: String(data.get("model_provider") || "anthropic"),
+        vuln_sla_days: sla,
+      });
       toast("Settings saved", "ok");
     } catch (err) {
       toast(err.message, "bad");

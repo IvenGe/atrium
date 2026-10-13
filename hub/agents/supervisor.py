@@ -13,6 +13,7 @@ from ..extensions import registry as extension_registry
 from ..integration import connections, flows, identity, importer, strategies
 from ..integration.compatibility import evaluate_suite, suite_matrix
 from ..integration.identity import SSO_STRATEGIES
+from .. import llm_providers
 from ..models import AGENT_PERMISSIONS
 from . import teams, toolkit
 from .base import BaseAgent
@@ -63,6 +64,7 @@ class HubSupervisor(BaseAgent):
     def __init__(self, hub):
         super().__init__(hub, "supervisor", "Hub Supervisor")
         self._history: list[dict[str, Any]] = []
+        self._local_history: list[dict[str, Any]] = []
         self._chat_lock = asyncio.Lock()
 
     # -- tool lifecycle ----------------------------------------------------------------
@@ -252,7 +254,16 @@ class HubSupervisor(BaseAgent):
 
     async def on_chat(self, body: dict[str, Any], msg: Message) -> dict[str, Any]:
         text = str(body.get("text", "")).strip()
-        if self.hub.llm.available:
+        chosen = teams.saved_provider(self.hub)
+        if chosen and chosen not in ("anthropic", "rules"):
+            provider = llm_providers.get(self.hub, chosen)
+            if provider is not None:
+                try:
+                    return {"reply": await self._provider_chat(text, provider), "mode": "local"}
+                except Exception as exc:
+                    note = (f"({provider.name} unavailable: {exc}. Falling back to built-in commands.)\n\n")
+                    return {"reply": note + await self._rules_chat(text), "mode": "rules"}
+        if (chosen in (None, "anthropic")) and self.hub.llm.available:
             try:
                 return {"reply": await self._llm_chat(text), "mode": "llm"}
             except Exception as exc:  # fall back to rules on any API failure
@@ -263,6 +274,7 @@ class HubSupervisor(BaseAgent):
     async def on_chat_reset(self, body: dict[str, Any], msg: Message) -> dict[str, Any]:
         async with self._chat_lock:
             self._history = []
+            self._local_history = []
         return {"ok": True}
 
     async def _llm_chat(self, text: str) -> str:
@@ -277,6 +289,21 @@ class HubSupervisor(BaseAgent):
 
             return await toolkit.claude_loop(self.hub, self._history, system=self.instructions,
                                              tools=toolkit.definitions(ctx.permissions), model=self.model, run=run)
+
+    async def _provider_chat(self, text: str, provider: Any) -> str:
+        """The same tools as Claude chat, sent to the OpenAI-compatible provider chosen in Settings."""
+        async with self._chat_lock:
+            if len(self._local_history) > 80:
+                self._local_history = []
+            self._local_history.append({"role": "user", "content": text})
+            ctx = toolkit.ToolContext(self.hub, self, frozenset(self.permissions))
+
+            async def run(name: str, args: dict[str, Any]) -> Any:
+                return await toolkit.execute(ctx, name, args)
+
+            model = self.hub.prefs["model"] if teams.saved_provider(self.hub) == provider.id else provider.default_model
+            return await toolkit.local_loop(self.hub, provider, self._local_history, system=self.instructions,
+                                            tools=toolkit.definitions(ctx.permissions), model=model, run=run)
 
     async def _rules_chat(self, text: str) -> str:
         low = text.lower().strip()

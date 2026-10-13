@@ -48,7 +48,10 @@ class BaseAgent:
 
     @property
     def model(self) -> str:
-        return self.model_override or self.hub.prefs["model"]
+        if self.model_override:
+            return self.model_override
+        from . import teams
+        return teams.claude_model(self.hub)
 
     @property
     def instructions(self) -> str:

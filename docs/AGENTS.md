@@ -159,6 +159,11 @@ as they are then. In autonomous mode, or with `team_requires_approval` off, the 
 Team agents can run on any server with an OpenAI-compatible API (`hub/llm_providers.py`, collection
 `llm_providers`). Add one under **Settings > AI providers** (admin).
 
+The default is chosen under **Settings > AI model**: Claude, ChatGPT, Grok, a local provider, or rules, plus the
+model name. New team agents use that provider. The Hub Supervisor's chat uses it too. Code patches, extension packs
+and self-patches still call Claude, and they stay on rules when no Claude key is set. A team agent can still name
+its own provider and model.
+
 **ChatGPT** and **Grok** are presets. ChatGPT calls `https://api.openai.com/v1` and starts on `gpt-5.6-terra`. Grok
 calls `https://api.x.ai/v1` and starts on `grok-4.7`. Both need an API key. Those defaults were taken from the
 vendors' docs in October 2026; **Test** lists the models the key can actually call, and you can pick another.

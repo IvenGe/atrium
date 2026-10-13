@@ -124,7 +124,8 @@ class ProviderPatch(BaseModel):
 
 class SettingsPatch(BaseModel):
     autonomy: Literal["manual", "assisted", "autonomous"] | None = None
-    model: str | None = None
+    model: str | None = Field(None, max_length=200)
+    model_provider: str | None = Field(None, max_length=40)  # anthropic, rules, or a configured provider id
     vuln_sla_days: SlaDays | None = None  # days to fix a finding, per severity (merged into the current values)
     guardrails: dict[str, bool | int] | None = None  # see hub/guardrails.py (also PATCH /api/settings/guardrails)
 
@@ -1258,6 +1259,17 @@ def build_router(hub: Hub) -> APIRouter:
                 raise HTTPException(400, "SLA days must be between 1 and 3650")
             values["vuln_sla_days"] = {**hub.prefs["vuln_sla_days"], **body.vuln_sla_days}
         try:
+            if body.model_provider is not None:
+                try:
+                    teams.check_provider(hub, body.model_provider)
+                except ValueError as exc:
+                    preset = llm_providers.preset_by_id(body.model_provider)
+                    if preset is not None:
+                        raise ValueError(f"Add {preset['name']} under AI providers and store an API key before "
+                                         "choosing it") from exc
+                    raise
+                if body.model_provider == "anthropic" and body.model is not None and not body.model.strip():
+                    raise ValueError("Choose a Claude model")
             if body.guardrails:
                 guardrails.validate(body.guardrails)  # nothing is stored when any value is invalid
             if any(v is not None for v in values.values()):
