@@ -122,7 +122,7 @@ function groupsView(agents, overview) {
       return list.length ? html`<div><h3 class="muted" style="margin:0 0 10px">${title}</h3><div class="grid cols-3">${list.map(agentCard)}</div></div>` : "";
     })}
     <div><h3 class="muted" style="margin:0 0 4px">Agent teams</h3>
-      <p class="faint" style="font-size:12.5px;margin-bottom:10px">Each tool's supervisor leads its team. Team agents run on Claude, a local model or rules, with only the permissions they are given.</p>
+      <p class="faint" style="font-size:12.5px;margin-bottom:10px">Each tool's supervisor leads its team. Team agents run on Claude, ChatGPT, Grok, a local model or rules, with only the permissions they are given.</p>
       ${teams.length ? html`<div class="team-grid">${teams.map(teamCard)}</div>` : html`<p class="faint">Import a tool to give it a team.</p>`}</div>`;
 }
 
@@ -354,7 +354,7 @@ export async function render(el, ctx) {
         </div>
         <div class="form-grid">
           ${field("Runs on", html`<select name="provider">${options(providers.map((p) => [p.id, `${p.kind === "local" ? `Local: ${p.label}` : p.label}${p.available ? "" : " (not available)"}`]), provider)}</select>`,
-            html`Local providers are added in <a href="#/settings">Settings &gt; AI providers</a>.`)}
+            html`ChatGPT, Grok and local providers are added in <a href="#/settings">Settings &gt; AI providers</a>.`)}
           ${field("Model", html`<input name="model" list="agent-models" maxlength="200" value="${a?.model_override || ""}" placeholder="${models(provider).default_model ? `Default: ${models(provider).default_model}` : "Provider default"}">
             <datalist id="agent-models">${(models(provider).models || []).map((x) => html`<option value="${x}">`)}</datalist>`, "Leave empty for the provider's default.")}
         </div>

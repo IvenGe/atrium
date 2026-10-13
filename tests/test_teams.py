@@ -503,6 +503,35 @@ class FakeLocalServer:
         return httpx.Response(404, json={"error": "not found"})
 
 
+def test_chatgpt_and_grok_presets(client):
+    view = client.get("/api/llm/providers").json()
+    presets = {p["id"]: p for p in view["presets"]}
+    assert presets["chatgpt"]["base_url"] == "https://api.openai.com/v1"
+    assert presets["chatgpt"]["default_model"] == "gpt-5.6-terra" and presets["chatgpt"]["requires_key"]
+    assert presets["grok"]["base_url"] == "https://api.x.ai/v1" and presets["grok"]["default_model"] == "grok-4.7"
+
+    missing = client.post("/api/llm/providers", json={"preset": "chatgpt", "name": "ChatGPT"})
+    assert missing.status_code == 400 and "API key" in missing.json()["detail"]
+    assert client.post("/api/llm/providers", json={"preset": "nope", "name": "Nope", "api_key": "x"}).status_code == 400
+
+    created = client.post("/api/llm/providers", json={"preset": "chatgpt", "name": "ChatGPT", "api_key": "sk-test"})
+    assert created.status_code == 201, created.text
+    chatgpt = created.json()
+    assert chatgpt["id"] == "chatgpt" and chatgpt["name"] == "ChatGPT" and chatgpt["preset"] == "chatgpt"
+    assert chatgpt["base_url"] == "https://api.openai.com/v1" and chatgpt["default_model"] == "gpt-5.6-terra"
+    assert chatgpt["api_key_set"] and "api_key" not in chatgpt and "sk-test" not in json.dumps(chatgpt)
+    grok = client.post("/api/llm/providers", json={"preset": "grok", "name": "Grok", "api_key": "xai-test",
+                                                   "default_model": ""}).json()
+    assert grok["id"] == "grok" and grok["base_url"] == "https://api.x.ai/v1" and grok["default_model"] == "grok-4.7"
+    again = client.post("/api/llm/providers", json={"preset": "chatgpt", "name": "ChatGPT", "api_key": "sk-other"})
+    assert again.status_code == 201 and again.json()["id"] == "chatgpt-2"
+
+    choices = {c["id"]: c for c in client.get("/api/llm/providers").json()["choices"]}
+    assert choices["chatgpt"]["kind"] == "hosted" and choices["grok"]["kind"] == "hosted"
+    record = client.post("/api/agents", json={"name": "Writer", "provider": "chatgpt", "model": "gpt-4o"}).json()
+    assert record["provider_label"] == "ChatGPT" and record["provider_kind"] == "local" and record["model"] == "gpt-4o"
+
+
 def test_local_provider_and_the_openai_compatible_tool_loop(client, sign_in):
     hub = client.app.state.hub
     server = FakeLocalServer()

@@ -244,7 +244,8 @@ def provider_choices(hub: "Hub") -> list[dict[str, Any]]:
             "default_model": hub.prefs["model"], "models": []},
            {"id": "rules", "label": "Rules", "kind": "rules", "available": True, "default_model": "", "models": []}]
     for p in llm_providers.all_providers(hub):
-        out.append({"id": p.id, "label": p.name, "kind": "local", "available": bool(p.last_test and p.last_test.get("ok")),
+        out.append({"id": p.id, "label": p.name, "kind": "hosted" if p.preset else "local",
+                    "available": bool(p.last_test and p.last_test.get("ok")),
                     "default_model": p.default_model, "models": p.models})
     return out
 

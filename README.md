@@ -68,7 +68,7 @@ Home, the app launcher, agents, approvals, the operator console, assets, the ris
 | **Vulnerabilities** | Findings from scanners and other tools: scans of in-scope assets (with approval), severity, CVEs, remediation deadlines per severity (SLA), automatic "fixed" when a rescan no longer finds them, and risks for critical findings past their deadline. |
 | **Compliance hub** | GRC controls evaluated against live hub state, mapped to ISO/IEC 27001:2022, SOC 2, NIS2 and CyFun; CyFun 2025 and 2023 self-assessments with an audit pack; risk register with heatmap; policies with templates. See [docs/COMPLIANCE.md](docs/COMPLIANCE.md). |
 | **Extensions** | Packs that add data types (alerts, tickets, incidents, ...) with their own apps, connector mappings, SSO recipes, compliance rules and team templates - data only, versioned, enabled without a restart. Generated after an import from templates or by Claude, and approved by an admin. When only code can help, a **self-patch** of Atrium is tested on its own branch and opened as a pull request after approval. |
-| **Settings** | Autonomy level, default model, vulnerability deadlines, **Agent guardrails**, **AI providers** (local models) and **Sign-in & SSO** (presets for Okta, Microsoft Entra ID, Google, Keycloak, authentik). |
+| **Settings** | Autonomy level, default model, vulnerability deadlines, **Agent guardrails**, **AI providers** (ChatGPT, Grok, local models) and **Sign-in & SSO** (presets for Okta, Microsoft Entra ID, Google, Keycloak, authentik). |
 | **Users & access** | Admins only. Accounts (local passwords or single sign-on), roles, password resets, API tokens for scripts and tools, and the person each account belongs to. Everyone can change their password and sign out other sessions from the user menu. |
 
 ## Quick start
@@ -161,11 +161,12 @@ file - see [`.env.example`](.env.example). The default model is `claude-opus-5-5
 **Settings** or per agent. Requests opt into server-side refusal fallbacks
 (`server-side-fallback-2026-07-01`, `fallbacks: "default"`).
 
-Team agents can also run on a **local model**: add a provider under **Settings > AI providers** (any server with an
-OpenAI-compatible API; the default base URL `http://localhost:11434/v1` is Ollama's), test it to list its models, and
-pick it for the agent. Tool calling needs a model and server that support it (vLLM: `--enable-auto-tool-choice` with a
-`--tool-call-parser`; llama.cpp: `--jinja`); otherwise switch the provider's tools off and its agents answer in plain
-text. See [docs/AGENTS.md](docs/AGENTS.md#local-models).
+Team agents can also run on **ChatGPT**, **Grok**, or a **local model**: add the provider under **Settings > AI providers**
+(ChatGPT and Grok need an API key; a local server is any OpenAI-compatible API, default `http://localhost:11434/v1` for
+Ollama), test it to list its models, and pick it for the agent. Tool calling needs a model and server that support it
+(vLLM: `--enable-auto-tool-choice` with a `--tool-call-parser`; llama.cpp: `--jinja`); otherwise switch the provider's
+tools off and its agents answer in plain text. The Hub Supervisor and the Patch Agent stay on Claude. See
+[docs/AGENTS.md](docs/AGENTS.md#local-and-hosted-models).
 
 ## How it works
 
@@ -288,7 +289,7 @@ hub/
   people.py        the People app: merging, accounts, links, leavers
   secrets.py       encryption of stored credentials
   guardrails.py    the agent guardrails admins can relax
-  llm_providers.py local models with an OpenAI-compatible API (Ollama, LM Studio, vLLM, llama.cpp)
+  llm_providers.py OpenAI-compatible models: ChatGPT, Grok, and local servers (Ollama, LM Studio, vLLM, llama.cpp)
 docs/              architecture, sign-in and access control, integrations, agents and extensions, people, manifest
 examples/          sample tools to import
 scripts/           install_copy.py (used by the installers)

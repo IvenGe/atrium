@@ -32,7 +32,7 @@ and an optional schedule with a standing task. They are data, not code (collecti
 | `id` | `agent:<slug>` |
 | `name`, `title`, `description` | who it is; the title is its role |
 | `instructions` | its system prompt |
-| `provider` | `anthropic` (Claude), the id of a [local model provider](#local-models), or `rules`. Default: Claude when it is available, else the first local provider with a default model, else rules |
+| `provider` | `anthropic` (Claude), the id of a [ChatGPT, Grok or local provider](#local-and-hosted-models), or `rules`. Default: Claude when it is available, else the first provider with a default model, else rules |
 | `model` | empty: the provider's default model |
 | `permissions` | a subset of the [permissions](#permissions) below (default `read`) |
 | `team`, `parent`, `depth` | see [Teams](#teams) |
@@ -40,7 +40,7 @@ and an optional schedule with a standing task. They are data, not code (collecti
 | `enabled` | a disabled agent is paused |
 
 **Agents page** (admins): **New agent**, **Edit** and **Remove** (with confirmation). Each team agent shows a provider
-badge (Claude, "Local: <provider>", or Rules, amber when that provider cannot be used), its model, effective
+badge (Claude, the provider's name, or Rules, amber when that provider cannot be used), its model, effective
 permissions, a "not granted" badge for permissions its parent lacks, the schedule, the next and the last run. Viewers
 and operators get a read-only details view.
 
@@ -154,16 +154,24 @@ how it was designed, the rationale, and who asked). Only administrators decide i
 (operators may ask for one). Approving it creates the members, checked against the guardrails
 as they are then. In autonomous mode, or with `team_requires_approval` off, the members are created at once.
 
-## Local models
+## Local and hosted models
 
 Team agents can run on any server with an OpenAI-compatible API (`hub/llm_providers.py`, collection
-`llm_providers`). Add one under **Settings > AI providers** (admin): name, base URL (default
-`http://localhost:11434/v1`, Ollama's), default model, optional API key, tool calling on or off, timeout (default 300
-seconds). **Test** lists the server's models (`GET {base_url}/models`); the agent loop sends
-`POST {base_url}/chat/completions` with `tools` (at most 12 turns) and never `tool_choice`.
+`llm_providers`). Add one under **Settings > AI providers** (admin).
+
+**ChatGPT** and **Grok** are presets. ChatGPT calls `https://api.openai.com/v1` and starts on `gpt-5.6-terra`. Grok
+calls `https://api.x.ai/v1` and starts on `grok-4.7`. Both need an API key. Those defaults were taken from the
+vendors' docs in October 2026; **Test** lists the models the key can actually call, and you can pick another.
+
+A local server takes a name, base URL (default `http://localhost:11434/v1`, Ollama's), default model, optional API key,
+tool calling on or off, and a timeout (default 300 seconds). **Test** lists the server's models
+(`GET {base_url}/models`); the agent loop sends `POST {base_url}/chat/completions` with `tools` (at most 12 turns)
+and never `tool_choice`. The same call is used for ChatGPT and Grok.
 
 | Server | Base URL | Tool calling |
 | --- | --- | --- |
+| ChatGPT (OpenAI) | `https://api.openai.com/v1` | supported; an API key is required |
+| Grok (xAI) | `https://api.x.ai/v1` | supported on Chat Completions; an API key is required |
 | Ollama | `http://localhost:11434/v1` | supported on `/v1/chat/completions`; `tool_choice` is not; the API key is ignored locally |
 | LM Studio | `http://localhost:1234/v1` | supported (`tools` on `/v1/chat/completions`) |
 | vLLM | `http://<host>:8000/v1` | needs `--enable-auto-tool-choice` and a `--tool-call-parser` for the model |
@@ -181,7 +189,7 @@ cannot be removed.
 
 | Endpoint | Role | Purpose |
 | --- | --- | --- |
-| `GET /api/llm/providers` | viewer | providers (keys only as "set"), the provider choices for agents, Claude's status |
+| `GET /api/llm/providers` | viewer | providers (keys only as "set"), presets (ChatGPT, Grok), the provider choices for agents, Claude's status |
 | `POST /api/llm/providers` | admin | add one |
 | `PATCH /api/llm/providers/{id}` | admin | change it; an empty `api_key` keeps the stored one, `clear_api_key` removes it |
 | `DELETE /api/llm/providers/{id}` | admin | remove it (409 while agents use it) |

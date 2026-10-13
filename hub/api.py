@@ -103,8 +103,9 @@ class TeamRequest(BaseModel):
 
 class ProviderCreate(BaseModel):
     name: str = Field(min_length=1, max_length=80)
+    preset: str | None = Field(None, max_length=40)  # "chatgpt" or "grok": fills the base URL and default model
     id: str | None = Field(None, max_length=40)
-    base_url: str = Field(llm_providers.DEFAULT_BASE_URL, max_length=500)
+    base_url: str | None = Field(None, max_length=500)
     default_model: str = Field("", max_length=200)
     api_key: str | None = Field(None, max_length=4096)
     tools: bool = True
@@ -1297,6 +1298,7 @@ def build_router(hub: Hub) -> APIRouter:
     def providers_view() -> dict[str, Any]:
         return {"providers": [llm_providers.public(x) for x in llm_providers.all_providers(hub)],
                 "choices": teams.provider_choices(hub), "anthropic": hub.llm.status(),
+                "presets": llm_providers.public_presets(),
                 "default_base_url": llm_providers.DEFAULT_BASE_URL, "kinds": ["openai_compatible"]}
 
     @router.get("/llm/providers")
@@ -1310,7 +1312,8 @@ def build_router(hub: Hub) -> APIRouter:
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
         key = "; API key set" if provider.api_key else ""
-        hub.activity(p.actor, "info", f"Added the local model provider {provider.name} ({provider.base_url}){key}",
+        kind = f"{provider.preset} " if provider.preset else "local "
+        hub.activity(p.actor, "info", f"Added the {kind}model provider {provider.name} ({provider.base_url}){key}",
                      provider_id=provider.id)
         return llm_providers.public(provider)
 

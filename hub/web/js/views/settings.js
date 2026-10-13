@@ -14,6 +14,7 @@ const GUARD_GROUPS = {
   network: "Network changes",
 };
 const SERVERS = "Ollama: http://localhost:11434/v1 - LM Studio: http://localhost:1234/v1 - vLLM: http://<host>:8000/v1 - llama.cpp server: http://<host>:8080/v1";
+const hosted = (pv, id) => (pv.providers || []).some((p) => p.preset === id || p.id === id);
 // Switches that allow a capability are on by default, but off is their protective side (safe_value in hub/guardrails.py):
 // switching them back on is logged as relaxing. The catalog does not carry that yet, so it is named here (or read from `safe`).
 const SAFE_OFF = new Set(["allow_extensions", "allow_self_patching"]);
@@ -59,14 +60,19 @@ function guardrailsView(catalog, admin) {
 
 function providersView(pv) {
   const claude = pv.anthropic || {};
-  return html`<header><h2>AI providers</h2><button type="button" class="btn sm" data-act="prov-add" data-min-role="admin">${icon("plus")}Add local provider</button></header>
-    <p class="muted" style="margin-bottom:12px">Team agents run on Claude, on a local model server with an OpenAI-compatible API (Ollama, LM Studio, vLLM,
-      llama.cpp server), or on rules. Pick the provider per agent on the Agents page.</p>
+  const presets = pv.presets || [];
+  return html`<header><h2>AI providers</h2>
+      <span class="row" style="gap:6px" data-min-role="admin">
+        ${presets.map((preset) => html`<button type="button" class="btn sm" data-act="prov-preset" data-id="${preset.id}" ${hosted(pv, preset.id) ? "disabled" : ""}>${icon("plus")}${preset.name}</button>`)}
+        <button type="button" class="btn sm" data-act="prov-add">${icon("plus")}Add local provider</button>
+      </span></header>
+    <p class="muted" style="margin-bottom:12px">Team agents run on Claude, on ChatGPT or Grok, on a local model server with an OpenAI-compatible API
+      (Ollama, LM Studio, vLLM, llama.cpp server), or on rules. Pick the provider per agent on the Agents page. The Hub Supervisor and the Patch Agent stay on Claude.</p>
     <div class="stack" style="gap:8px">
       <div class="provider"><div class="row" style="gap:6px"><b>Claude</b>${claude.available ? badge("connected", "ok") : badge("not connected", "warn")}</div>
         <div class="faint" style="font-size:12px">Anthropic API - see "AI model" for the default model.</div></div>
       ${pv.providers.map((p) => html`<div class="provider">
-        <div class="row" style="gap:6px"><b>${p.name}</b>${badge("local", "info")}
+        <div class="row" style="gap:6px"><b>${p.name}</b>${badge(p.preset ? "hosted" : "local", "info")}
           ${p.last_test ? badge(p.last_test.ok ? "tested ok" : "test failed", p.last_test.ok ? "ok" : "bad") : badge("not tested", "warn")}
           <span class="spacer"></span>
           <span class="row" style="gap:4px" data-min-role="admin">
@@ -81,7 +87,7 @@ function providersView(pv) {
         ${p.models?.length ? html`<details><summary class="faint" style="cursor:pointer;font-size:12px">${p.models.length} model${p.models.length === 1 ? "" : "s"}</summary>
           <div class="tag-list" style="margin-top:6px">${p.models.map((m) => html`<span class="badge mono">${m}</span>`)}</div></details>` : ""}
       </div>`)}
-      ${pv.providers.length ? "" : html`<p class="faint" style="font-size:12.5px">No local model providers yet. Add one to run team agents on your own hardware.</p>`}
+      ${pv.providers.length ? "" : html`<p class="faint" style="font-size:12.5px">No ChatGPT, Grok or local providers yet. Add one to run team agents on it.</p>`}
     </div>`;
 }
 
@@ -209,27 +215,29 @@ export async function render(el, ctx) {
     await loadProviders();
   }
 
-  function providerForm(p) {
+  function providerForm(p, preset) {
+    const models = [...new Set([...(preset?.suggested_models || []), ...(p?.models || [])])];
+    const needsKey = Boolean(preset?.requires_key) && !p?.api_key_set;
     modal({
-      title: p ? `Edit ${p.name}` : "Add a local model provider",
+      title: p ? `Edit ${p.name}` : preset ? `Add ${preset.name}` : "Add a local model provider",
       wide: true,
       minRole: "admin",
       submit: p ? "Save" : "Add and test",
-      body: html`<p class="muted" style="margin-bottom:12px">A model server with an OpenAI-compatible API. The hub calls <code>{base URL}/chat/completions</code>
+      body: html`<p class="muted" style="margin-bottom:12px">${preset ? preset.note : "A model server with an OpenAI-compatible API."} The hub calls <code>{base URL}/chat/completions</code>
           with tool definitions and lists models from <code>{base URL}/models</code>.</p>
         <div class="form-grid">
-          ${field("Name", html`<input name="name" required maxlength="80" value="${p?.name || ""}" placeholder="e.g. Ollama on gpu-01">`)}
-          ${field("Default model", html`<input name="default_model" list="prov-models" maxlength="200" value="${p?.default_model || ""}" placeholder="e.g. llama3.1:8b">
-            <datalist id="prov-models">${(p?.models || []).map((m) => html`<option value="${m}">`)}</datalist>`, "Test the provider to list its models.")}
+          ${field("Name", html`<input name="name" required maxlength="80" value="${p?.name || preset?.name || ""}" placeholder="e.g. Ollama on gpu-01">`)}
+          ${field("Default model", html`<input name="default_model" list="prov-models" maxlength="200" value="${p?.default_model || preset?.default_model || ""}" placeholder="e.g. llama3.1:8b">
+            <datalist id="prov-models">${models.map((m) => html`<option value="${m}">`)}</datalist>`, "Test the provider to list the models this key can call.")}
         </div>
-        ${field("Base URL", html`<input name="base_url" required maxlength="500" class="mono" value="${p?.base_url || pv.default_base_url}">`, SERVERS)}
-        ${field("API key (optional)", html`<input name="api_key" type="password" autocomplete="new-password" maxlength="4096"
-            placeholder="${p?.api_key_set ? "Stored - leave empty to keep it" : "Most local servers need none"}">`,
+        ${field("Base URL", html`<input name="base_url" required maxlength="500" class="mono" value="${p?.base_url || preset?.base_url || pv.default_base_url}">`, preset ? preset.vendor : SERVERS)}
+        ${field(needsKey ? "API key" : "API key (optional)", html`<input name="api_key" type="password" autocomplete="new-password" maxlength="4096" ${needsKey ? "required" : ""}
+            placeholder="${p?.api_key_set ? "Stored - leave empty to keep it" : needsKey ? "Required" : "Most local servers need none"}">`,
           "Stored encrypted and only ever sent to this base URL's address; it is never shown again. Changing the address requires entering it again.")}
         ${p?.api_key_set ? html`<label class="check" style="margin-bottom:12px"><input type="checkbox" name="clear_api_key"><span>Remove the stored API key</span></label>` : ""}
         <div class="form-grid">
           ${field("Timeout (seconds)", html`<input type="number" name="timeout" min="5" max="3600" step="1" value="${p?.timeout ?? 300}">`)}
-          <label class="check" style="align-self:center"><input type="checkbox" name="tools" ${p && !p.tools ? "" : "checked"}>
+          <label class="check" style="align-self:center"><input type="checkbox" name="tools" ${(p ? p.tools : preset ? preset.tools : true) ? "checked" : ""}>
             <span>Send tool definitions<span class="faint" style="display:block;font-size:12px">Turn off for models without tool calling.</span></span></label>
         </div>`,
       async onSubmit(data) {
@@ -242,11 +250,16 @@ export async function render(el, ctx) {
           name: String(data.get("name") || "").trim(), base_url: String(data.get("base_url") || "").trim(),
           default_model: String(data.get("default_model") || "").trim(), tools: data.get("tools") === "on", timeout,
         };
+        if (!p && preset) body.preset = preset.id;
         const key = String(data.get("api_key") || "");
         if (key) body.api_key = key;
         if (data.get("clear_api_key") === "on") body.clear_api_key = true;
         if (!body.name || !body.base_url) {
           toast("Give the provider a name and a base URL", "bad");
+          return true;
+        }
+        if (needsKey && !key) {
+          toast(`${preset.name} needs an API key`, "bad");
           return true;
         }
         const saved = p ? await patch(`/llm/providers/${encodeURIComponent(p.id)}`, body) : await post("/llm/providers", body);
@@ -272,7 +285,11 @@ export async function render(el, ctx) {
       }
       setGuardrail(d.key, value);
     },
-    "prov-add"() { providerForm(null); },
+    "prov-add"() { providerForm(null, null); },
+    "prov-preset"(d) {
+      const preset = (pv.presets || []).find((x) => x.id === d.id);
+      if (preset && !hosted(pv, preset.id)) providerForm(null, preset);
+    },
     "prov-edit"(d) {
       const p = pv.providers.find((x) => x.id === d.id);
       if (p) providerForm(p);
