@@ -114,13 +114,14 @@ class FlowOwner(BaseAgent):
         trigger = str(body.get("trigger") or ("manual" if msg.sender.startswith(("user:", "token:")) else "agent"))
         async with self._flow_locks.setdefault(flow_id, asyncio.Lock()):
             current = flows.get(self.hub, flow_id)
-            if trigger != "manual" and current is not None and current.status != "enabled" and not current.job:
+            refused = current is not None and not current.job and flows.never_approved(self.hub, current)
+            if refused or (trigger != "manual" and current is not None and current.status != "enabled" and not current.job):
                 # disabled (or still proposed) since the run was asked for - e.g. queued while this agent was paused:
-                # only a person running it by hand runs it now (F25)
+                # only a person running it by hand runs it now (F25). A turned-down proposal never runs.
                 current.running = None
                 flows.save(self.hub, current)
-                return {"ok": False, "skipped": True, "detail": f"Not run: the flow is {current.status}",
-                        "flow": self._public(flow_id)}
+                detail = "its proposal was turned down" if refused else f"the flow is {current.status}"
+                return {"ok": False, "skipped": True, "detail": f"Not run: {detail}", "flow": self._public(flow_id)}
             flow = flows.begin(self.hub, flow_id)
             started = time.time()
             try:

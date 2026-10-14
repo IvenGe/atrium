@@ -214,6 +214,8 @@ class HubSupervisor(BaseAgent):
                                                 states=("enabled",)) if body.get("approved") else None
             flow.status = "enabled" if body.get("approved") and conflict is None else "disabled"
             flow.approval_id = None
+            if not body.get("approved"):  # a rejection stays binding: enabling the flow later proposes it again
+                flow.rejected = approval.id
             flows.save(self.hub, flow)
             if conflict is not None:
                 self.log("warn", f"Data flow not enabled: {flow.title} - "

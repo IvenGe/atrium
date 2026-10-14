@@ -350,7 +350,7 @@ capabilities and the last test covers them, the planner runs again:
 Generated connections (a Claude-written generic REST mapping) never get `network`, `frameworks` or `assessments`
 flows: those need a built-in connector's normalised records.
 
-**Loop rule** (review-notes F7): a pull and a push of the same domain for the same tool never coexist while either is
+**Loop rule**: a pull and a push of the same domain for the same tool never coexist while either is
 enabled or proposed. A scan is not a pull. The planner never proposes such a pair. `POST /api/flows` and enabling a
 flow with `PATCH /api/flows/{id}` answer 409 `flow_conflict` (with the conflicting `flow_id`) and change nothing.
 When a flow approval is decided while an enabled opposite flow exists, the flow stays disabled and the approval is
@@ -358,7 +358,13 @@ marked failed. One effect: a tool that reads and writes vulnerabilities without 
 REST mapping) now gets only the pull.
 
 Each proposal is an approval of kind `flow`; in autonomous mode it is enabled straight away. A rejected proposal stays
-as a disabled flow and is not proposed again. Planning runs after a successful connection test, after a generated
+as a disabled flow and the planner does not propose it again. This holds whether the proposal was rejected in the
+approval queue or dismissed in the flow list. The flow is marked `rejected` (with the approval id) and never runs, not
+even by hand (`POST /api/flows/{id}/run` answers 400). Switching it on with `PATCH /api/flows/{id}`
+`{status: "enabled"}` does not enable it. It proposes the flow again: a new approval whose proposer is the person who
+switched it on, so the second-person guardrail applies (in autonomous mode it is enabled, as a drawn flow would be).
+Neither a rejection nor the second-person rule can be undone by flipping the status. A flow that was approved once can
+be disabled and enabled freely. Planning runs after a successful connection test, after a generated
 connector is approved, when extension packs change, and on demand (**Plan data flows** in the Integration hub,
 `POST /api/flows/plan`). A flow can also be drawn on the [Integration map](#integration-map).
 
@@ -392,7 +398,7 @@ failures, with an enable switch, **Run now** and **Repair**. A tool's **Connecti
 | `GET /api/flows` | viewer | every flow |
 | `POST /api/flows` | operator | `{domain, source, target, action?, schedule_minutes?, options?}`: create one flow (see [Integration map](#integration-map)) |
 | `POST /api/flows/plan` | operator | propose the flows the connections make possible |
-| `PATCH /api/flows/{id}` | operator | `{status: enabled or disabled, schedule_minutes, options}`; enabling one that would loop: 409 `flow_conflict` |
+| `PATCH /api/flows/{id}` | operator | `{status: enabled or disabled, schedule_minutes, options}`; enabling one that would loop: 409 `flow_conflict`; enabling a rejected one proposes it again (`status: proposed`) |
 | `POST /api/flows/{id}/run` | operator | run it now |
 | `POST /api/flows/{id}/repair` | operator | ask for a repair proposal |
 | `DELETE /api/flows/{id}` | operator | remove it |
@@ -492,7 +498,7 @@ The map is a view of the same data as the Overview: nothing exists only on the m
   `Ctrl+Z` undoes a move. The arrangement is shared by everyone (collection `canvas_layouts`, SSE `canvas_layout`).
   **Reset arrangement** restores the default order for everyone.
 
-**What viewers never receive** (review-notes F24). The map and `GET /api/integration` carry:
+**What viewers never receive**. The map and `GET /api/integration` carry:
 
 - no connection settings or secrets;
 - no webhook URLs: event routes only say `has_webhook` (and `webhook` as a boolean);
@@ -622,6 +628,13 @@ Every SSO patch also registers the tool at the provider: a Keycloak client (`key
 `register-keycloak-compose.sh` using `docker compose exec`), an authentik blueprint (applied with
 `ak apply_blueprint`), or written instructions for other providers. The files land in the tool's adapter folder
 (`idp/<provider>/`; tool-side files in `sso/`).
+
+The scripts take values from the provider's repository and manifest, so the hub treats those values as untrusted. Each
+one is its own shell-quoted assignment (`SERVICE_DEFAULT=keycloak`, read as `"${KEYCLOAK_SERVICE:-$SERVICE_DEFAULT}"`), and
+names in comment lines lose their line breaks. A compose service whose name compose itself would refuse is never used;
+without a valid one the hub writes only the host script. A provider URL counts only when it is a plain
+`http(s)://host[:port][/path]` with no spaces, quotes or shell characters such as `$`, `` ` ``, `;`, `&`, `|`, `<`, `>`,
+`(`, `)` and `\`. Any other manifest URL leaves the provider unconfigured, and the settings screen refuses one.
 
 After the patch is applied, **Run provider registration** on the tool's page (`POST /api/tools/{id}/sso/register`,
 operator) asks the Operator Agent to run the registration script. The command policy applies: a person's request runs

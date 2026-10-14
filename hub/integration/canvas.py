@@ -4,7 +4,7 @@
 Compliance hub, People, Network and one app per extension domain), every tool as a node with a summary of its
 connection and its default lane, every data flow exactly as ``GET /api/flows`` shows it, single sign-on edges, event
 routes and capability links. It never carries a connection's config or secrets, webhook URLs or toolbus event payloads
-(review-notes F24): event routes only say whether a webhook is set.
+(viewers see it too): event routes only say whether a webhook is set.
 
 Layouts (collection ``canvas_layouts``, doc id = the view): only the shared arrangement - the order of items in their
 lane and, for integration tools, a Sources/Destinations lane override. Camera, hidden items, collapsed zones and

@@ -10,6 +10,9 @@ Commands typed by a person in the Operator console run directly (the person is
 the approval), but blocked commands are refused for everyone - unless an admin
 switched the ``block_catastrophic_commands`` guardrail off: blocked patterns are
 then ordinary ``change`` commands (people run them, agents follow the autonomy level).
+On the hub machine the Operator Agent adds one rule on top of this policy: an
+operator's commands there that are not read-only wait for an administrator
+(``OperatorAgent.on_run`` in ``hub/agents/operator.py``).
 """
 
 from __future__ import annotations

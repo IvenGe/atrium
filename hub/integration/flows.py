@@ -53,6 +53,17 @@ def save(hub: "Hub", flow: Flow) -> Flow:
     return hub.save(COLLECTION, flow, "flow")
 
 
+def never_approved(hub: "Hub", flow: Flow) -> bool:
+    """A flow whose proposal was turned down - rejected in the approval queue, dismissed in its list, or proposed
+    without a pending approval any more. It neither runs nor gets enabled until a new proposal is approved."""
+    if flow.rejected:
+        return True
+    if flow.status == "proposed":
+        approval = hub.approvals.get(flow.approval_id) if flow.approval_id else None
+        return approval is None or approval.status == "rejected"
+    return False
+
+
 EXTENSIONS_OWNER = "module:extensions"  # extension domains ("x:<key>") are run by the Extensions Supervisor
 
 

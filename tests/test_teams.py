@@ -415,6 +415,62 @@ def test_toolkit_tools_are_filtered_by_permission_and_scoped_to_the_team_tool(cl
     assert [t["id"] for t in client.portal.call(toolkit.execute, ctx, "list_tools", {})] == ["wazuh", "grafana"]
 
 
+def test_a_tool_teams_agent_changes_only_the_risks_and_assets_of_its_tool(client):
+    """Review finding: update_vulnerability was scoped to the team's tool, but update_risk, update_asset and
+    set_scan_scope reached every risk and asset in the hub - e.g. a SIEM's alert triage analyst, reading
+    attacker-influenced alerts, could close or accept any risk in the register."""
+    from hub.models import Asset, Risk
+
+    hub = client.app.state.hub
+    add_tool(client, "wazuh", "Wazuh")
+    add_tool(client, "grafana", "Grafana")
+    perms = ["read", "grc_write", "assets_write"]
+    analyst = client.post("/api/agents", json={"name": "Analyst", "team": "wazuh", "permissions": perms}).json()
+    teammate = client.post("/api/agents", json={"name": "Mate", "team": "wazuh", "permissions": perms}).json()
+    other = client.post("/api/agents", json={"name": "Other", "team": "grafana", "permissions": perms}).json()
+    ctx = hub.agents.get(analyst["id"]).context()
+    assert ctx.tool_scope == "wazuh"
+
+    def run(context, name, args):
+        return client.portal.call(toolkit.execute, context, name, args)
+
+    for rid, source in (("r_people", "manual"), ("r_auto", "auto:HB-AC-1"), ("r_grafana", "sync:grafana"),
+                        ("r_wazuh", "sync:wazuh")):
+        hub.save("risks", Risk(id=rid, title=rid, source=source), "risk")
+    for aid, source in (("a_people", "manual"), ("a_grafana", "sync:grafana"), ("a_wazuh", "sync:wazuh"),
+                        ("a_tool", "tool:wazuh")):
+        hub.save("assets", Asset(id=aid, name=aid, source=source), "asset")
+    mine = run(hub.agents.get(teammate["id"]).context(), "create_risk", {"title": "t", "description": "", "likelihood": 2, "impact": 2})
+    theirs = run(hub.agents.get(other["id"]).context(), "create_risk", {"title": "o", "description": "", "likelihood": 2, "impact": 2})
+
+    accept = {"status": "closed", "treatment": "accept", "note": "benign"}
+    for rid in ("r_people", "r_auto", "r_grafana", theirs["risk_id"]):
+        with pytest.raises(PermissionError, match="wazuh team"):
+            run(ctx, "update_risk", {"risk_id": rid, **accept})
+        assert hub.one("risks", rid, Risk).status == "open"
+    for rid in ("r_wazuh", mine["risk_id"]):  # what its tool supplied, and what its team recorded
+        assert run(ctx, "update_risk", {"risk_id": rid, **accept})["changed"] == ["description", "status", "treatment"]
+        assert hub.one("risks", rid, Risk).treatment == "accept"
+
+    for aid in ("a_people", "a_grafana"):
+        with pytest.raises(PermissionError, match="wazuh team"):
+            run(ctx, "update_asset", {"asset_id": aid, "owner": "mallory", "criticality": "low", "status": "retired"})
+        assert hub.one("assets", aid, Asset).status == "active"
+    assert run(ctx, "update_asset", {"asset_id": "a_wazuh", "owner": "", "criticality": "high", "status": ""})["changed"] == ["criticality"]
+    with pytest.raises(PermissionError, match="wazuh team"):  # one asset out of reach: nothing changes
+        run(ctx, "set_scan_scope", {"asset_ids": ["a_wazuh", "a_people"], "in_scope": True})
+    assert not hub.one("assets", "a_wazuh", Asset).scan_scope and not hub.one("assets", "a_people", Asset).scan_scope
+    run(ctx, "set_scan_scope", {"asset_ids": ["a_wazuh", "a_tool"], "in_scope": True})
+    assert hub.one("assets", "a_wazuh", Asset).scan_scope and hub.one("assets", "a_tool", Asset).scan_scope
+
+    # a hub-wide agent (no tool scope) still reaches every record
+    hub_wide = client.post("/api/agents", json={"name": "Hub GRC", "team": "hub", "permissions": perms}).json()
+    hctx = hub.agents.get(hub_wide["id"]).context()
+    assert hctx.tool_scope is None
+    run(hctx, "update_risk", {"risk_id": "r_people", "status": "in_treatment", "treatment": "", "note": ""})
+    assert hub.one("risks", "r_people", Risk).status == "in_treatment"
+
+
 def test_supervisor_chat_offers_every_tool(client):
     fake = FakeLLM([SimpleNamespace(stop_reason="end_turn", content=[block("text", text="Hi.")])])
     client.app.state.hub.llm = fake

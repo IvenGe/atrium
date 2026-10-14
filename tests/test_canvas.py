@@ -1,6 +1,7 @@
 """The integration map's backend (docs/research/canvas-design.md 7.1-7.4, 13/A2-A3): the map read model, the Connect
-panel's options, data flows a person draws (POST /api/flows), the loop rule (review-notes F7), the shared canvas layouts
-and what viewers never see (F24) - with the in-memory fake connectors of test_fabric."""
+panel's options, data flows a person draws (POST /api/flows), the loop rule (no pull and push of one domain for one
+tool), the shared canvas layouts and what viewers never see (webhook URLs, event payloads) - with the in-memory fake
+connectors of test_fabric."""
 
 from __future__ import annotations
 
@@ -406,7 +407,7 @@ def test_drawn_flow_is_proposed_by_the_supervisor_and_enabled_on_approval(client
     wait_for(lambda: next(f for f in flows_of(client, "inventory") if f["id"] == flow["id"])["status"] == "enabled")
     wait_for(lambda: hub.approvals.get(approval_id).status == "done")
 
-    # ... and not while it is on (review-notes F1)
+    # ... and not while it is on (the second-person rule)
     assert client.patch("/api/settings/guardrails", json={"approvals_need_second_person": True}).status_code == 200
     assert guardrails.value(hub, "approvals_need_second_person") is True
     second = operator.post("/api/flows", json={"domain": "controls", "source": "hub", "target": "tool:grc"}).json()
@@ -421,6 +422,48 @@ def test_drawn_flow_is_proposed_by_the_supervisor_and_enabled_on_approval(client
     assert stored["schedule_minutes"] == second["flow"]["schedule_minutes"]
     assert hub.approvals.get(second["approval_id"]).status == "pending"
     assert client.post(f"/api/approvals/{second['approval_id']}", json={"approve": True}).status_code == 200
+
+
+def test_a_turned_down_flow_proposal_is_never_enabled_without_a_new_approval(client, remote, sign_in, wait_for):
+    """Review finding: with the second-person rule on, the proposer rejected her own proposal (allowed) and then
+    switched the now disabled flow on - no second person. An administrator's rejection could be undone the same way."""
+    hub = client.app.state.hub
+    suite(client)
+    assert client.patch("/api/settings/guardrails", json={"approvals_need_second_person": True}).status_code == 200
+    alice, bob = sign_in("operator", "alice"), sign_in("admin", "bob")
+
+    def stored(flow_id: str) -> dict:
+        return next(f for f in flows_of(client, "inventory") if f["id"] == flow_id)
+
+    drawn = alice.post("/api/flows", json={"domain": "assets", "source": "tool:inventory", "target": "hub"}).json()
+    flow_id, first = drawn["flow"]["id"], drawn["approval_id"]
+    dismissed = alice.patch(f"/api/flows/{flow_id}", json={"status": "disabled"})  # rejecting her own: allowed
+    assert dismissed.status_code == 200 and dismissed.json()["status"] == "disabled"
+    assert dismissed.json()["rejected"] == first and hub.approvals.get(first).status == "rejected"
+    run = alice.post(f"/api/flows/{flow_id}/run")
+    assert run.status_code == 400 and "turned down" in run.json()["detail"]  # a turned-down proposal never runs
+
+    # switching it on proposes it again - it is not enabled, and her new proposal still needs someone else
+    again = alice.patch(f"/api/flows/{flow_id}", json={"status": "enabled"})
+    assert again.status_code == 200, again.text
+    second = again.json()["approval_id"]
+    assert again.json()["status"] == "proposed" and again.json()["rejected"] is None and second not in (None, first)
+    assert hub.approvals.get(second).payload["proposed_by"] == "alice" and hub.approvals.get(second).requested_by == "supervisor"
+    refused = alice.patch(f"/api/flows/{flow_id}", json={"status": "enabled"})
+    assert refused.status_code == 403 and refused.json()["detail"]["code"] == "same_person"
+    assert stored(flow_id)["status"] == "proposed"
+
+    # an administrator's rejection is just as binding
+    assert bob.post(f"/api/approvals/{second}", json={"approve": False}).status_code == 200
+    wait_for(lambda: stored(flow_id)["status"] == "disabled" and stored(flow_id)["rejected"] == second)
+    third = alice.patch(f"/api/flows/{flow_id}", json={"status": "enabled"}).json()
+    assert third["status"] == "proposed" and third["approval_id"] not in (first, second)
+
+    # approved by a second person: enabled; from then on it may be switched off and on again freely
+    assert bob.post(f"/api/approvals/{third['approval_id']}", json={"approve": True}).status_code == 200
+    wait_for(lambda: stored(flow_id)["status"] == "enabled")
+    assert alice.patch(f"/api/flows/{flow_id}", json={"status": "disabled"}).json()["rejected"] is None
+    assert alice.patch(f"/api/flows/{flow_id}", json={"status": "enabled"}).json()["status"] == "enabled"
 
 
 @pytest.mark.parametrize("autonomy", ["manual", "autonomous"])

@@ -1338,6 +1338,205 @@ def test_wrapper_refuses_tables_it_does_not_own(harness):
         assert result.returncode != 0 and "atrium-fw:" in result.stderr, name
 
 
+# -- review F36: "restore" changed the firewall at once, with no armed revert, and took any ufw rules file -------------
+
+# a user.rules as ufw writes it (backend_iptables.py: format_rule, logged and limited rules, logging, rate limiting)
+UFW_WRITTEN = """*filter
+:ufw-user-input - [0:0]
+:ufw-user-output - [0:0]
+:ufw-user-forward - [0:0]
+:ufw-user-logging-input - [0:0]
+:ufw-after-logging-input - [0:0]
+:ufw-logging-deny - [0:0]
+:ufw-logging-allow - [0:0]
+:ufw-user-limit - [0:0]
+:ufw-user-limit-accept - [0:0]
+### RULES ###
+
+### tuple ### allow tcp 22 0.0.0.0/0 any 0.0.0.0/0 in
+-A ufw-user-input -p tcp --dport 22 -j ACCEPT
+
+### tuple ### allow_log tcp 80,443 10.0.20.5 any 10.0.10.0/24 in_eth0 comment=61747269756d3a6368675f372e30
+-A ufw-user-logging-input -i eth0 -p tcp -d 10.0.20.5 -m multiport --dports 80,443 -s 10.0.10.0/24 -m conntrack --ctstate NEW -j LOG --log-prefix "[UFW ALLOW] "
+-A ufw-user-input -i eth0 -p tcp -d 10.0.20.5 -m multiport --dports 80,443 -s 10.0.10.0/24 -j ufw-user-logging-input
+-A ufw-user-input -i eth0 -p tcp -d 10.0.20.5 -m multiport --dports 80,443 -s 10.0.10.0/24 -j ACCEPT
+
+### tuple ### limit tcp 2222 0.0.0.0/0 any 0.0.0.0/0 OpenSSH - in
+-A ufw-user-input -p tcp --dport 2222 -m conntrack --ctstate NEW -m recent --set -m comment --comment 'dapp_OpenSSH'
+-A ufw-user-input -p tcp --dport 2222 -m conntrack --ctstate NEW -m recent --update --seconds 30 --hitcount 6 -j ufw-user-limit -m comment --comment 'dapp_OpenSSH'
+-A ufw-user-input -p tcp --dport 2222 -j ufw-user-limit-accept -m comment --comment 'dapp_OpenSSH'
+
+### tuple ### reject tcp 8000:8080 0.0.0.0/0 any 0.0.0.0/0 in
+-A ufw-user-input -p tcp --dport 8000:8080 -j REJECT --reject-with tcp-reset
+
+### tuple ### deny any any 0.0.0.0/0 any 192.0.2.0/24 in
+-A ufw-user-input -s 192.0.2.0/24 -j DROP
+
+### END RULES ###
+
+### LOGGING ###
+-A ufw-after-logging-input -j LOG --log-prefix "[UFW BLOCK] " -m limit --limit 3/min --limit-burst 10
+-I ufw-logging-deny -m conntrack --ctstate INVALID -j RETURN -m limit --limit 3/min --limit-burst 10
+-A ufw-logging-allow -j LOG --log-prefix "[UFW ALLOW] " -m limit --limit 3/min --limit-burst 10
+### END LOGGING ###
+
+### RATE LIMITING ###
+-A ufw-user-limit -m limit --limit 3/minute -j LOG --log-prefix "[UFW LIMIT BLOCK] "
+-A ufw-user-limit -j REJECT
+-A ufw-user-limit-accept -j ACCEPT
+### END RATE LIMITING ###
+COMMIT
+"""
+UFW6_WRITTEN = ("*filter\n:ufw6-user-input - [0:0]\n### RULES ###\n\n"
+                "### tuple ### allow udp 53 ::/0 any 2001:db8::/32 in\n"
+                "-A ufw6-user-input -p udp --dport 53 -s 2001:db8::/32 -j ACCEPT\n\n### END RULES ###\nCOMMIT\n")
+
+
+def ufw_restore(user: str = UFW_WRITTEN, user6: str | None = UFW6_WRITTEN) -> str:
+    """The restore content as the connector sends it: both rules files, each under its section line."""
+    return f"### atrium-fw file user.rules\n{user}" + (f"### atrium-fw file user6.rules\n{user6}" if user6 else "")
+
+
+def wrapper_log(harness: Path) -> list[str]:
+    return (harness / "log").read_text().splitlines() if (harness / "log").exists() else []
+
+
+def fake_nft(harness: Path, table: str) -> Path:
+    """A stub nft for the wrapper: `list table` prints the live table, `-f FILE` makes the file's table live."""
+    live = harness / "live.nft"
+    live.write_text(table)
+    nft = harness / "bin" / "nft"
+    nft.write_text(f"#!/bin/sh\nprintf 'nft' >> \"{harness}/log\"\n"
+                   f"for a in \"$@\"; do printf ' [%s]' \"$a\" >> \"{harness}/log\"; done\necho >> \"{harness}/log\"\n"
+                   f"case \"$1 $2\" in\n  'list table') cat \"{live}\" ;;\n  '-c -f') ;;\n"
+                   f"  '-f '*) sed '1,2d' \"$2\" > \"{live}\" ;;\nesac\n")
+    nft.chmod(0o755)
+    return live
+
+
+def test_wrapper_restore_writes_only_after_arming_the_revert(harness):
+    rules = harness / "etc" / "ufw" / "user.rules"
+    before = rules.read_text()
+    sid = "00000000000000a1"
+    # what the old verb did - "restore ufw" wrote and reloaded at once - and a window too short to arm: refused, and
+    # nothing was armed or written
+    for args in (("restore", "ufw"), ("restore", sid, "ufw"), ("restore", sid, "5", "ufw")):
+        assert wrap(harness, *args, stdin=ufw_restore()).returncode == 2, args
+    assert rules.read_text() == before and wrapper_log(harness) == []
+
+    result = wrap(harness, "restore", sid, "120", "ufw", stdin=ufw_restore())
+    assert result.stdout == "restored\n", result.stderr
+    assert rules.read_text() == UFW_WRITTEN and (harness / "etc" / "ufw" / "user6.rules").read_text() == UFW6_WRITTEN
+    log = wrapper_log(harness)
+    armed = next(i for i, line in enumerate(log) if line.startswith(
+        f"systemd-run [--unit=atrium-fw-revert-{sid}] [--on-active=120] [--timer-property=AccuracySec=1s]"))
+    assert log.index("ufw [reload]") > armed  # the timer ran before the restored rules were loaded
+    assert (harness / "spool" / sid / "armed").exists()
+    # the restored rules cut the hub off, so nothing confirms: the timer puts back the rules from before the restore
+    assert wrap(harness, "revert-now", sid).stdout == "reverted\n"
+    assert rules.read_text() == before and wrapper_log(harness).count("ufw [reload]") == 2
+    assert wrap(harness, "confirm", sid).stdout == "fired\n"  # too late to keep the restore
+
+    sid = "00000000000000a2"  # confirmed in time: kept, the timer stopped, and a late timer changes nothing
+    assert wrap(harness, "restore", sid, "120", "ufw", stdin=ufw_restore()).stdout == "restored\n"
+    assert wrap(harness, "confirm", sid).stdout == "confirmed\npersist=immediate\n"
+    assert f"systemctl [stop] [atrium-fw-revert-{sid}.timer]" in wrapper_log(harness)
+    assert wrap(harness, "revert-now", sid).stdout == "confirmed\n" and rules.read_text() == UFW_WRITTEN
+
+    rules.write_text(before)  # no automatic revert, no restore
+    stub = harness / "bin" / "systemd-run"
+    stub.write_text(stub.read_text() + "exit 1\n")
+    refused = wrap(harness, "restore", "00000000000000a3", "120", "ufw", stdin=ufw_restore())
+    assert refused.returncode == 2 and "could not arm" in refused.stderr and rules.read_text() == before
+    assert not (harness / "spool" / "00000000000000a3").exists()
+
+
+def test_wrapper_nftables_restore_is_saved_only_once_confirmed(harness):
+    old = "table inet atrium {\n\tchain input {\n\t\ttype filter hook input priority filter; policy drop;\n\t}\n}\n"
+    backup = old.replace("policy drop;\n", "policy drop;\n\t\ttcp dport 443 accept\n")
+    live = fake_nft(harness, old)
+    persist = harness / "etc" / "atrium" / "atrium.nft"
+    refused = wrap(harness, "restore", "00000000000000c1", "120", "nftables", stdin="table ip filter {\n}\n")
+    assert refused.returncode == 2 and "refused" in refused.stderr
+    assert live.read_text() == old and not any(l.startswith("systemd-run") for l in wrapper_log(harness))
+
+    assert wrap(harness, "restore", "00000000000000c1", "120", "nftables", stdin=backup).stdout == "restored\n"
+    log = wrapper_log(harness)
+    armed = next(i for i, line in enumerate(log)
+                 if line.startswith("systemd-run [--unit=atrium-fw-revert-00000000000000c1]"))
+    assert next(i for i, line in enumerate(log) if line.startswith("nft [-f]")) > armed
+    assert live.read_text() == backup and not persist.exists()  # live, but not saved: a reboot would also undo it
+    assert wrap(harness, "revert-now", "00000000000000c1").stdout == "reverted\n"
+    assert live.read_text() == old and not persist.exists()
+
+    assert wrap(harness, "restore", "00000000000000c2", "120", "nftables", stdin=backup).stdout == "restored\n"
+    assert wrap(harness, "confirm", "00000000000000c2").stdout == "confirmed\npersist=ok\n"
+    assert persist.read_text() == backup == live.read_text()
+
+
+def test_wrapper_restores_only_what_ufw_itself_writes(harness):
+    rules = harness / "etc" / "ufw" / "user.rules"
+    before = rules.read_text()
+    line = "-A ufw-user-input -p tcp --dport 22 -j ACCEPT"
+    assert line in UFW_WRITTEN
+
+    def rule(text: str) -> str:
+        return UFW_WRITTEN.replace(line, text)
+
+    cases = {
+        "a chain of the system": rule("-A INPUT -j DROP"), "a policy": rule("-P INPUT DROP"),
+        "flushing a chain": rule("-F ufw-user-input"), "deleting a chain": rule("-X ufw-user-input"),
+        "another table": "*nat\n-A PREROUTING -p tcp -j DNAT --to-destination 192.0.2.1\nCOMMIT\n",
+        "a second table": UFW_WRITTEN + "*nat\nCOMMIT\n", "no COMMIT": UFW_WRITTEN.replace("COMMIT\n", ""),
+        "a system chain declared": UFW_WRITTEN.replace(":ufw-user-input - [0:0]", ":INPUT DROP [0:0]"),
+        "a userspace queue": rule("-A ufw-user-input -j NFQUEUE --queue-num 1"),
+        "an ipset target": rule("-A ufw-user-input -j SET --add-set x src"),
+        "a string match": rule("-A ufw-user-input -m string --algo bm --string x -j ACCEPT"),
+        "a bpf match": rule("-A ufw-user-input -m bpf --bytecode 1 -j ACCEPT"),
+        "an owner match": rule("-A ufw-user-input -m owner --uid-owner 0 -j ACCEPT"),
+        "goto": rule("-A ufw-user-input -g ufw-user-limit"),
+        "negation": rule("-A ufw-user-input ! -s 10.0.0.0/8 -j ACCEPT"),
+        "a free log prefix": UFW_WRITTEN.replace('"[UFW BLOCK] "', '"x" -j ACCEPT'),
+        "an unbalanced quote": UFW_WRITTEN.replace('"[UFW BLOCK] "', '"[UFW BLOCK] '),
+        "a free comment": UFW_WRITTEN.replace("'dapp_OpenSSH'", "'x y'", 1),
+        "a placeholder": rule("-A ufw-user-input -j LOG --log-prefix @P"),
+        "an option without its value": rule("-A ufw-user-input -p tcp --dport"),
+        "a bad address": rule("-A ufw-user-input -s 10.0.0.0/8;reboot -j ACCEPT"),
+        "a control character": rule(line + "\x07"),
+    }
+    for name, text in cases.items():
+        result = wrap(harness, "restore", "00000000000000b1", "120", "ufw", stdin=ufw_restore(text))
+        assert result.returncode == 2 and "not a ufw user rules file" in result.stderr, name
+    six = wrap(harness, "restore", "00000000000000b1", "120", "ufw", stdin=ufw_restore(user6=None))
+    assert six.returncode == 2 and "user6.rules is missing" in six.stderr
+    bad6 = wrap(harness, "restore", "00000000000000b1", "120", "ufw",
+                stdin=ufw_restore(user6=UFW6_WRITTEN.replace("-j ACCEPT", "-j TEE --gateway 192.0.2.1")))
+    assert bad6.returncode == 2
+    # nothing was armed or written, and no work directory is left behind
+    assert rules.read_text() == before and wrapper_log(harness) == []
+    assert sorted(p.name for p in (harness / "spool").iterdir()) == []
+
+
+def test_the_connectors_ufw_restore_passes_the_real_wrapper(host, harness):
+    """What restore_backup sends for a ufw host is what the wrapper accepts, and a restore that cuts the hub off is
+    put back by the host's own timer."""
+    fake = host("ufw")
+    taken = run(connector(fake).backup())
+    before = snapshot(fake)
+    applied = run(connector(fake).apply_change(allow(), before["revision"], None))
+    run(connector(fake).confirm_change(applied["token"]))
+    changed = snapshot(fake)
+    fake.lockout_after_apply = True
+    with pytest.raises(ChangeError) as cut:
+        run(connector(fake).restore_backup(as_backup(taken)))
+    assert cut.value.code == "unreachable" and cut.value.state == "unknown" and "automatic revert" in cut.value.message
+    fake.lockout_after_apply = False
+    fake.now[0] += 181  # nothing confirmed it: the host's timer put back the rules from before the restore
+    assert snapshot(fake)["revision"] == changed["revision"]
+    sent = next(c.input for _, c in fake.calls if "atrium-fw restore" in c.command)
+    assert wrap(harness, "restore", "00000000000000d1", "120", "ufw", stdin=sent).stdout == "restored\n"
+
+
 @pytest.mark.skipif(not CAN_UNSHARE, reason="needs root, unshare and nft (a throwaway network namespace)")
 def test_wrapper_with_real_nft(harness, real_nft):
     if not real_nft:

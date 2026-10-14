@@ -394,6 +394,17 @@ Per firewall:
     so).
   - Confirm repeats the change with `--permanent`.
   - firewalld backups are listings, and restore is not supported.
+- **Restores** (nftables and ufw) run like a change. `atrium-fw restore <id> <window> <manager>` first validates the
+  backup, then arms the same timer, and only then writes. Atrium confirms the restore only after a new connection
+  reaches the host; if none does, the timer puts back the rules from before the restore. Apart from the revert
+  itself, no verb of the wrapper changes the rules unless the timer is armed.
+  - nftables: only `table inet atrium` is put back, checked like a change. It is saved to `/etc/atrium/atrium.nft`
+    only on confirm.
+  - ufw: `user.rules` and `user6.rules` are put back, then `ufw reload` runs. The wrapper accepts a file only in the
+    form ufw writes it: the filter table, ufw's own chains, and in each rule only the options, targets and values
+    that ufw's own rules use (protocol, interface, addresses, ports, connection state, rate limit, ufw's log prefix,
+    an application comment). A rule ufw would not write, another table or a system chain refuses the whole restore
+    before anything is armed or written.
 - Disabling and re-enabling work only on rules Atrium created: none of the three has a disabled state, and Atrium
   never rewrites rules it does not own.
 - A zone-to-zone allow passes every subnet of both zones. When an address family is present on one side only, the
@@ -407,7 +418,9 @@ Unverified:
 - whether `/etc/ufw/*.rules` need root to read;
 - firewalld's polkit side (sudo is used instead);
 - service definitions outside `/usr/lib/firewalld/services` and `/etc/firewalld/services`;
-- the nftables include paths (`/etc/nftables.conf`, `/etc/sysconfig/nftables.conf`).
+- the nftables include paths (`/etc/nftables.conf`, `/etc/sysconfig/nftables.conf`);
+- that the ufw restore check accepts every rule form a real ufw writes. It follows ufw's source; a form it does not
+  know refuses the restore (restore such a file by hand).
 
 ### Windows Defender Firewall
 
@@ -628,8 +641,16 @@ marked UNVERIFIED in `hub/grc/baseline.py` ([COMPLIANCE.md](COMPLIANCE.md#hub-se
 **HB-CM-3 Network device changes are controlled** (Change management) is judged from the guardrails and the change
 history. It fails while `device_changes_need_second_person` or `device_changes_need_backup` is off, or when a change
 left a device in an unknown state in the last 90 days. It is partial while `device_changes_need_maintenance_window` is
-off or after emergency changes in the last 90 days. It passes otherwise, including while device changes are off. It
-is manual with no device and no applied change.
+off, and for 90 days after any of these changes reaches a device:
+
+- an emergency change;
+- a change approved by its own proposer, recorded on the change as `self_approved` when it is approved (possible only
+  while `device_changes_need_second_person` was off);
+- a change applied without an Atrium backup (made while `device_changes_need_backup` was off).
+
+Switching a guardrail back on therefore does not hide the changes made while it was off: the detail and the evidence
+list them until they are 90 days old. Otherwise the control passes, including while device changes are off. It is
+manual when there is no device and no applied change.
 
 ## Device changes
 

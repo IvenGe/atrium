@@ -230,7 +230,7 @@ class Hub:
 
     def save_tool(self, tool: Tool) -> Tool:
         self.store.put("tools", tool.model_dump(mode="json"))
-        self.bus.publish("tool", tool.public())  # every signed-in viewer gets it: no webhook URL (review-notes F24)
+        self.bus.publish("tool", tool.public())  # every signed-in viewer gets it: no webhook URL (it may carry a token)
         return tool
 
     def hosts(self) -> list[Host]:

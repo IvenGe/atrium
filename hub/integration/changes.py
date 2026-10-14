@@ -44,7 +44,7 @@ Collection ``firewall_changes`` (SSE ``firewall_change``: ``public(change)``)::
      preview {steps, diff, violations, impact, notes, problems, device_steps, device_notes, rollback, maintenance,
      policy_unknown (a restore the segmentation policy cannot be checked for: S11 treats it as forbidden)},
      status, approval_id, proposed_by, justification, created_at, updated_at, expires_at, decided_by, decided_at,
-     scheduled_for, window {window_id, name, start, end} | None, expires_before_window (the next window opens after
+     self_approved (its proposer approved it: only possible while the second-person guardrail was off), scheduled_for, window {window_id, name, start, end} | None, expires_before_window (the next window opens after
      the approval expired), emergency {by, at, justification} | None,
      backup_id (the Atrium backup taken before applying), rollback {mode, window_s}, rollback_until,
      applied {revision, created, disabled, enabled, notes} | None, verification [{name, ok, detail}],
@@ -909,13 +909,42 @@ def mark_emergency(hub: "Hub", change_id: str, actor: str, justification: str) -
 # --------------------------------------------------------------------------------------
 
 
+def decided_by_proposer(hub: "Hub", change: dict[str, Any], approval: "Approval | None" = None) -> bool:
+    """Whether the change was approved by (an identity of) the person who proposed it - possible only while
+    ``device_changes_need_second_person`` was off. Recorded on the change when it is approved (``self_approved``),
+    so HB-CM-3 still shows it after the guardrail is switched on again."""
+    from ..approvals import identities
+
+    approval = approval or hub.approvals.get(change.get("approval_id") or "")
+    decider = (approval.decided_by if approval else None) or change.get("decided_by")
+    if not decider:
+        return False
+    proposers = identities(hub, change.get("proposed_by")) | (hub.approvals.proposers(approval) if approval else set())
+    return bool(proposers & identities(hub, decider))
+
+
+def reached_device(change: dict[str, Any]) -> bool:
+    """The change was carried out on the device (whatever the outcome), not refused before anything was written. A
+    change still applying is left out: its backup is taken in that state."""
+    status = change.get("status")
+    if status in ("verifying", "applied", "rolled_back"):
+        return True
+    return status == "failed" and (change.get("result") or {}).get("state") not in (None, "unchanged")
+
+
 def compliance_facts(hub: "Hub", now: float | None = None) -> dict[str, Any]:
     now = time.time() if now is None else now
     since = now - 90 * 86400
     recent = [c for c in hub.store.list(CHANGES) if (c.get("finished_at") or c.get("updated_at") or 0) >= since]
     unknown = [c for c in recent if c.get("status") == "failed" and (c.get("result") or {}).get("state") in
                ("unknown", "applied")]
+    carried_out = [c for c in recent if reached_device(c)]
     return {
+        # exceptions to the second-person and backup guardrails, whatever they are set to now: a change its own
+        # proposer approved, and one written to the device without a configuration backup first
+        "self_approved_90d": sorted(display_id(c["id"]) for c in carried_out
+                                    if (c["self_approved"] if "self_approved" in c else decided_by_proposer(hub, c))),
+        "unbacked_90d": sorted(display_id(c["id"]) for c in carried_out if not c.get("backup_id")),
         "device_changes": bool(guardrails.value(hub, "device_changes")),
         "applied_90d": sum(1 for c in recent if c.get("status") == "applied"),
         "rolled_back_90d": sum(1 for c in recent if c.get("status") == "rolled_back"),

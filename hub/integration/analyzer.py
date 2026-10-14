@@ -10,10 +10,13 @@ capabilities a tool provides or consumes. A tool that ships its own
 from __future__ import annotations
 
 import json
+import os
 import re
+import stat
 import tomllib
-from pathlib import Path
+from pathlib import Path, PurePath
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 import yaml
@@ -113,12 +116,40 @@ EXPOSE_RE = re.compile(r"^\s*EXPOSE\s+(\d{2,5})", re.MULTILINE | re.IGNORECASE)
 # --------------------------------------------------------------------------------------
 
 
-def _read(path: Path, limit: int = MAX_SCAN_BYTES) -> str:
+def repo_file(root: Path, rel: str | PurePath) -> Path | None:
+    """`root/rel` when it is a regular file inside `root`, reached without a symbolic link; else None.
+
+    Repositories are untrusted: a README.md that links to ../../../secret.key (or a docs/ folder that links to /) must
+    not be read, because what the hub reads from a repository ends up in its manifest, its prompts and its diffs."""
     try:
-        with path.open("rb") as fh:
-            return fh.read(limit).decode("utf-8", errors="replace")
+        base = root.resolve(strict=True)
+        path = root / rel
+        if not stat.S_ISREG(path.lstat().st_mode):  # lstat: a symbolic link is not a regular file
+            return None
+        if not path.resolve(strict=True).is_relative_to(base):  # a linked folder on the way out of the root
+            return None
+    except (OSError, RuntimeError, ValueError):
+        return None
+    return path
+
+
+def read_repo_file(root: Path, rel: str | PurePath, limit: int = MAX_SCAN_BYTES) -> str | None:
+    """Up to `limit` bytes of `root/rel` as text, only when repo_file() allows it (opened without following a link)."""
+    path = repo_file(root, rel)
+    if path is None:
+        return None
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
     except OSError:
-        return ""
+        return None
+    with os.fdopen(fd, "rb") as fh:
+        if not stat.S_ISREG(os.fstat(fh.fileno()).st_mode):  # swapped for something else since the check
+            return None
+        return fh.read(limit).decode("utf-8", errors="replace")
+
+
+def _read(root: Path, rel: str | PurePath, limit: int = MAX_SCAN_BYTES) -> str:
+    return read_repo_file(root, rel, limit) or ""
 
 
 def list_files(root: Path, limit: int = MAX_FILES) -> list[Path]:
@@ -161,9 +192,9 @@ def _add(items: list[str], value: str) -> None:
 
 def readme_summary(root: Path) -> str:
     for name in ("README.md", "readme.md", "README.rst", "README.txt", "README"):
-        path = root / name
-        if path.is_file():
-            text = _read(path, 40_000)
+        found = read_repo_file(root, name, 40_000)
+        if found is not None:
+            text = found
             break
     else:
         return ""
@@ -183,9 +214,9 @@ def readme_summary(root: Path) -> str:
 
 
 def detect_license(root: Path) -> str | None:
-    for path in root.iterdir() if root.is_dir() else []:
-        if path.is_file() and path.name.upper().startswith(("LICENSE", "LICENCE", "COPYING")):
-            text = _read(path, 3000)
+    for path in sorted(root.iterdir()) if root.is_dir() else []:
+        if path.name.upper().startswith(("LICENSE", "LICENCE", "COPYING")) and repo_file(root, path.name):
+            text = _read(root, path.name, 3000)
             for marker, name in (
                 ("GNU AFFERO", "AGPL-3.0"), ("GNU LESSER", "LGPL"), ("GNU GENERAL PUBLIC", "GPL"),
                 ("Apache License", "Apache-2.0"), ("Mozilla Public License", "MPL-2.0"), ("MIT License", "MIT"),
@@ -210,7 +241,7 @@ def collect_dependencies(root: Path, files: list[Path]) -> tuple[set[str], dict[
 
     if "package.json" in names:
         try:
-            pkg = json.loads(_read(root / "package.json"))
+            pkg = json.loads(_read(root, "package.json"))
             facts["package.json"] = pkg
             for section in ("dependencies", "devDependencies", "peerDependencies"):
                 deps.update(k.lower() for k in (pkg.get(section) or {}))
@@ -218,12 +249,12 @@ def collect_dependencies(root: Path, files: list[Path]) -> tuple[set[str], dict[
             pass
     for f in files:
         if f.parent == Path(".") and re.match(r"requirements.*\.txt$", f.name):
-            for line in _read(root / f).splitlines():
+            for line in _read(root, f).splitlines():
                 if line.strip() and not line.strip().startswith(("#", "-")):
                     deps.add(_req_name(line))
     if "pyproject.toml" in names:
         try:
-            py = tomllib.loads(_read(root / "pyproject.toml"))
+            py = tomllib.loads(_read(root, "pyproject.toml"))
             facts["pyproject"] = py
             for dep in (py.get("project", {}).get("dependencies") or []):
                 deps.add(_req_name(dep))
@@ -231,28 +262,28 @@ def collect_dependencies(root: Path, files: list[Path]) -> tuple[set[str], dict[
         except (tomllib.TOMLDecodeError, AttributeError):
             pass
     if "go.mod" in names:
-        for match in re.finditer(r"^\s*(?:require\s+)?([\w.-]+\.[\w]+/[\w./-]+)\s+v", _read(root / "go.mod"), re.MULTILINE):
+        for match in re.finditer(r"^\s*(?:require\s+)?([\w.-]+\.[\w]+/[\w./-]+)\s+v", _read(root, "go.mod"), re.MULTILINE):
             module = match.group(1).lower()
             deps.add(module)
             parts = module.split("/")
             if len(parts) >= 3:
                 deps.add("/".join(parts[1:3]))
     if "Gemfile" in names:
-        deps.update(m.group(1).lower() for m in re.finditer(r"""^\s*gem\s+["']([\w-]+)["']""", _read(root / "Gemfile"), re.MULTILINE))
+        deps.update(m.group(1).lower() for m in re.finditer(r"""^\s*gem\s+["']([\w-]+)["']""", _read(root, "Gemfile"), re.MULTILINE))
     if "composer.json" in names:
         try:
-            deps.update(k.lower() for k in (json.loads(_read(root / "composer.json")).get("require") or {}))
+            deps.update(k.lower() for k in (json.loads(_read(root, "composer.json")).get("require") or {}))
         except (json.JSONDecodeError, AttributeError):
             pass
     if "Cargo.toml" in names:
         try:
-            cargo = tomllib.loads(_read(root / "Cargo.toml"))
+            cargo = tomllib.loads(_read(root, "Cargo.toml"))
             facts["cargo"] = cargo
             deps.update(k.lower() for k in cargo.get("dependencies", {}) or {})
         except tomllib.TOMLDecodeError:
             pass
     if "pom.xml" in names:
-        deps.update(m.group(1).lower() for m in re.finditer(r"<artifactId>([\w.-]+)</artifactId>", _read(root / "pom.xml")))
+        deps.update(m.group(1).lower() for m in re.finditer(r"<artifactId>([\w.-]+)</artifactId>", _read(root, "pom.xml")))
     return deps, facts
 
 
@@ -314,10 +345,9 @@ def parse_env_file(text: str) -> dict[str, str]:
 
 def load_native_manifest(root: Path) -> tuple[dict[str, Any] | None, str | None]:
     for name in MANIFEST_NAMES:
-        path = root / name
-        if path.is_file():
+        if repo_file(root, name):
             try:
-                data = yaml.safe_load(_read(path)) or {}
+                data = yaml.safe_load(_read(root, name)) or {}
                 if not isinstance(data, dict):
                     return None, f"{name} is not a mapping"
                 return data, None
@@ -383,14 +413,14 @@ def analyze_repo(root: Path, tool_id: str, name: str) -> tuple[Manifest, list[st
     env_values: dict[str, str] = {}
     for env_name in ENV_FILES:
         if env_name in names:
-            env_values.update(parse_env_file(_read(root / env_name)))
+            env_values.update(parse_env_file(_read(root, env_name)))
     ports: list[int] = []
     service_names: list[str] = []
     compose_name = next((c for c in COMPOSE_FILES if c in names), None)
     if compose_name:
         _add(m.stack, "compose")
         try:
-            compose = yaml.safe_load(_read(root / compose_name)) or {}
+            compose = yaml.safe_load(_read(root, compose_name)) or {}
             keys, compose_ports, service_names = _env_keys_from_compose(compose if isinstance(compose, dict) else {})
             ports.extend(compose_ports)
             apply_env_rules(m, keys, {})
@@ -400,10 +430,10 @@ def analyze_repo(root: Path, tool_id: str, name: str) -> tuple[Manifest, list[st
     m.auth.env_keys = sorted(k for k in env_values if SSO_ENV_RE.match(k.upper()))
 
     # ports
-    for env_text in (_read(root / n) for n in ENV_FILES if n in names):
+    for env_text in (_read(root, n) for n in ENV_FILES if n in names):
         ports.extend(int(p) for p in PORT_ENV_RE.findall(env_text))
     if "Dockerfile" in names:
-        ports.extend(int(p) for p in EXPOSE_RE.findall(_read(root / "Dockerfile")))
+        ports.extend(int(p) for p in EXPOSE_RE.findall(_read(root, "Dockerfile")))
     for script in (pkg.get("scripts") or {}).values():
         ports.extend(int(p) for p in PORT_ARG_RE.findall(str(script)))
     if not ports:
@@ -433,7 +463,7 @@ def analyze_repo(root: Path, tool_id: str, name: str) -> tuple[Manifest, list[st
         m.launch.command = "go run ."
     elif "Cargo.toml" in names:
         m.launch.command = "cargo run --release"
-    elif "Makefile" in names and re.search(r"^run:", _read(root / "Makefile"), re.MULTILINE):
+    elif "Makefile" in names and re.search(r"^run:", _read(root, "Makefile"), re.MULTILINE):
         m.launch.command = "make run"
     elif "Dockerfile" in names:
         port = m.launch.port or 8080
@@ -449,7 +479,7 @@ def analyze_repo(root: Path, tool_id: str, name: str) -> tuple[Manifest, list[st
     # scan source for health endpoints and webhooks
     health_route = None
     for f in source_files[:600]:
-        text = _read(root / f)
+        text = _read(root, f)
         if health_route is None:
             match = HEALTH_RE.search(text)
             if match:
@@ -467,7 +497,7 @@ def analyze_repo(root: Path, tool_id: str, name: str) -> tuple[Manifest, list[st
         m.api.type = "rest"
         m.api.spec = spec.as_posix()
         try:
-            doc = yaml.safe_load(_read(root / spec, 2_000_000)) or {}
+            doc = yaml.safe_load(_read(root, spec, 2_000_000)) or {}
             m.api.endpoints = count_operations(doc)
         except yaml.YAMLError:
             pass
@@ -478,14 +508,7 @@ def analyze_repo(root: Path, tool_id: str, name: str) -> tuple[Manifest, list[st
     if m.api.type != "none" and m.launch.port:
         m.api.base_url = f"http://localhost:{m.launch.port}"
 
-    # well-known tools
-    lowered = " ".join([tool_id, name, *service_names]).lower()
-    for known, capabilities in KNOWN_TOOLS.items():
-        if known in lowered or known.replace(".", "") in lowered.replace(".", ""):
-            for capability in capabilities:
-                _add(m.provides, capability)
-            if any(c.startswith("auth.") for c in capabilities):
-                m.auth.sso = "oidc"
+    apply_known_tools(m, " ".join([tool_id, name, *service_names]))
     if "webhooks" in m.provides:
         _add(m.events.emits, f"{tool_id}.*")
     if m.launch.port:
@@ -511,6 +534,20 @@ def analyze_repo(root: Path, tool_id: str, name: str) -> tuple[Manifest, list[st
     return m, notes
 
 
+def apply_known_tools(m: Manifest, text: str) -> list[str]:
+    """Add what the well-known tools named in `text` (ids, names, service or host names) provide; their names."""
+    lowered = text.lower()
+    found = []
+    for known, capabilities in KNOWN_TOOLS.items():
+        if known in lowered or known.replace(".", "") in lowered.replace(".", ""):
+            found.append(known)
+            for capability in capabilities:
+                _add(m.provides, capability)
+            if any(c.startswith("auth.") for c in capabilities):
+                m.auth.sso = "oidc"
+    return found
+
+
 def count_operations(doc: dict[str, Any]) -> int:
     methods = {"get", "put", "post", "delete", "patch", "head", "options"}
     paths = doc.get("paths") or {}
@@ -523,13 +560,28 @@ def count_operations(doc: dict[str, Any]) -> int:
 
 
 async def analyze_saas(tool_id: str, name: str, base_url: str, openapi_url: str | None) -> tuple[Manifest, list[str]]:
+    """A SaaS tool's manifest: what its OpenAPI spec says, plus what a well-known tool (recognised by its id, name or
+    host name - a hosted Keycloak, Okta, Snipe-IT, ...) provides, as for a repository."""
+    m, notes = await _saas_from_spec(tool_id, name, base_url, openapi_url)
+    sso = m.auth.sso
+    known = apply_known_tools(m, " ".join([tool_id, name, urlparse(base_url).hostname or ""]))
+    if known:
+        if sso not in ("unknown", "none"):  # what the spec says about sign-in is more specific than the name
+            m.auth.sso = sso
+        if "webhooks" in m.provides and not m.events.emits:
+            m.events.emits = [f"{tool_id}.*"]
+        notes.append(f"Recognised a well-known tool ({', '.join(known)}): it provides {', '.join(m.provides)}.")
+    return m, notes
+
+
+async def _saas_from_spec(tool_id: str, name: str, base_url: str, openapi_url: str | None) -> tuple[Manifest, list[str]]:
     notes: list[str] = []
     m = Manifest(id=tool_id, name=name, kind="saas", license="proprietary")
     m.ui.url = base_url
     m.health.url = base_url
     m.stack = ["saas"]
     if not openapi_url:
-        notes.append("No OpenAPI spec given - capabilities are unknown until one is added.")
+        notes.append("No OpenAPI spec given - its API is unknown until one is added.")
         return m, notes
     try:
         async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:

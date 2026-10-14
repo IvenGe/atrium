@@ -366,16 +366,20 @@ def check_network_rules(s: Snapshot) -> Result:
 
 def check_network_changes(s: Snapshot) -> Result:
     """HB-CM-3: the device-change guardrails (second person and backup -> fail, maintenance window -> partial) and
-    the change history: a device left in an unknown state fails it, emergency changes are exceptions (partial)."""
+    the change history: a device left in an unknown state fails it; emergency changes, changes approved by their own
+    proposer and changes applied without a backup (made while a guardrail was off) are exceptions (partial) for 90
+    days, whatever the guardrails say now."""
     devices = s.network.get("devices") or []
     facts = s.network.get("changes") or {}
     off, loose, evidence = _guardrail_findings(s, "HB-CM-3")
     g = guardrails.merged(s.guardrails)
     evidence = [f"device_changes={g.get('device_changes')}", f"approval_expiry_hours={g.get('approval_expiry_hours')}",
                 *evidence]
+    self_approved, unbacked = facts.get("self_approved_90d") or [], facts.get("unbacked_90d") or []
     if facts:
         evidence.append(f"in 90 days: {facts.get('applied_90d', 0)} applied, {facts.get('rolled_back_90d', 0)} rolled "
-                        f"back, {facts.get('failed_90d', 0)} failed, {len(facts.get('emergency_90d') or [])} emergency")
+                        f"back, {facts.get('failed_90d', 0)} failed, {len(facts.get('emergency_90d') or [])} emergency, "
+                        f"{len(self_approved)} approved by their proposer, {len(unbacked)} without a backup")
     if not devices and not facts.get("applied_90d"):
         return "manual", f"{NO_DEVICE}; no device changes to control.", evidence
     if facts.get("unknown_state"):
@@ -388,6 +392,13 @@ def check_network_changes(s: Snapshot) -> Result:
     if emergencies:
         problems.append(f"{len(emergencies)} emergency change(s) bypassed the maintenance windows "
                         f"({_shown(emergencies)}) - review them")
+    # exceptions recorded with each change: the guardrails may be on again now, the changes were made without them
+    if self_approved:
+        problems.append(f"{len(self_approved)} change(s) were approved by the person who proposed them "
+                        f"({_shown(self_approved)}) - have a second administrator review them")
+    if unbacked:
+        problems.append(f"{len(unbacked)} change(s) were applied without a configuration backup "
+                        f"({_shown(unbacked)}) - take a backup of the devices and review them")
     if problems:
         return "partial", "Device changes are reviewed and backed up, but " + " and ".join(problems) + ".", evidence
     if not facts.get("device_changes"):

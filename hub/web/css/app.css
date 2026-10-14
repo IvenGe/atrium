@@ -285,7 +285,7 @@ table.table { width: 100%; border-collapse: collapse; }
 .table tr:last-child td { border-bottom: 0; }
 .table tbody tr.clickable { cursor: pointer; }
 .table tbody tr.clickable:hover td { background: var(--hover); }
-.table-wrap { overflow-x: auto; }
+.table-wrap { overflow-x: auto; position: relative; } /* contains the absolutely positioned .sr-only text of its cells, which would otherwise widen the page */
 
 .tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--border); margin-bottom: 16px; overflow-x: auto; overflow-y: hidden; }
 .tabs button {
@@ -535,7 +535,7 @@ button.sev-tile:hover { background: var(--hover); }
 .member .meta svg.i { width: 12px; height: 12px; vertical-align: -1px; }
 .member .notice { padding: 8px 10px; }
 .icon-btn:disabled { opacity: .45; cursor: default; }
-.chat > header select { max-width: 60%; }
+.chat > header select { max-width: 60%; min-width: 0; } /* shrinks before the New conversation button overflows the card */
 .perm-grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
 .provider { display: flex; flex-direction: column; gap: 6px; padding: 12px; border-radius: 10px; border: 1px solid var(--border); background: var(--surface-2); min-width: 0; }
 .provider .url { font-size: 12px; overflow-wrap: anywhere; }

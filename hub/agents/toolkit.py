@@ -53,6 +53,25 @@ class ToolContext:
             raise ValueError(f"Unknown tool id '{tool_id}'")
         return tool_id
 
+    def owns(self, source: str) -> bool:
+        """Whether this agent may change a hub record whose ``source`` is `source`. Hub-wide agents may change any; an
+        agent of a tool's team only what its tool supplied (``tool:<id>``, ``sync:<id>``, or the tool id itself, as
+        findings record it) and what an agent of its team created - never people's records or other teams'."""
+        scope = self.tool_scope
+        if not scope:
+            return True
+        if source in (scope, f"tool:{scope}", f"sync:{scope}"):
+            return True
+        from . import teams
+
+        defn = teams.get_def(self.hub, source) if source.startswith("agent:") else None
+        return defn is not None and defn.team == scope
+
+    def check_owns(self, kind: str, record_id: str, source: str) -> None:
+        if not self.owns(source):
+            raise PermissionError(f"{self.agent.name} works for the {self.tool_scope} team: it changes only {kind}s "
+                                  f"that {self.tool_scope} or its team supplied, not {kind} {record_id} ({source})")
+
     async def ask(self, recipient: str, subject: str, body: dict[str, Any] | None = None, timeout: float = 300) -> dict[str, Any]:
         target = self.hub.agents.get(recipient)
         if target is not None and target.paused:  # it would answer only after it is resumed: fail now, not at the timeout
@@ -413,6 +432,7 @@ async def _update_asset(ctx: ToolContext, args: dict[str, Any]) -> Any:
     asset = ctx.hub.one("assets", str(args["asset_id"]), Asset)
     if asset is None:
         raise ValueError("Unknown asset id")
+    ctx.check_owns("asset", asset.id, asset.source)
     changes = {k: args[k] for k in ("owner", "criticality", "status") if args.get(k)}
     if not changes:
         return {"changed": []}
@@ -427,8 +447,16 @@ async def _update_asset(ctx: ToolContext, args: dict[str, Any]) -> Any:
 @tool("set_scan_scope", "Put assets in (or take them out of) vulnerability-scan scope.", "assets_write",
       {"asset_ids": {"type": "array", "items": STR}, "in_scope": {"type": "boolean"}})
 async def _scope(ctx: ToolContext, args: dict[str, Any]) -> Any:
-    return await ctx.ask("module:assets", "scan.scope", {"asset_ids": list(args["asset_ids"])[:1000],
-                                                         "in_scope": bool(args["in_scope"])})
+    from ..models import Asset
+
+    asset_ids = [str(a) for a in list(args["asset_ids"])[:1000]]
+    if ctx.tool_scope:  # every asset first: nothing changes when one of them is out of reach
+        for asset_id in asset_ids:
+            asset = ctx.hub.one("assets", asset_id, Asset)
+            if asset is None:
+                raise ValueError(f"Unknown asset id '{asset_id}'")
+            ctx.check_owns("asset", asset.id, asset.source)
+    return await ctx.ask("module:assets", "scan.scope", {"asset_ids": asset_ids, "in_scope": bool(args["in_scope"])})
 
 
 @tool("sync_assets", "Ask the Asset Supervisor to sync tools and hosts into the asset register.", "assets_write")
@@ -460,6 +488,7 @@ async def _update_risk(ctx: ToolContext, args: dict[str, Any]) -> Any:
     risk = ctx.hub.one("risks", str(args["risk_id"]), Risk)
     if risk is None:
         raise ValueError("Unknown risk id")
+    ctx.check_owns("risk", risk.id, risk.source)
     changes = {k: args[k] for k in ("status", "treatment") if args.get(k)}
     if args.get("note"):
         changes["description"] = (risk.description + "\n\n" if risk.description else "") + f"{ctx.agent.name}: {args['note']}"[:4000]
@@ -478,7 +507,7 @@ async def _update_vuln(ctx: ToolContext, args: dict[str, Any]) -> Any:
     vuln = ctx.hub.one("vulnerabilities", str(args["vulnerability_id"]), Vulnerability)
     if vuln is None:
         raise ValueError("Unknown vulnerability id")
-    if ctx.tool_scope and vuln.source != ctx.tool_scope:
+    if ctx.tool_scope and not ctx.owns(vuln.source):
         raise PermissionError(f"{ctx.agent.name} only triages findings from {ctx.tool_scope}")
     status = args.get("status") or None
     if status and status != vuln.status:

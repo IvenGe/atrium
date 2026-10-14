@@ -22,6 +22,30 @@ from .core import Hub
 
 WEB_DIR = Path(__file__).parent / "web"
 SAFE_METHODS = ("GET", "HEAD", "OPTIONS")
+# Every response forbids framing (clickjacking): no other site can embed the UI. The portal's iframes are the tools'
+# own responses, so they are not affected.
+FRAME_HEADERS = ((b"x-frame-options", b"DENY"), (b"content-security-policy", b"frame-ancestors 'none'"))
+
+
+class FrameDenialMiddleware:
+    """Adds FRAME_HEADERS to every HTTP response. Plain ASGI, so the event stream keeps streaming."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        async def send_with_headers(message):
+            if message["type"] == "http.response.start":
+                names = {name.lower() for name, _ in message.get("headers") or []}
+                extra = [h for h in FRAME_HEADERS if h[0] not in names]
+                message = {**message, "headers": [*(message.get("headers") or []), *extra]}
+            await send(message)
+
+        await self.app(scope, receive, send_with_headers)
 
 # Windows registries often map .js to text/plain, which browsers refuse for ES modules.
 mimetypes.add_type("text/javascript", ".js")
@@ -48,7 +72,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app = FastAPI(title="Atrium", version=__version__, lifespan=lifespan, docs_url="/api/docs", openapi_url="/api/openapi.json")
     app.state.hub = hub
 
-    # Every /api call is checked in this order: trusted Host header (outermost middleware, added last), the
+    # Every /api call is checked in this order: trusted Host header (the first check, inside FrameDenialMiddleware), the
     # X-Hub-Request header on browser mutations (a custom header cross-site pages cannot send without a CORS
     # preflight, which we never grant; Bearer-token clients are exempt), who is calling, and what their role allows.
     # Static files stay public: the UI itself shows the sign-in screen.
@@ -68,6 +92,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return await call_next(request)
 
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=settings.allowed_hosts)
+    app.add_middleware(FrameDenialMiddleware)  # outermost: refusals (bad Host, 401, 403) carry the headers too
 
     @app.exception_handler(AuthError)
     async def auth_error(request: Request, exc: AuthError) -> JSONResponse:

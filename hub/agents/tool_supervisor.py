@@ -15,14 +15,14 @@ from ..bus import Message
 from ..connectors.base import ConnectorError, check, normalize, redact
 from ..connectors.netmodel import RESERVED_ACTIONS, ChangeError, parse_ops
 from ..integration import changes, connections, network
-from ..integration.analyzer import analyze_repo, analyze_saas, list_files, readme_summary
+from ..integration.analyzer import analyze_repo, analyze_saas, list_files, read_repo_file, readme_summary
 from ..models import AGENT_PERMISSIONS, Manifest, Tool
 from . import teams
 from .base import BaseAgent
 
 PUSH_ACTIONS = ("created", "updated", "skipped", "failed")
 # approval kind of a side-effecting connector action -> the only agent that may ask for it (it applies that kind's
-# approval policy); people may run them directly (review-notes F3)
+# approval policy), so team agents and other modules cannot bypass it; people may run them directly
 ACTION_ROUTES = {"scan": "module:vulns"}
 
 ENRICH_SCHEMA = {
@@ -470,8 +470,9 @@ class ToolSupervisor(BaseAgent):
         files = "\n".join(f.as_posix() for f in list_files(root, 300))
         readme = ""
         for name in ("README.md", "readme.md", "README.rst", "README"):
-            if (root / name).is_file():
-                readme = (root / name).read_text(encoding="utf-8", errors="replace")[:8000]
+            text = read_repo_file(root, name, 32_000)  # never through a symbolic link out of the repository
+            if text is not None:
+                readme = text[:8000]
                 break
         prompt = (
             f"<inferred_manifest>\n{manifest.model_dump_json(include={'name', 'stack', 'provides', 'consumes', 'auth'})}\n"

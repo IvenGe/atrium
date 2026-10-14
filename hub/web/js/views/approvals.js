@@ -287,7 +287,8 @@ export async function render(el, ctx) {
     }
     setHTML(el, html`
       <div class="page-head"><div><h1>Approvals</h1><p class="muted">Agents ask before they change anything: commands, patches, data flows, scans, repairs, new agent teams,
-        extensions, changes to Atrium's own code and network device changes. Commands typed by a person in the Operator run directly.</p></div></div>
+        extensions, changes to Atrium's own code and network device changes. Commands an administrator types in the Operator run directly; an operator's commands
+        on the hub machine (other than read-only ones) and tool starts wait here for an administrator.</p></div></div>
       <div class="tabs"><button class="${tab === "pending" ? "active" : ""}" data-act="tab" data-tab="pending">Waiting (${pending.length})</button>
         <button class="${tab === "history" ? "active" : ""}" data-act="tab" data-tab="history">History (${history.length})</button></div>
       ${tab === "pending" ? (pending.length ? html`<div class="stack">${pending.map((a) => pendingCard(a, names))}</div>`

@@ -399,9 +399,19 @@ the ID token's signature, creates the session and returns to the hub. A short-li
 callback to the browser that started the sign-in and is deleted in the callback. The state value
 itself carries the sign-in's nonce, PKCE verifier and expiry, encrypted with a key of the running
 hub, so the hub keeps nothing per started sign-in and a flood of anonymous starts cannot push anyone's
-sign-in out; each state works once. If anything fails, the browser lands on the sign-in screen with
-the reason, and the failure is logged under `auth` - with the provider's error code only, never its
+sign-in out; each state works once. If anything fails, the browser lands on the sign-in screen
+(`/#/login`) with the reason, and the failure is logged under `auth` - with the provider's error code only, never its
 free text, and at most 20 entries per address and 200 in all per 15 minutes (the callback is public).
+
+The reason never travels in the URL. The callback puts it in the cookie `atrium_sso_notice` (`HttpOnly`,
+`SameSite=Lax`, 5 minutes, `Path=/api/auth`), encrypted with a key of the running hub. The next
+`GET /api/auth/me` returns it once as `sso_error` and deletes the cookie, and the sign-in screen shows only that
+value. The screen ignores any `?error=` in the address. So a link like `/#/login?error=Reset your password at ...`,
+or a cookie set by a page on another port of the same host (cookies do not separate ports), cannot make the hub's
+sign-in page show someone else's text. When the identity provider sends back an error, the person sees "The
+identity provider refused the sign-in", with the code added when it is a standard OAuth 2.0 or OpenID Connect
+error code such as `access_denied`. The provider's `error_description` is never shown, because anyone can send a
+browser to the callback with a description of their own.
 The activity log pages back with `GET /api/activity?before=<seq>`, so a burst of entries never puts
 older ones out of reach.
 
@@ -629,6 +639,14 @@ terminated still has an enabled Atrium account with their email address (or an a
   exempt.
 - **Host checking.** Requests whose `Host` header is not `127.0.0.1`, `localhost` or listed in
   `HUB_ALLOWED_HOSTS` are rejected before anything else runs, which defeats DNS rebinding.
+- **No framing.** Every response carries `X-Frame-Options: DENY` and `Content-Security-Policy: frame-ancestors
+  'none'`, so another site cannot embed the hub to trick a signed-in person into clicking (clickjacking).
+  This includes a tool's page on another port of the same host, which counts as the same site for cookies.
+- **What others write stays in its place.** The UI escapes everything it shows. A tool's own manifest can set
+  only a hex colour and an icon of one or two characters for its tile ([MANIFEST.md](MANIFEST.md)), so it cannot add
+  CSS that covers the page. The sign-in screen shows only notices the hub sealed itself, never text from the
+  address (see [Single sign-on](#single-sign-on-oidc)). While a dialog is open, the rest of the page is inert, so
+  Tab, clicks and screen readers stay inside the dialog. Following a link inside a dialog closes the dialog.
 - **Secrets at rest.** Passwords are stored as scrypt hashes, session cookies and API tokens as
   SHA-256 hashes, and the API never returns any of them. Credentials the hub must use itself (tool
   connections, local model API keys, the stored SSO client secret) are encrypted with `HUB_SECRET_KEY` or

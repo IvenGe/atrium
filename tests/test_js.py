@@ -1,6 +1,6 @@
-"""The web UI's JavaScript: every module under hub/web/js parses (``node --check``), and the canvas engine's pure modules
-pass their unit tests (``node --test tests/js/*.test.mjs``, Node's built-in runner). Skipped when ``node`` is not on
-PATH, so Node stays optional for the Python suite."""
+"""The web UI's JavaScript: every module under hub/web/js parses (``node --check``), and the pure modules (the canvas
+engine, the UI toolkit's helpers) pass their unit tests (``node --test tests/js/*.test.mjs``, Node's built-in runner).
+Skipped when ``node`` is not on PATH, so Node stays optional for the Python suite."""
 
 from __future__ import annotations
 

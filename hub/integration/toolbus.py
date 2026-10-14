@@ -6,7 +6,7 @@ POSTing to that tool's ``events.webhook_url``.
 
 Webhook URLs can carry tokens and payloads are the tools' data, so what viewers
 see (``public_routes``, ``public_recent`` and the ``toolbus`` event) says only
-whether a webhook is set and how each delivery went (review-notes F24).
+whether a webhook is set and how each delivery went.
 """
 
 from __future__ import annotations

@@ -717,8 +717,9 @@ export function mount(container, ctx, { params = [] } = {}) {
       async "cp-enable"(d, btn) {
         btn.disabled = true;
         try {
-          await patch(`/flows/${enc(d.flow)}`, { status: "enabled" });
-          toast("Flow enabled", "ok");
+          const updated = await patch(`/flows/${enc(d.flow)}`, { status: "enabled" });
+          toast(updated?.status === "proposed" ? "Proposed again - the flow waits for approval" : "Flow enabled",
+            updated?.status === "proposed" ? "info" : "ok");
           btn.remove();
         } catch (err) {
           toast(err.message, "bad");

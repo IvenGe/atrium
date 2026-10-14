@@ -108,6 +108,8 @@ export async function render(el, ctx) {
     const failing = data.controls.filter((c) => c.status === "fail" || c.status === "partial");
     const openRisks = risks.filter((r) => r.status !== "closed").sort((a, b) => b.score - a.score);
     const families = [...new Set(data.controls.map((c) => c.family))];
+    const tabName = { controls: "Controls", risks: "Risks", policies: "Policies" }[tab];
+    if (tab !== "frameworks") ctx.crumb(tabName ? `Compliance hub / ${tabName}` : "Compliance hub"); // like the Integration hub's tabs
     setHTML(el, html`
       <div class="page-head"><div><h1>Compliance hub</h1><p class="muted">Governance, risk and compliance. The GRC Supervisor checks controls against live hub state and maps the evidence to ISO 27001, SOC 2, NIS2 and CyberFundamentals (CyFun); under Frameworks you assess yourself against CyFun.</p></div>
         <button class="btn" data-act="evaluate" data-min-role="operator">${icon("refresh")}Re-evaluate</button></div>

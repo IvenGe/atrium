@@ -75,8 +75,10 @@ flowchart LR
   pol -- allowed --> route
 ```
 
-1. **Trusted Host** (`TrustedHostMiddleware`, the outermost layer): `127.0.0.1`, `localhost` and
-   `HUB_ALLOWED_HOSTS`.
+1. **Trusted Host** (`TrustedHostMiddleware`, the first check): `127.0.0.1`, `localhost` and
+   `HUB_ALLOWED_HOSTS`. Around it, `FrameDenialMiddleware` (`app.py`) adds `X-Frame-Options: DENY` and
+   `Content-Security-Policy: frame-ancestors 'none'` to every response, refusals and the UI's files included, so no
+   other site can embed the hub (clickjacking).
 2. **X-Hub-Request**: requests other than `GET`, `HEAD` and `OPTIONS` that carry no Bearer token
    must send `X-Hub-Request: 1`. Cross-site pages cannot add the header without a CORS preflight,
    which the hub never grants.
@@ -117,7 +119,7 @@ flowchart LR
    - `extension` and `self_patch` (changes to Atrium itself) and `agent_team`;
    - `firewall` (device changes), with `code: admin_required`.
 
-   **Second person** (review-notes F1, `Approvals.check_second_person`): the person who proposed an approval cannot
+   **Second person** (`Approvals.check_second_person`): the person who proposed an approval cannot
    approve it while its second-person guardrail is on (403, `code: same_person`); they can still reject it. The
    guardrails are `device_changes_need_second_person` (default on) for kind `firewall`, and
    `approvals_need_second_person` (default off) for self-patches and every approval whose payload records
@@ -168,8 +170,10 @@ Agents never call each other directly. They exchange `Message`s on the bus
 
 Every message is appended to the `messages` log and pushed to the UI over Server-Sent Events, so
 the Agents page shows the conversation as it happens. Each agent handles messages concurrently
-(bounded by `max_concurrency`) so two agents asking each other questions cannot deadlock. A
-handler for subject `tool.imported` is the method `on_tool_imported`. Bodies over 32 KB (pulled records) reach their
+(bounded by `max_concurrency`) so two agents asking each other questions cannot deadlock. Subjects in an agent's
+`unthrottled_subjects` skip that bound. The GRC Supervisor's `evaluate` and `summary` are such subjects, so a data
+flow waiting minutes for a slow GRC tool never delays a compliance evaluation; evaluations are serialised by their
+own lock instead. A handler for subject `tool.imported` is the method `on_tool_imported`. Bodies over 32 KB (pulled records) reach their
 recipient in full but are logged as a summary.
 
 ## Agents
@@ -271,7 +275,7 @@ Tools exchange data through the hub's built-in apps, which are the canonical dat
   - `fake_firewall` only with `HUB_DEV_FAKE_DEVICES=1`.
 
   `side_effect_actions` marks actions that change something; the tool's supervisor runs them only for a person or
-  the agent that owns their approval path (review-notes F3).
+  the agent that owns their approval path.
 - **Connections** (`integration/connections.py`, collection `connections`): a connector kind, settings and secrets
   encrypted by `secrets.py` (Fernet; `HUB_SECRET_KEY` or `{data dir}/secret.key`), bound to the endpoint they were
   entered for.
@@ -430,7 +434,8 @@ Guardrails name the control they weaken (`guardrails.weakened`): HB-AC-6 fails w
 teams; HB-AC-2 fails in autonomous mode and is partial while `scans_need_approval` or `team_requires_approval` is off;
 HB-CM-2 fails while `self_patch_requires_approval` or `self_patch_requires_tests` is off and is partial while
 `extensions_need_approval` is off (or in autonomous mode); HB-CM-3 fails while `device_changes_need_second_person` or
-`device_changes_need_backup` is off and is partial while `device_changes_need_maintenance_window` is off. HB-AC-7 fails while a leaver still has an enabled Atrium
+`device_changes_need_backup` is off and is partial while `device_changes_need_maintenance_window` is off, and for 90
+days after a change its own proposer approved or one applied without a backup. HB-AC-7 fails while a leaver still has an enabled Atrium
 account or an active tool account, and is partial when they only still have assets. Extension control rules can make
 any control worse, never better, and add their evidence ([AGENTS.md](AGENTS.md#what-a-pack-can-contain)).
 
@@ -455,8 +460,8 @@ any control worse, never better, and add their evidence ([AGENTS.md](AGENTS.md#w
 
 | Path under the data directory | Holds |
 | --- | --- |
-| `hub.db` | the SQLite database |
-| `secret.key` | the encryption key for stored credentials and device configuration backups, unless `HUB_SECRET_KEY` is set (back it up separately) |
+| `hub.db` | the SQLite database (mode `0600`, with its `-wal` and `-shm` files; the data directory and the workspace are `0700`) |
+| `secret.key` | the encryption key for stored credentials and device configuration backups, unless `HUB_SECRET_KEY` is set (back it up separately; mode `0600`) |
 | `workspace/tools/` | cloned repositories |
 | `workspace/patches/<id>/` | worktrees of patches to tools |
 | `workspace/adapters/<tool id>/` | adapters: health probes, SSO configuration and provider registration, event pollers |

@@ -263,7 +263,8 @@ class NetworkSupervisor(FlowOwner):
         if not body.get("approved"):
             changes.finish(self.hub, change, "rejected", actor, body.get("note"))
             return
-        change.update({"decided_by": approval.decided_by, "decided_at": approval.decided_at})
+        change.update({"decided_by": approval.decided_by, "decided_at": approval.decided_at,
+                       "self_approved": changes.decided_by_proposer(self.hub, change, approval)})
         changes.save(self.hub, change, "approved", actor)
         self.log("info", f"Device change {change['id']} approved by {actor}", change_id=change["id"])
         await self.advance(change["id"])

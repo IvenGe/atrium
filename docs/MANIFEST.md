@@ -5,6 +5,17 @@ imports; a tool can also ship its own `hub.manifest.yaml` (or `.yml` / `.json`) 
 its repository. A shipped manifest makes the tool **native**: its values override what the hub
 infers, and anything it leaves out is still inferred.
 
+The hub reads a repository's files only when they are regular files inside the repository. It does not follow a
+symbolic link, whether a `README.md` pointing at `../../secret.key` or a `docs/` folder pointing at `/`. This applies
+to the analysis (README, licence, manifest, compose and `.env` files), the README the Tool Supervisor gives the model,
+the compose file used for SSO registration, the OpenAPI spec named in `api.spec`, and the files shown in patch diffs.
+A linked file counts as missing.
+
+A SaaS tool has no repository: its manifest comes from the OpenAPI spec given at import (API, sign-in, webhooks) and,
+as for a repository, from what a well-known tool recognised by its id, name or host name provides - a hosted Keycloak
+or Okta is an identity provider (`auth.oidc`, `auth.saml`, `identity.source`), Snipe-IT an asset inventory
+(`assets.inventory`).
+
 ```yaml
 name: CRM App
 description: Tracks customers, deals and follow-ups.
@@ -43,10 +54,19 @@ events:
 
 ui:
   url: http://localhost:4000               # opened from Portals
-  icon: C                                  # a letter or emoji
-  color: "#0d9488"
+  icon: C                                  # one or two letters, or an emoji
+  color: "#0d9488"                         # a hex colour: #rgb, #rgba, #rrggbb or #rrggbbaa
   embed: true
 ```
+
+`ui.icon` and `ui.color` style the tool's tile on Home, Apps, Portals and the Integration map. The hub keeps
+`ui.color` only when it is a hex colour, and `ui.icon` only when it shows one or two characters and contains no spaces
+or control characters (an emoji made of several code points counts as one). Any other value is dropped, so the
+tile uses the hub's own colour and the tool's first letter, and the rest of the manifest still applies. The UI checks
+both again before it draws the tile. This stops a repository from adding CSS through the colour, for example
+`"#000;position:fixed;inset:0"`, which would cover the page and its Remove button, or `url(...)`, which would tell a
+remote server each time someone views the page. It also stops a repository from putting a message such as "session
+expired, sign in at ..." in the icon.
 
 ## Capabilities
 

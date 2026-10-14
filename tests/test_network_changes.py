@@ -2,8 +2,8 @@
 guardrails, previews without side effects, proposals that always need an approval, the second-person rule, approvals
 bound to the device revision that expire, the kill switch, maintenance windows and emergencies, Atrium's backup
 before every apply, verification with rollback (and the backup restored when the device's own rollback fails),
-reverts and backup restores as new proposals, the network change-management control, and the review-notes fixes F1
-(second person), F2 (binding and expiry, also for self-patches) and F3 (side-effecting connector actions)."""
+reverts and backup restores as new proposals, the network change-management control, the same binding, expiry and
+second-person rules for self-patches, and side-effecting connector actions only through their approval path."""
 
 from __future__ import annotations
 
@@ -624,7 +624,60 @@ def test_network_change_management_control(client, fw):
     assert cm3()["status"] == "fail"
 
 
-# -- review-notes F1, F2 (self-patches) and F3 ------------------------------------------------------------------
+def test_change_management_remembers_changes_made_while_a_guardrail_was_off(client, fw, admins, wait_for):
+    """Review finding: HB-CM-3 read only the guardrails' current values. An administrator could switch the
+    second-person rule off, approve their own change, switch it on again and the control passed at once."""
+    from hub.connectors.netmodel import display_id
+
+    hub = client.app.state.hub
+    admin2, operator = admins
+    refresh(client)
+    enable(client)
+
+    def cm3():  # judged with every guardrail on (the changes below are applied without maintenance windows)
+        set_guards(client, device_changes_need_maintenance_window=True)
+        client.post("/api/grc/evaluate")
+        control = next(c for c in client.get("/api/grc").json()["controls"] if c["id"] == "HB-CM-3")
+        set_guards(client, device_changes_need_maintenance_window=False)
+        return control
+
+    reviewed = propose(client)  # reviewed by a second administrator, backed up: nothing to report
+    approve(admin2, reviewed["approval_id"])
+    assert wait_status(client, wait_for, reviewed["change"]["id"])["self_approved"] is False
+    assert cm3()["status"] == "pass"
+
+    refresh(client)
+    set_guards(client, device_changes_need_second_person=False)
+    own = propose(client, {**ALLOW, "services": [{"proto": "tcp", "ports": "8443"}]})
+    approve(client, own["approval_id"])  # the proposer approves it
+    own_id = own["change"]["id"]
+    change = wait_status(client, wait_for, own_id)
+    assert change["status"] == "applied" and change["self_approved"] is True and change["backup_id"]
+    set_guards(client, device_changes_need_second_person=True)
+    control = cm3()
+    assert control["status"] == "partial" and "approved by the person who proposed them" in control["detail"]
+    assert own_id in control["detail"] and reviewed["change"]["id"] not in control["detail"]
+    assert any("1 approved by their proposer, 0 without a backup" in e for e in control["evidence"])
+
+    refresh(client)
+    set_guards(client, device_changes_need_backup=False)
+    bare = propose(operator, {**ALLOW, "services": [{"proto": "tcp", "ports": "9443"}]})
+    approve(admin2, bare["approval_id"])
+    assert wait_status(client, wait_for, bare["change"]["id"])["backup_id"] is None
+    set_guards(client, device_changes_need_backup=True)
+    control = cm3()
+    assert control["status"] == "partial" and "without a configuration backup" in control["detail"]
+    assert bare["change"]["id"] in control["detail"] and own_id in control["detail"]
+
+    # changes recorded before the flag existed are judged from their approval
+    stored = hub.store.get(changes.CHANGES, own_id)
+    stored.pop("self_approved")
+    hub.store.put(changes.CHANGES, stored)
+    facts = changes.compliance_facts(hub)
+    assert facts["self_approved_90d"] == [display_id(own_id)] and facts["unbacked_90d"] == [display_id(bare["change"]["id"])]
+
+
+# -- second person, binding and expiry (self-patches), side-effecting connector actions ----------------------------
 
 
 def test_second_person_rule_for_other_approvals(client, sign_in):

@@ -618,7 +618,7 @@ def build_router(hub: Hub) -> APIRouter:
                        "target": "hub" if f["target"] == "hub" else f["target"].split(":", 1)[1],
                        "type": "flow", "via": f["domain"] + (f" ({f['action']})" if f["action"] else ""),
                        "flow_id": f["id"], "status": f["status"], "failing": bool(f["failures"])} for f in all_flows]
-        # routes and deliveries without webhook URLs or event payloads (review-notes F24)
+        # routes and deliveries without webhook URLs or event payloads: viewers read this, and URLs may carry tokens
         return {**suite_matrix(hub.tools()), "routes": hub.toolbus.public_routes(),
                 "deliveries": hub.toolbus.public_recent(30), "flows": all_flows, "flow_links": flow_links}
 
@@ -657,7 +657,8 @@ def build_router(hub: Hub) -> APIRouter:
 
     def precheck_side_decision(approval_id: str | None, approve: bool, p: Principal) -> None:
         """Enabling (or disabling) a proposal in its own list decides its approval too: the approval's rules - the
-        second-person rule, expiry - are checked BEFORE anything changes (review-notes F1); 403 same_person, 409."""
+        second-person rule, expiry - are checked BEFORE anything changes, so this path cannot bypass them; 403
+        same_person, 409."""
         approval = hub.approvals.get(approval_id) if approval_id else None
         if approval is None or approval.status != "pending":
             return
@@ -671,9 +672,12 @@ def build_router(hub: Hub) -> APIRouter:
     @router.patch("/flows/{flow_id}")
     async def update_flow(flow_id: str, body: FlowPatch, p: CurrentPrincipal) -> dict[str, Any]:
         flow = flow_or_404(flow_id)
-        if flow.status == "proposed" and body.status and body.status != flow.status:
+        # A flow whose proposal was turned down (by the proposer or anyone else) is proposed again when it is
+        # switched on: never enabled here, so neither the second-person rule nor a rejection can be stepped around.
+        again = body.status == "enabled" and flow.status != "enabled" and flows.never_approved(hub, flow)
+        if flow.status == "proposed" and body.status and body.status != flow.status and not again:
             precheck_side_decision(flow.approval_id, body.status == "enabled", p)
-        if body.status == "enabled" and flow.status != "enabled":  # the loop rule (review-notes F7)
+        if body.status == "enabled" and flow.status != "enabled":  # the loop rule: no pull and push of one domain for one tool
             conflict = strategies.loop_conflict(flows.all_flows(hub), *flows.key(flow), exclude=flow.id)
             if conflict is not None:
                 message = strategies.loop_message(hub, flow.domain, flow.source, flow.target)
@@ -688,8 +692,12 @@ def build_router(hub: Hub) -> APIRouter:
         if body.schedule_minutes is not None:
             flow.schedule_minutes = body.schedule_minutes
             changes.append(f"every {body.schedule_minutes} min" if body.schedule_minutes else "manual only")
-        pending = flow.approval_id if flow.status == "proposed" else None
-        if body.status and body.status != flow.status:
+        pending = flow.approval_id if flow.status == "proposed" and not again else None
+        if again:
+            changes.append("proposed again" if strategies.propose_again(hub, flow, p.actor) else "enabled")
+        elif body.status and body.status != flow.status:
+            if flow.status == "proposed" and body.status == "disabled":  # dismissed: the proposal is turned down
+                flow.rejected = flow.approval_id or "dismissed"
             flow.status, flow.approval_id = body.status, None
             changes.append(body.status)
         flows.save(hub, flow)
@@ -708,6 +716,8 @@ def build_router(hub: Hub) -> APIRouter:
         flow = flow_or_404(flow_id)
         if flow.status == "proposed" and not flow.job:  # a scan started by hand on a proposed flow can still be polled
             raise HTTPException(400, "Approve or enable this proposed flow first")
+        if flows.never_approved(hub, flow) and not flow.job:
+            raise HTTPException(400, "This flow's proposal was turned down - enable it to propose it again")
         return run_result(await ask(p, flows.owner(flow), "flow.run", {"flow_id": flow_id, "trigger": "manual"}, timeout=900))
 
     @router.post("/flows/{flow_id}/repair", status_code=202)
@@ -912,7 +922,7 @@ def build_router(hub: Hub) -> APIRouter:
             approval = await hub.approvals.decide(approval_id, body.approve, body.note, p.actor, sender=p.bus_id)
         except KeyError as exc:
             raise not_found("Approval") from exc
-        except DecisionRefused as exc:  # the second-person rule (review-notes F1)
+        except DecisionRefused as exc:  # the second-person rule: a proposer may not approve their own proposal
             raise HTTPException(403, {"code": exc.code, "message": str(exc)}) from exc
         except ValueError as exc:
             raise HTTPException(409, str(exc)) from exc

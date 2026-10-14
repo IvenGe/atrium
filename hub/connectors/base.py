@@ -57,7 +57,7 @@ or "interrupted" marks the scan failed.
 Actions that change something (start a scan, ...) are listed in ``side_effect_actions`` with the approval kind that
 governs them (``{"scan": "scan"}``). The tool's supervisor runs such an action only for a person, or for the agent
 that owns that approval path (``tool_supervisor.ACTION_ROUTES``: kind "scan" -> ``module:vulns``, which applies the
-scan approval policy) - never for team agents or other modules (review-notes F3). Actions not listed there must be
+scan approval policy) - never for team agents or other modules, so none of them can bypass that approval. Actions not listed there must be
 read-only (``scan_status``).
 
 Errors: raise ``ConnectorError`` with a message a person can act on; ``self.error()`` / ``self.raise_for_status()``

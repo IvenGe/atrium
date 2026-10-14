@@ -1,6 +1,6 @@
 """The approval queue: where agents park actions that need a human decision.
 
-Two rules hold for every decision (review-notes F1, F2):
+Two rules hold for every decision:
 - Second person: an approval whose payload records ``proposed_by`` (the person who proposed it), and every self-patch
   and device change, cannot be APPROVED by that same person while the second-person guardrail for it is on -
   ``device_changes_need_second_person`` (default on) for kind ``firewall``, ``approvals_need_second_person`` (default

@@ -79,10 +79,10 @@ per step, every field matched against a strict pattern, run as separate argument
 - disable_rules / enable_rules: only rules Atrium created (marker ``atrium:<change>.<n>``) - none of the three has a
   disabled state, and Atrium never rewrites rules it does not own.
 - Backups: ``nft list ruleset`` / the ufw rules files / the firewalld listings, read with the read lines above.
-  Restore puts back ``table inet atrium`` (nftables) or user.rules / user6.rules (ufw; only the filter table and
-  ufw's own chains are accepted); firewalld is not restored. A restore runs like a change: ``restore SID SECONDS
-  MANAGER`` validates the content, arms the automatic revert, then writes; Atrium confirms it (nftables: saves it)
-  only after a new connection reached the host.
+  Restore puts back ``table inet atrium`` (nftables) or user.rules / user6.rules (ufw; only the filter table, ufw's
+  own chains and, in each rule, the options and targets ufw itself writes are accepted); firewalld is not restored.
+  A restore runs like a change: ``restore SID SECONDS MANAGER`` validates the content, arms the automatic revert,
+  then writes; Atrium confirms it (nftables: saves it) only after a new connection reached the host.
 
 nftables keeps anonymous sets collapsed (adjacent networks merged; adjacent ports merged once a set holds a range,
 seen with nft 1.0.9), so an allow is refused unless written in that form - otherwise it would read back different.
@@ -91,7 +91,8 @@ UNVERIFIED (no real host was used; nft 1.0.9 ran in a network namespace, the wra
 the ``ip -j`` key ``ifname`` (research S37 lists the others); ``ss -H -tuln`` columns; that a rule's ufw tuple dport
 keeps the order it was given in; ufw ``prepend`` needing ufw 0.35 or later; that /etc/ufw/*.rules need root to read;
 the polkit side of firewalld (sudo is used instead); firewalld service definitions outside /usr/lib/firewalld/services
-and /etc/firewalld/services; the persistence include paths (/etc/nftables.conf, /etc/sysconfig/nftables.conf).
+and /etc/firewalld/services; the persistence include paths (/etc/nftables.conf, /etc/sysconfig/nftables.conf); that
+the ufw restore check (``check_ufw``, written from ufw's source) accepts every rule form a real ufw writes.
 """
 
 from __future__ import annotations
@@ -184,8 +185,8 @@ WRAPPER_SCRIPT = r'''#!/bin/sh
 #        rollback SID | revert-now SID (the timer) | status SID | restore SID SECONDS MANAGER (content on stdin)
 # A change is refused unless the automatic revert (a systemd timer) was armed first; a restore arms it itself and is
 # saved only by confirm. Input is validated here again: nftables - only table inet atrium is ever replaced; ufw -
-# only rules commented "atrium:<change>.<n>" (a restore: only ufw's own chains); firewalld - only rich rules
-# whose log prefix is "atrium:<change>.<n> ".
+# only rules commented "atrium:<change>.<n>" (a restore: ufw's own chains and rule options); firewalld - only rich
+# rules whose log prefix is "atrium:<change>.<n> ".
 set -u
 umask 077
 PATH=/usr/sbin:/usr/bin:/sbin:/bin
@@ -238,16 +239,57 @@ check_table() {  # FILE
   }' "$1"
 }
 
-# -- ufw restore: a user rules file as ufw writes it - the filter table, ufw's own chains only ---------------------
+# -- ufw restore: a user rules file as ufw writes it - the filter table, ufw's own chains, and in every rule only
+# the options and targets ufw itself writes there (format_rule, the logging and the rate-limiting rules of ufw's
+# backend_iptables.py); every value is matched against a strict pattern ---------------------------------------
 check_ufw() {  # FILE
   [ "$(tr -d '\011\012\040-\176' < "$1" | wc -c)" -eq 0 ] || return 1
   awk '
-  BEGIN { state = 0; bad = 0; rule = "^-[AI] ufw6?-[a-z-]+ []A-Za-z0-9 .,:/_!\"=+[-]+$" }
+  function value(o, v) {
+    if (o == "-p") return v ~ /^(tcp|udp|ipv6|esp|ah|gre|igmp|vrrp|all)$/
+    if (o == "-i" || o == "-o") return v ~ /^[A-Za-z0-9][A-Za-z0-9_.+-]*$/ && length(v) <= 15
+    if (o == "-s" || o == "-d") return v ~ /^[0-9A-Fa-f.:]+(\/[0-9]+)?$/ && length(v) <= 43
+    if (o == "--dport" || o == "--sport") return v ~ /^[0-9]+(:[0-9]+)?$/
+    if (o == "--dports" || o == "--sports") return v ~ /^[0-9]+(:[0-9]+)?(,[0-9]+(:[0-9]+)?)*$/
+    if (o == "--ctstate") return v ~ /^(NEW|INVALID|RELATED|ESTABLISHED)(,(NEW|INVALID|RELATED|ESTABLISHED))*$/
+    if (o == "--seconds" || o == "--hitcount" || o == "--limit-burst") return v ~ /^[0-9]+$/
+    if (o == "--limit") return v ~ /^[0-9]+\/(second|minute|hour|day|sec|min|s|m|h|d)$/
+    if (o == "--reject-with") return v ~ /^(tcp-reset|icmp-port-unreachable|icmp6-port-unreachable)$/
+    if (o == "-j") return v ~ /^(ACCEPT|DROP|REJECT|RETURN|LOG|ufw6?-[a-z-]+)$/
+    if (o == "--log-prefix") return v == "@P"
+    if (o == "--comment") return v == "@C"
+    return 0
+  }
+  function rule(line,   q, n, w, i, o) {
+    if (index(line, "@")) return 0
+    # the quoted values ufw writes: a log prefix in double quotes, an application comment in single quotes
+    while (match(line, /"[^"]*"/)) {
+      q = substr(line, RSTART, RLENGTH)
+      if (q !~ /^"\[UFW [A-Z]+( [A-Z]+)*\] "$/) return 0
+      line = substr(line, 1, RSTART - 1) "@P" substr(line, RSTART + RLENGTH)
+    }
+    while (match(line, sq "[^" sq "]*" sq)) {
+      q = substr(line, RSTART + 1, RLENGTH - 2)
+      if (q !~ /^[ds]app_[A-Za-z0-9_%.+-]+(,[ds]app_[A-Za-z0-9_%.+-]+)?$/) return 0
+      line = substr(line, 1, RSTART - 1) "@C" substr(line, RSTART + RLENGTH)
+    }
+    if (index(line, "\"") || index(line, sq)) return 0
+    n = split(line, w, /[ \t]+/)
+    if (w[1] !~ /^-[AI]$/ || w[2] !~ /^ufw6?-[a-z-]+$/) return 0
+    for (i = 3; i <= n; i++) {
+      o = w[i]
+      if (o == "--set" || o == "--update" || o == "--rsource") continue
+      if (o == "-m") { if (w[++i] !~ /^(multiport|conntrack|recent|limit|comment)$/) return 0; continue }
+      if (i == n || !value(o, w[++i])) return 0
+    }
+    return 1
+  }
+  BEGIN { state = 0; bad = 0; sq = sprintf("%c", 39) }
   /^[ \t]*$/ || /^#/ { next }
   state == 0 && $0 == "*filter" { state = 1; next }
   state == 1 && $0 == "COMMIT" { state = 2; next }
   state == 1 && /^:ufw6?-[a-z-]+ - \[0:0\]$/ { next }
-  state == 1 && $0 ~ rule { next }
+  state == 1 && rule($0) { next }
   { bad = 1; exit 1 }
   END { if (bad || state != 2) exit 1 }' "$1"
 }
@@ -470,7 +512,8 @@ case "$cmd" in
           /^### atrium-fw / { out = ""; next }
           out != "" { print > out }' || die "cannot read the content"
         for f in user.rules user6.rules; do
-          [ -s "$T/$f" ] && check_ufw "$T/$f" || die "$f is missing or not a ufw user rules file (only ufw's own chains in the filter table are restored)"
+          [ -s "$T/$f" ] && check_ufw "$T/$f" ||
+            die "$f is missing or not a ufw user rules file (only rules in the form ufw writes are restored)"
         done ;;
     esac
     arm_session "$1" "$2" "$3"

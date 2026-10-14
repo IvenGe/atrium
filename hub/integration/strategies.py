@@ -19,7 +19,7 @@ Flow rules, from each connection's capabilities (its last successful test, else 
   self-assessment results to it. Two domains, so the pull and the push are not a loop;
 - reads an enabled extension domain ("x:alerts") -> pull it into that domain's app; only writes it -> push to it.
 
-The loop rule (review-notes F7): a pull and a push of the same domain for the same tool never coexist while either is
+The loop rule: a pull and a push of the same domain for the same tool never coexist while either is
 enabled or proposed - the planner never proposes both (a tool that reads and writes vulnerabilities without scanning
 reports findings, so it gets the pull), and the integration map's Connect panel (``connect_options``), ``POST
 /api/flows`` (``create_flow``) and enabling a flow refuse the second one (409 ``flow_conflict``). A scan is not a pull.
@@ -388,7 +388,7 @@ def connect_options(hub: "Hub", a: str, b: str) -> dict[str, Any]:
 
 
 def event_routes(hub: "Hub") -> list[dict[str, Any]]:
-    """Event routes without webhook URLs (they can carry tokens; review-notes F24): whether one is set."""
+    """Event routes without webhook URLs (they can carry tokens): whether one is set."""
     seen: dict[str, dict[str, Any]] = {}
     for r in hub.toolbus.public_routes():
         seen.setdefault(f"event:{r['from']}:{r['to']}:{r['event']}", {
@@ -450,16 +450,40 @@ def create_flow(hub: "Hub", *, domain: str, source: str, target: str, action: st
         hub.activity(actor, "info", f"Enabled data flow: {flow.title}", flow_id=flow.id)
         return flow, None
     flows.save(hub, flow)
+    return flow, _request_approval(hub, flow, actor, "Proposed")
+
+
+def _request_approval(hub: "Hub", flow: Flow, actor: str, verb: str) -> Approval:
+    """A person's proposal of `flow`, requested by the Hub Supervisor (which enables the flow when it is approved),
+    with ``proposed_by`` so the second-person guardrail applies."""
     approval = hub.approvals.create(
-        "flow", f"Data flow: {flow.title}", f"{flow.reason} Proposed by {actor}.",
+        "flow", f"Data flow: {flow.title}", f"{flow.reason} {verb} by {actor}.",
         {"flow_id": flow.id, "tool_id": flow.tool_id, "domain": flow.domain, "source": flow.source,
          "target": flow.target, "action": flow.action, "schedule_minutes": flow.schedule_minutes,
          "options": flow.options, "proposed_by": actor}, "supervisor")
     flow.approval_id = approval.id
     flows.save(hub, flow)
-    hub.activity(actor, "info", f"Proposed data flow: {flow.title} (awaiting approval)", flow_id=flow.id,
+    hub.activity(actor, "info", f"{verb} data flow: {flow.title} (awaiting approval)", flow_id=flow.id,
                  approval_id=approval.id)
-    return flow, approval
+    return approval
+
+
+def propose_again(hub: "Hub", flow: Flow, actor: str) -> Approval | None:
+    """Enabling a flow whose proposal was turned down (flows.never_approved) proposes it again, exactly like drawing
+    it: enabled at once in autonomous mode, otherwise a new approval that `actor` proposes - so the second-person
+    rule applies to it, and a rejection is never undone by switching the flow on."""
+    for approval in hub.approvals.list("pending"):  # an old proposal of the same flow that is still open
+        if approval.payload.get("flow_id") == flow.id:
+            hub.approvals.withdraw(approval.id, "Superseded: the data flow was proposed again.", actor)
+    flow.rejected = None
+    if hub.prefs["autonomy"] == "autonomous":
+        flow.status, flow.approval_id = "enabled", None
+        flows.save(hub, flow)
+        hub.activity(actor, "info", f"Enabled data flow: {flow.title}", flow_id=flow.id)
+        return None
+    flow.status, flow.approval_id = "proposed", None
+    flows.save(hub, flow)
+    return _request_approval(hub, flow, actor, "Proposed again")
 
 
 def propose(hub: "Hub", requested_by: str = "supervisor") -> list[Flow]:

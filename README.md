@@ -25,7 +25,21 @@ viewer, operator or admin - that decides what they may do.
 
 ## Screenshots
 
-<!-- screenshots -->
+A made-up company with Snipe-IT, Keycloak, OpenVAS, CISO Assistant, Grafana, Wazuh and an edge firewall imported (all
+demo data: `scripts/screenshots.py` retakes these from the current UI, see [Development](#development)). Click a picture
+to see it full size.
+
+| | |
+| --- | --- |
+| **Home** - the suite at a glance<br>![Home](docs/screenshots/home.png) | **Apps** - every imported tool, its integration score and health<br>![Apps](docs/screenshots/apps.png) |
+| **Integration hub** - suite score, data flows, identity, event routes<br>![Integration hub overview](docs/screenshots/integration-overview.png) | **Integration map** - tools and hub apps linked by data flows<br>![Integration map](docs/screenshots/integration-map.png) |
+| **Segmentation map** - zones, assets and the traffic the firewall may allow ([NETWORK.md](docs/NETWORK.md#segmentation-map))<br>![Segmentation map](docs/screenshots/segmentation-map.png) | **Network** - devices, drift, changes ([NETWORK.md](docs/NETWORK.md#the-network-app))<br>![Network](docs/screenshots/network.png) |
+| **A network device** - rules, interfaces, history, backups<br>![Network device](docs/screenshots/network-device.png) | **Approvals** - a firewall change waiting for a second administrator<br>![Approvals](docs/screenshots/approvals.png) |
+| **CyFun self-assessment** - maturity and conformity per level ([COMPLIANCE.md](docs/COMPLIANCE.md#self-assessments))<br>![CyFun self-assessment](docs/screenshots/compliance-frameworks.png) | **Controls** - checked against live hub state, mapped to ISO 27001, SOC 2, NIS2 and CyFun ([COMPLIANCE.md](docs/COMPLIANCE.md#hub-security-baseline))<br>![Compliance controls](docs/screenshots/compliance-controls.png) |
+| **People** - the directory merged from Keycloak and Snipe-IT<br>![People](docs/screenshots/people.png) | **A leaver** - still holding a laptop and a login<br>![Person](docs/screenshots/person.png) |
+| **Vulnerabilities** - findings of an OpenVAS scan with deadlines<br>![Vulnerabilities](docs/screenshots/vulnerabilities.png) | **Agents** - supervisors, teams and the chat<br>![Agents](docs/screenshots/agents.png) |
+| **Agent guardrails** - in Settings<br>![Agent guardrails](docs/screenshots/settings-guardrails.png) | **Users & access** - accounts, roles and API tokens<br>![Users and access](docs/screenshots/users.png) |
+| **Dark theme**<br>![Home in the dark theme](docs/screenshots/home-dark.png) | **Phone**<br><img src="docs/screenshots/home-phone.png" alt="Home on a phone" width="220"> |
 
 ## What's inside
 
@@ -261,9 +275,12 @@ More detail in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 - **Patches** to source code land on a new branch in a separate worktree.
 - **Web hardening**: binds to `127.0.0.1` by default, rejects unknown `Host` headers
   (DNS rebinding), uses `HttpOnly`, `SameSite=Lax` session cookies, and requires an
-  `X-Hub-Request: 1` header on every state-changing browser call (cross-site request forgery). If
-  other people reach the hub over a network, put a TLS reverse proxy in front and set
-  `HUB_PUBLIC_URL`, `HUB_ALLOWED_HOSTS` and `HUB_COOKIE_SECURE=1`.
+  `X-Hub-Request: 1` header on every state-changing browser call (cross-site request forgery).
+  Responses send `X-Frame-Options: DENY` and `frame-ancestors 'none'` so the UI cannot be embedded. An imported
+  tool's manifest can set only a hex colour and a one- or two-character icon for its tile
+  ([docs/MANIFEST.md](docs/MANIFEST.md)). The sign-in screen never shows text taken from the address
+  ([docs/AUTH.md](docs/AUTH.md#single-sign-on-oidc)). If other people reach the hub over a network, put a TLS
+  reverse proxy in front and set `HUB_PUBLIC_URL`, `HUB_ALLOWED_HOSTS` and `HUB_COOKIE_SECURE=1`.
 
 ## Documentation
 
@@ -309,7 +326,9 @@ hub/
 docs/              architecture, sign-in and access control, integrations, agents and extensions, people, network,
                    compliance, manifest; research/ holds the vendor and framework research behind them
 examples/          sample tools to import
-scripts/           install_copy.py (used by the installers), build_cyfun_catalog.py (regenerates the CyFun catalogs)
+scripts/           install_copy.py (used by the installers), build_cyfun_catalog.py (regenerates the CyFun catalogs),
+                   demo_hub.py (a demo hub with fake tool APIs and made-up data), screenshots.py (retakes
+                   docs/screenshots from it and checks every page per role)
 tests/             pytest suite; tests/js/ holds the map engine's Node tests (run by tests/test_js.py when node exists)
 install.sh         installer for Linux and macOS (and Git Bash)
 install.ps1        installer for Windows
@@ -329,12 +348,26 @@ API - edit `hub/web/` and reload. The tests use mocked HTTP transports, fake mod
 repositories, and `tests/conftest.py` sets `HUB_LLM=off` and `HUB_SELF_PATCH=off`, so no test calls a model or
 patches the real checkout. Device connectors are tested against fake devices (`httpx.MockTransport`, a fake SSH
 transport, a NETCONF fake); no test contacts a real device. With Node installed, `tests/test_js.py` also checks every
-UI module with `node --check` and runs the map engine's unit tests (`node --test tests/js/*.test.mjs`); without Node
-those tests are skipped. Some host-firewall tests need root, `unshare` or PowerShell (`pwsh` or `ATRIUM_TEST_PWSH`)
+UI module with `node --check` and runs the unit tests of the map engine and the UI toolkit
+(`node --test tests/js/*.test.mjs`); without Node those tests are skipped. When Playwright and its Chromium are
+installed, `tests/test_ui_browser.py` checks in a headless browser that dialogs keep the keyboard inside, close when
+the page changes, and give the focus back, that the Approvals page states which Operator commands wait for an
+administrator, and that wide content stays inside its card and the window; otherwise it is skipped.
+`tests/test_demo_hub.py` runs the real connectors against the demo hub's fake tool APIs. Some host-firewall tests need root, `unshare` or PowerShell (`pwsh` or `ATRIUM_TEST_PWSH`)
 and skip elsewhere.
 
 To try the Network app without a device, start a development hub with `HUB_DEV_FAKE_DEVICES=1`: it registers an
 in-memory **fake firewall** connector (never set this in production).
+
+After a change to a screen, retake the screenshots with `.venv/bin/python scripts/screenshots.py` (Playwright and its
+Chromium; `--chromium PATH` picks another build). It starts the demo hub of `scripts/demo_hub.py` on port 8790 with a
+temporary data directory - small fake Snipe-IT, Keycloak, Greenbone (GMP), CISO Assistant, Grafana and Wazuh APIs on
+127.0.0.1 and the fake firewall, filled with made-up people, assets, findings and proposals through the hub's own API -
+replaces the PNG files in `docs/screenshots` (256-colour PNGs when Pillow is installed), then visits every page and tab
+as an administrator, an operator and a viewer, and at phone width, and reports console errors, failed API calls and
+content wider than its card or the window (exit status 1). `--check-only` runs only that check. The hub is stopped by its
+PID and the data directory removed. To try the same demo by hand, run `.venv/bin/python scripts/demo_hub.py` and sign in
+as `ava` (admin), `jonas` (operator) or `lena` (viewer) with the password it prints; Ctrl+C stops it.
 
 ## Roadmap
 

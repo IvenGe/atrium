@@ -65,9 +65,11 @@ function statusCell(f) {
       <button class="btn sm" data-act="flow-dismiss" data-id="${f.id}" title="Reject the proposal; the flow stays disabled">Dismiss</button></div>`;
   }
   const on = f.status === "enabled";
+  // a turned-down proposal: switching it on proposes it again (it waits for approval)
+  const label = on ? `Disable ${f.title}` : f.rejected ? `Propose ${f.title} again` : `Enable ${f.title}`;
   return html`<div class="row" style="gap:8px;flex-wrap:nowrap">
-    <button type="button" class="toggle" role="switch" aria-checked="${on ? "true" : "false"}" aria-label="${on ? "Disable" : "Enable"} ${f.title}"
-      data-act="flow-toggle" data-id="${f.id}" data-min-role="operator"></button>${badge(f.status)}</div>`;
+    <button type="button" class="toggle" role="switch" aria-checked="${on ? "true" : "false"}" aria-label="${label}" title="${label}"
+      data-act="flow-toggle" data-id="${f.id}" data-min-role="operator"></button>${f.rejected ? badge("rejected", "warn") : badge(f.status)}</div>`;
 }
 
 function runCell(f) {
@@ -95,7 +97,7 @@ function repairControl(f) {
 
 function flowRow(f, showTool, names) {
   const d = domainInfo(f.domain);
-  const runnable = f.status !== "proposed" || f.job;
+  const runnable = (f.status !== "proposed" && !f.rejected) || f.job;
   return html`<tr class="${failing(f) && f.status === "enabled" ? "flow-failing" : ""}">
     <td style="min-width:240px"><div class="row" style="gap:8px;flex-wrap:nowrap;align-items:flex-start">${icon(f.direction === "scan" ? "radar" : d.icon)}
       <div style="min-width:0"><b class="flow-title">${f.title}</b>
@@ -231,8 +233,9 @@ function runToast(r) {
 export function wireFlows(root, { find, refresh, names = () => ({}) }) {
   const setStatus = async (id, status) => {
     try {
-      await patch(`/flows/${encodeURIComponent(id)}`, { status });
-      toast(status === "enabled" ? "Flow enabled" : "Flow disabled", status === "enabled" ? "ok" : "info");
+      const updated = await patch(`/flows/${encodeURIComponent(id)}`, { status });
+      if (status === "enabled" && updated?.status === "proposed") toast("Proposed again - the flow waits for approval", "info");
+      else toast(status === "enabled" ? "Flow enabled" : "Flow disabled", status === "enabled" ? "ok" : "info");
     } catch (err) {
       toast(err.message, "bad");
     }

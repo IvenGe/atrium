@@ -177,10 +177,29 @@ export function colorFor(text) {
   return PALETTE[h % PALETTE.length];
 }
 
+// A manifest's ui.color goes into a style attribute: only a hex colour may, or "#000;position:fixed;inset:0" would add
+// declarations (a layer over the whole page). The server drops anything else too (models.PortalUi).
+export const HEX_COLOR = /^#(?:[0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})$/i;
+const GRAPHEMES = typeof Intl !== "undefined" && Intl.Segmenter ? new Intl.Segmenter(undefined, { granularity: "grapheme" }) : null;
+
+/** The first `n` characters a person sees (an emoji with joiners counts as one). */
+export function graphemes(text, n) {
+  const s = String(text ?? "");
+  return (GRAPHEMES ? [...GRAPHEMES.segment(s)].map((g) => g.segment) : [...s]).slice(0, n).join("");
+}
+
+/** The colour and glyph of a tool's tile: its manifest's when they are a hex colour and one or two characters. */
+export function tileLook(tool) {
+  const name = String(tool.name || tool.id || "?");
+  const ui = tool.manifest?.ui || {};
+  const color = typeof ui.color === "string" && HEX_COLOR.test(ui.color) ? ui.color : colorFor(tool.id || name);
+  const own = typeof ui.icon === "string" ? ui.icon.trim() : "";
+  const glyph = own && !/\s/.test(own) ? graphemes(own, 2) : graphemes(name.trim(), 1).toUpperCase() || "?";
+  return { color, glyph };
+}
+
 export function appIcon(tool, size = "") {
-  const name = tool.name || tool.id || "?";
-  const color = tool.manifest?.ui?.color || colorFor(tool.id || name);
-  const glyph = tool.manifest?.ui?.icon || name.trim()[0]?.toUpperCase() || "?";
+  const { color, glyph } = tileLook(tool);
   const live = tool.running ? html`<i class="live" style="background:var(--ok)"></i>` : "";
   return html`<div class="app-icon ${size}" style="background:${color}">${glyph}${live}</div>`;
 }
@@ -215,10 +234,13 @@ export function ring(score, size = 46) {
   const r = (size - 6) / 2;
   const c = 2 * Math.PI * r;
   const pct = score == null ? 0 : Math.max(0, Math.min(100, score));
+  const label = String(score ?? "-");
+  // "100" in a small ring: a smaller font, so the number stays inside the circle (13px otherwise)
+  const font = label.length > 2 ? Math.min(13, Math.round(size * 0.27)) : 13;
   return html`<div class="ring" style="width:${size}px;height:${size}px" title="Integration score">
     <svg width="${size}" height="${size}"><circle cx="${size / 2}" cy="${size / 2}" r="${r}" stroke="var(--border-strong)" stroke-width="5" fill="none"/>
     <circle cx="${size / 2}" cy="${size / 2}" r="${r}" stroke="${scoreTone(score)}" stroke-width="5" fill="none" stroke-linecap="round"
-      stroke-dasharray="${(c * pct) / 100} ${c}"/></svg><b>${score ?? "-"}</b></div>`;
+      stroke-dasharray="${(c * pct) / 100} ${c}"/></svg><b style="font-size:${font}px">${label}</b></div>`;
 }
 
 /** Very small markdown renderer for chat replies and policies (input is escaped first). */
@@ -296,6 +318,77 @@ function returnFocus(candidates) {
   target?.focus({ preventScroll: true });
 }
 
+/** The element that has the focus now, as a candidate for returnFocus() (null when it is the page itself). */
+export function focusOrigin() {
+  const active = document.activeElement;
+  const el = (active instanceof HTMLElement || active instanceof SVGElement) && active !== document.body ? active : null;
+  return [el, locator(el)];
+}
+export const restoreFocus = (...candidates) => returnFocus(candidates);
+
+// ---------- dialog layers ----------
+// Every open dialog (a modal or the command palette) is a .backdrop on <body>. While one is open, everything else on
+// <body> is inert - the top bar, the sidebar, the page and any dialog below the top one - so Tab, a click or a screen
+// reader cannot reach what the dialog covers (review F33). Navigating to another page closes them (review F34).
+
+const LAYERS = new Map(); // backdrop -> {close, sticky}
+const INERT_MARK = "data-dialog-inert"; // set on what this module made inert, so only that is undone
+
+/** Makes everything on <body> but the top-most dialog inert, or nothing when no dialog is open. */
+export function syncInert() {
+  const top = [...document.querySelectorAll("body > .backdrop")].at(-1) || null;
+  for (const el of document.body.children) {
+    const cover = Boolean(top) && el !== top && !el.classList.contains("toasts") && el.tagName !== "SCRIPT";
+    if (cover && !el.inert) { el.inert = true; el.setAttribute(INERT_MARK, ""); }
+    else if (!cover && el.hasAttribute(INERT_MARK)) { el.inert = false; el.removeAttribute(INERT_MARK); }
+  }
+}
+
+/** Registers an open dialog's backdrop (already on <body>). `close` must remove it and call dropLayer(). */
+export function addLayer(backdrop, close, { sticky = false } = {}) {
+  LAYERS.set(backdrop, { close, sticky });
+  syncInert();
+}
+
+export function dropLayer(backdrop) {
+  LAYERS.delete(backdrop);
+  syncInert();
+}
+
+/** Closes the open dialogs, top-most first: on navigation every one but those that only their buttons may close
+ *  (a token shown once), on sign-out (`all`) every one. */
+export function closeDialogs({ all = false } = {}) {
+  for (const [backdrop, layer] of [...LAYERS].reverse()) {
+    try {
+      if (all || !layer.sticky) layer.close();
+    } catch (err) {
+      console.error(err); // a failing onClose must not stop the page change
+      if (all) backdrop.remove();
+    }
+    if (!backdrop.isConnected) LAYERS.delete(backdrop);
+  }
+  if (all) document.querySelectorAll("body > .backdrop").forEach((b) => b.remove());
+  syncInert();
+}
+
+/** Keeps Tab and Shift+Tab inside `box` (for browsers without `inert`, and so focus never rests outside it). */
+function trapTab(e, box) {
+  const items = [...box.querySelectorAll('a[href], button, input, select, textarea, [tabindex]:not([tabindex="-1"])')]
+    .filter((el) => !el.matches(":disabled") && el.getClientRects().length && el.closest("[inert]") === null);
+  if (!items.length) { e.preventDefault(); return; }
+  const first = items[0], last = items.at(-1), active = document.activeElement;
+  if (!box.contains(active)) { e.preventDefault(); (e.shiftKey ? last : first).focus(); }
+  else if (e.shiftKey && active === first) { e.preventDefault(); last.focus(); }
+  else if (!e.shiftKey && active === last) { e.preventDefault(); first.focus(); }
+}
+
+/** Keydown handling every dialog shares: Tab stays inside the top-most one. */
+export function dialogKeys(e, backdrop, box) {
+  const top = [...document.querySelectorAll("body > .backdrop")].at(-1) === backdrop;
+  if (top && e.key === "Tab") trapTab(e, box);
+  return top;
+}
+
 /**
  * Opens a modal. `body` is html``; returns {el, close}. onSubmit receives FormData when the form is submitted.
  * `minRole`: below that role the body is read-only and the submit button hidden. `sticky`: only the buttons close it.
@@ -325,6 +418,7 @@ export function modal({ title, body, submit = "Save", cancel = "Cancel", wide = 
     if (closed) return;
     closed = true;
     backdrop.remove();
+    dropLayer(backdrop); // the page (or the dialog below) is usable again before focus returns to it
     document.removeEventListener("keydown", onKey);
     try {
       onClose?.();
@@ -332,8 +426,8 @@ export function modal({ title, body, submit = "Save", cancel = "Cancel", wide = 
       returnFocus([mine, fallback || [null, null]]);
     }
   };
-  // Esc closes the top-most dialog only (a dialog opened from another one closes first)
-  const onKey = (e) => { if (e.key === "Escape" && !sticky && [...document.querySelectorAll(".backdrop")].at(-1) === backdrop) close(); };
+  // Esc closes the top-most dialog only (a dialog opened from another one closes first); Tab stays inside it
+  const onKey = (e) => { if (dialogKeys(e, backdrop, form) && e.key === "Escape" && !sticky) close(); };
   document.addEventListener("keydown", onKey);
   backdrop.addEventListener("mousedown", (e) => { if (e.target === backdrop && !sticky) close(); });
   backdrop.querySelectorAll("[data-close]").forEach((b) => b.addEventListener("click", close));
@@ -352,6 +446,7 @@ export function modal({ title, body, submit = "Save", cancel = "Cancel", wide = 
     }
   });
   document.body.append(backdrop);
+  addLayer(backdrop, close, { sticky });
   // focus moves into the dialog: its first field, else its first footer button (Cancel before a destructive action)
   setTimeout(() => (form.querySelector("input:not([type=hidden]):not([hidden]):not(:disabled), select:not(:disabled), textarea:not(:disabled)")
     || form.querySelector("footer button:not(:disabled)") || form.querySelector("[data-close]"))?.focus(), 30);

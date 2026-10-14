@@ -2,7 +2,10 @@
 import { connectEvents, disconnectEvents, get, onEvent, post } from "./api.js";
 import { avatar, openChangePassword, openSessions, roleBadge, session, showAuth, showUnreachable } from "./auth.js";
 import { xColor, xDomains, xHref } from "./extensions.js";
-import { actions, appIcon, builtinIcon, can, debounce, emptyState, html, icon, modal, setHTML, timeAgo, toggleTheme } from "./ui.js";
+import {
+  actions, addLayer, appIcon, builtinIcon, can, closeDialogs, debounce, dialogKeys, dropLayer, emptyState, focusOrigin, html, icon, modal,
+  restoreFocus, setHTML, timeAgo, toggleTheme,
+} from "./ui.js";
 import * as home from "./views/home.js";
 import * as tools from "./views/tools.js";
 import * as integration from "./views/integration.js";
@@ -211,6 +214,8 @@ async function signOut() {
 }
 
 // ---------- command palette ----------
+let paletteOpen = false;
+
 async function openPalette() {
   if (!signedIn) return;
   closePopovers();
@@ -250,17 +255,30 @@ async function openPalette() {
     ...peopleList.map((p) => ({ label: p.display_name, kind: "Person", icon: "user", go: `#/people/${encodeURIComponent(p.id)}`,
       sub: [p.title, p.email, p.status !== "active" ? p.status : ""].filter(Boolean).join(" - ") })),
   ];
-  if (!signedIn) return; // signed out while loading
+  if (!signedIn || paletteOpen) return; // signed out while loading, or Ctrl+K pressed twice
+  const opener = focusOrigin(); // focus goes back there when the palette closes (review F33)
   const backdrop = document.createElement("div");
   backdrop.className = "backdrop";
-  setHTML(backdrop, html`<div class="palette" role="dialog" aria-label="Search">
+  setHTML(backdrop, html`<div class="palette" role="dialog" aria-modal="true" aria-label="Search">
     <div class="search">${icon("search")}<input placeholder="Search tools, agents, assets, pages..." aria-label="Search"><kbd>Esc</kbd></div>
     <ul role="listbox"></ul></div>`);
   document.body.append(backdrop);
+  const box = backdrop.querySelector(".palette");
   const input = backdrop.querySelector("input");
   const list = backdrop.querySelector("ul");
   let sel = 0, shown = [];
-  const close = () => backdrop.remove();
+  const onKey = (e) => { if (dialogKeys(e, backdrop, box) && e.key === "Escape") close(); };
+  const close = () => {
+    if (!paletteOpen) return;
+    paletteOpen = false;
+    backdrop.remove();
+    dropLayer(backdrop);
+    document.removeEventListener("keydown", onKey);
+    restoreFocus(opener);
+  };
+  paletteOpen = true;
+  addLayer(backdrop, close);
+  document.addEventListener("keydown", onKey);
   const choose = (entry) => { close(); if (entry.run) entry.run(); else location.hash = entry.go; };
   const draw = () => {
     const q = input.value.trim().toLowerCase();
@@ -274,7 +292,6 @@ async function openPalette() {
     if (e.key === "ArrowDown") { sel = Math.min(sel + 1, shown.length - 1); draw(); e.preventDefault(); }
     if (e.key === "ArrowUp") { sel = Math.max(sel - 1, 0); draw(); e.preventDefault(); }
     if (e.key === "Enter" && shown[sel]) choose(shown[sel]);
-    if (e.key === "Escape") close();
   });
   list.addEventListener("click", (e) => { const li = e.target.closest("li[data-i]"); if (li) choose(shown[+li.dataset.i]); });
   backdrop.addEventListener("mousedown", (e) => { if (e.target === backdrop) close(); });
@@ -362,6 +379,7 @@ async function route() {
   markActive();
   $("sidebar").classList.remove("open");
   closePopovers();
+  closeDialogs(); // a link inside a dialog leaves the dialog too, not only the page under it (review F34)
   renderSubbar(app);
   // A fresh <main> per page drops the previous view's delegated listeners and any late async renders.
   const old = $("main");
@@ -432,7 +450,7 @@ function leaveApp() {
   cleanup?.();
   currentApp = null;
   closePopovers();
-  document.querySelectorAll(".backdrop").forEach((b) => b.remove());
+  closeDialogs({ all: true }); // every dialog, and the page behind them is no longer inert
   document.body.classList.remove("signed-in");
   delete document.body.dataset.role;
   Object.assign(state, { overview: null, tools: [], activity: [], restart: null });

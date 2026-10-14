@@ -341,8 +341,11 @@ def test_sso_connect_patch_configures_both_sides_and_secrets_stay_in_the_workspa
     assert client["redirectUris"] == ["http://localhost:3000/login/generic_oauth"] and client["secret"] == CLIENT_SECRET
     assert client["protocolMappers"][0]["config"]["claim.name"] == "groups"
     compose_script = patch.changes[3].content
-    assert f'COMPOSE_DIR="${{KEYCLOAK_COMPOSE_DIR:-{kc_dir.as_posix()}}}"' in compose_script
-    assert 'SERVICE="${KEYCLOAK_SERVICE:-keycloak}"' in compose_script and "docker compose exec -T" in compose_script
+    # defaults are quoted assignments; the environment can override them
+    assert f"COMPOSE_DIR_DEFAULT={kc_dir.as_posix()}\n" in compose_script
+    assert 'COMPOSE_DIR="${KEYCLOAK_COMPOSE_DIR:-$COMPOSE_DIR_DEFAULT}"' in compose_script
+    assert "SERVICE_DEFAULT=keycloak\n" in compose_script and 'SERVICE="${KEYCLOAK_SERVICE:-$SERVICE_DEFAULT}"' in compose_script
+    assert "docker compose exec -T" in compose_script
     assert "kc create clients" in compose_script and 'kc update "clients/$ID"' in compose_script
     assert ": \"${KEYCLOAK_ADMIN_USER:?" in patch.changes[2].content
 
@@ -382,7 +385,8 @@ def test_authentik_blueprint_and_saml_clients(tmp_path: Path):
     assert patch.sso.issuer == "https://auth.example.com/application/o/hub-grafana/"
     assert patch.sso.register_script == "idp/authentik/register-authentik-compose.sh"
     script = files["idp/authentik/register-authentik-compose.sh"]
-    assert 'SERVICE="${AUTHENTIK_SERVICE:-worker}"' in script and 'ak apply_blueprint "$FILE"' in script
+    assert "SERVICE_DEFAULT=worker\n" in script and 'SERVICE="${AUTHENTIK_SERVICE:-$SERVICE_DEFAULT}"' in script
+    assert 'ak apply_blueprint "$FILE"' in script
 
     snipe = plan_patch(app("snipe-it", 8000), [keycloak()], "sso_connect", "http://x")
     client = json.loads(next(c.content for c in snipe.changes if c.path.endswith("keycloak-client.json")))
@@ -464,3 +468,84 @@ def test_secret_files_and_identifiers_are_safe(tmp_path: Path):
     assert identity.secret(tmp_path, "crm", "keycloak") != identity.secret(tmp_path, "crm", "authentik")
     with pytest.raises(ValueError):
         identity.secret(tmp_path, "../x", "keycloak")
+
+
+def _stub(bin_dir: Path, name: str, log: Path) -> None:
+    """An executable `name` that logs its arguments, one per line, and succeeds."""
+    bin_dir.mkdir(exist_ok=True)
+    path = bin_dir / name
+    path.write_text(f'#!/usr/bin/env bash\nfor a in "$@"; do printf "%s\\n" "$a" >> {log.as_posix()!r}; done\n')
+    path.chmod(0o755)
+
+
+def _run_script(folder: Path, files: list[FileChange], script: str, bin_dir: Path, **env: str) -> None:
+    for f in files:
+        (folder / f.path).parent.mkdir(parents=True, exist_ok=True)
+        (folder / f.path).write_text(f.content)
+    environ = {"PATH": f"{bin_dir}:/usr/bin:/bin", "HOME": str(folder), "ATRIUM_MARK": str(folder.parent / "PWNED"), **env}
+    done = subprocess.run(["bash", str(folder / script)], cwd=folder, env=environ, capture_output=True, text=True, timeout=30)
+    assert done.returncode == 0, done.stderr
+
+
+def test_register_scripts_never_run_values_from_a_repository(tmp_path: Path, monkeypatch):
+    """Review finding: a compose service named 'keycloak$(...)', a manifest URL with $(...) or a tool name with a line
+    break went into the generated register script, which the Register button runs with bash on the hub."""
+    mark = tmp_path / "PWNED"
+    payload = "$(touch $ATRIUM_MARK)"  # _run_script points ATRIUM_MARK at `mark`
+    kc_dir = compose_dir(tmp_path, "kc", {f"keycloak{payload}": {"image": "quay.io/keycloak/keycloak:26.0"}})
+    hostile = make_tool("keycloak", name=f"Keycloak\ntouch {mark.as_posix()}", provides=["auth.oidc"],
+                        ui={"url": f"http://kc.example.com/{payload}"}, path=str(kc_dir))
+    grafana = make_tool("grafana", name=f"Grafana\ntouch {mark.as_posix()}", launch={"port": 3000},
+                        ui={"url": "http://localhost:3000"})
+
+    # 1. the values are refused at the source: the URL counts as unknown, the service name is never used
+    provider = list_providers([hostile])[0]
+    assert provider.base_url == identity.PLACEHOLDER_BASE and not provider.configured
+    assert identity.compose_target(provider) is None
+    with pytest.raises(ValueError, match="plain address"):
+        identity.validate_setting("base_url", f"http://kc.example.com/{payload}")
+    assert list_providers([hostile], {"keycloak": {"base_url": "https://sso.example.com/`id`"}})[0].base_url == identity.PLACEHOLDER_BASE
+    patch = plan_patch(grafana, [hostile], "sso_connect", "http://x")
+    assert patch.sso.register_script == "idp/keycloak/register-keycloak.sh"
+    files = [c for c in patch.changes if c.path.startswith("idp/")]
+    for f in files:  # no name breaks out of a comment line
+        assert not any(line.startswith("touch ") for line in f.content.splitlines()), f.path
+    log, bin_dir = tmp_path / "calls.log", tmp_path / "bin"
+    _stub(bin_dir, "kcadm.sh", log)
+    _run_script(tmp_path / "out1", files, "idp/keycloak/register-keycloak.sh", bin_dir,
+                KEYCLOAK_ADMIN_USER="admin", KEYCLOAK_ADMIN_PASSWORD="pw")
+    assert not mark.exists() and identity.PLACEHOLDER_BASE in log.read_text().splitlines()
+
+    # 2. and quoted where they are written, should one ever get through: run both Keycloak scripts and the authentik one
+    odd_dir = tmp_path / f"compose {payload}"
+    odd_dir.mkdir()
+    monkeypatch.setattr(identity, "compose_target", lambda p: (odd_dir.as_posix(), f"kc{payload}"))
+    for kind in ("keycloak", "authentik"):
+        raw = identity.IdentityProvider(tool_id=kind, name=f"{kind}\ntouch {mark.as_posix()}", kind=kind,
+                                        base_url=f"http://kc.example.com/{payload}", configured=True,
+                                        protocols=["oidc"], issuer="x", settings={"realm": f"hub{payload}"}, path="x")
+        spec = identity.ClientSpec(client_id=f"hub-x{payload}", name=f"X\ntouch {mark.as_posix()}",
+                                   redirect_uris=["http://localhost:3000/cb"], app_slug="hub-x", groups=[f"g{payload}"])
+        reg = identity.registration(raw, spec, "")
+        log.unlink(missing_ok=True)
+        _stub(bin_dir, "docker", log)
+        _run_script(tmp_path / f"out-{kind}", reg.files, reg.script, bin_dir)
+        assert not mark.exists(), kind
+        calls = log.read_text().splitlines()
+        assert f"kc{payload}" in calls  # the service, passed literally
+        if kind == "keycloak":
+            assert f"hub{payload}" in calls and f"g{payload}" in " ".join(calls)
+            log.unlink()
+            _run_script(tmp_path / f"out-{kind}", reg.files, "register-keycloak.sh", bin_dir, KCADM=str(bin_dir / "kcadm.sh"),
+                        KEYCLOAK_ADMIN_USER="admin", KEYCLOAK_ADMIN_PASSWORD="pw")
+            assert not mark.exists() and f"http://kc.example.com/{payload}" in log.read_text().splitlines()
+        else:
+            assert "custom/atrium-hub-x.yaml" in calls
+
+
+def test_names_cannot_add_lines_to_generated_env_files():
+    text = sso_catalog.env_text("Grafana\nOIDC_ISSUER=https://evil.example.com", {"OIDC_ISSUER": "https://good.example.com"},
+                                {"OIDC_ISSUER": "issuer\nEXTRA=1"})
+    lines = text.splitlines()
+    assert "OIDC_ISSUER=https://good.example.com" in lines
+    assert not any(line.startswith(("OIDC_ISSUER=https://evil", "EXTRA=")) for line in lines)

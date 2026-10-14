@@ -11,7 +11,7 @@ cannot express what a new tool needs.
 4. Approval kind "self_patch" shows the diff and the test result; with failing tests it cannot be approved while
    self_patch_requires_tests is on, and only administrators decide it. With self_patch_requires_approval off a change
    that would be merged locally (tests passed) is applied at once - a pull request never is.
-   The approval is bound to the branch's commit and expires after approval_expiry_hours (review-notes F2): an
+   The approval is bound to the branch's commit and expires after approval_expiry_hours: an
    approval is refused once expired or when the commit moved, and the worktree's HEAD is checked again before the
    branch is pushed or merged. The person who asked for the change cannot approve it while
    approvals_need_second_person is on (F1, ``Approvals.check_second_person``).
@@ -348,7 +348,7 @@ def approval_payload(patch: SelfPatch, expires_at: float | None = None) -> dict[
     return {"self_patch_id": patch.id, "title": patch.title, "branch": patch.branch, "base_branch": patch.base_branch,
             "files": patch.files, "tool_id": patch.tool_id, "mode": patch.mode, "mode_reason": patch.mode_reason,
             "tests": {k: tests.get(k) for k in ("ok", "exit_code", "timed_out", "duration", "command", "tail")},
-            # the approval binds to this commit and expires (review-notes F2); proposed_by: the second-person rule
+            # the approval binds to this commit and expires; proposed_by: the second-person rule
             "commit": patch.commit, "expires_at": expires_at, "proposed_by": patch.proposed_by}
 
 
@@ -455,7 +455,7 @@ async def _apply(hub: "Hub", patch: SelfPatch, actor: str) -> dict[str, Any]:
 
 
 async def check_commit(hub: "Hub", patch: SelfPatch) -> None:
-    """The branch must still be at the commit that was tested and approved (review-notes F2)."""
+    """The branch must still be at the commit that was tested and approved (an approval binds to one commit)."""
     approval = hub.approvals.get(patch.approval_id) if patch.approval_id else None
     approved = (approval.payload.get("commit") if approval else None) or patch.commit
     worktree = Path(patch.worktree) if patch.worktree else None

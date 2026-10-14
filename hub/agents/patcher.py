@@ -23,7 +23,7 @@ from ..extensions import generate as ext_generate
 from ..extensions import registry as ext_registry
 from ..extensions import selfpatch
 from ..integration import connections, flows, identity
-from ..integration.analyzer import list_files
+from ..integration.analyzer import list_files, read_repo_file
 from ..integration.identity import SSO_STRATEGIES
 from ..integration.patches import apply_patch, attach_sso, plan_patch, safe_relative, selected_provider, sso_code_goal
 from ..models import FileChange, Flow, Patch, Tool
@@ -645,7 +645,7 @@ class PatchAgent(BaseAgent):
         context = [n for n in ENTRY_HINTS if n in names][:6]
         tree = "\n".join(sorted(names)[:400])
         shown = "\n\n".join(
-            f'<file path="{n}">\n{(root / n).read_text(encoding="utf-8", errors="replace")[:15000]}\n</file>' for n in context
+            f'<file path="{n}">\n{(read_repo_file(root, n, 60_000) or "")[:15000]}\n</file>' for n in context
         )
         m = tool.manifest
         prompt = (
@@ -756,10 +756,10 @@ async def load_openapi(tool: Tool) -> tuple[str, str | None]:
     else:
         if not tool.path:
             raise ValueError(f"The files of {tool.name} are not available")
-        path = Path(tool.path) / safe_relative(location)
-        if not path.is_file():
+        found = read_repo_file(Path(tool.path), safe_relative(location), MAX_SPEC)
+        if found is None:  # missing, or a symbolic link (the repository must not make the hub read files outside it)
             raise ValueError(f"{location} is missing from {tool.name}")
-        text = path.read_text(encoding="utf-8", errors="replace")[:MAX_SPEC]
+        text = found[:MAX_SPEC]
     try:
         doc = yaml.safe_load(text)
     except yaml.YAMLError as exc:
@@ -778,9 +778,10 @@ def render_diff(tool: Tool, patch: Patch) -> str:
     for change in patch.changes:
         old = ""
         if patch.target == "repo" and tool.path:
-            existing = Path(tool.path) / change.path
-            if existing.is_file():
-                old = existing.read_text(encoding="utf-8", errors="replace")
+            try:
+                old = read_repo_file(Path(tool.path), safe_relative(change.path), 4_000_000) or ""
+            except ValueError:  # an unsafe path: applying the patch refuses it
+                old = ""
         diff = difflib.unified_diff(
             old.splitlines(keepends=True), change.content.splitlines(keepends=True),
             fromfile=f"a/{change.path}" if old else "/dev/null", tofile=f"b/{change.path}",

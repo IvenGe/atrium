@@ -77,7 +77,12 @@ a local model (`local`) or rules (`rules`).
 
 Agents that run on a model act through a shared toolkit (`hub/agents/toolkit.py`). Every tool is tagged with the
 permission it needs; a team agent only gets the tools its effective permissions allow, and an agent of a tool's team
-can only act on that tool. Tools never bypass the hub: commands go through the Operator Agent, patches through the
+can only act on that tool. That covers the hub's records too. Such an agent may change, with `update_risk`,
+`update_asset`, `set_scan_scope` and `update_vulnerability`, only the records its tool supplied (`source`
+`sync:<tool>`, `tool:<tool>` or the tool id) and the risks an agent of its own team recorded. Anything else is
+refused with a permission error, including people's entries, automatic risks and other teams' records. A scan-scope
+change touching one such asset changes nothing at all. Agents of the hub's or a module's team keep hub-wide reach.
+Tools never bypass the hub: commands go through the Operator Agent, patches through the
 Patch Agent's approval flow and scans through the Vulnerability Supervisor, always with the team agent as the sender
 (`agent:<slug>`), so the command policy, the approval queue and the guardrails apply. When an agent acts on a person's
 chat message or manual run, its commands on the hub machine and tool starts are judged by that person's role: an
@@ -252,7 +257,7 @@ validation, logging and the compliance check pick it up.
 | HB-AC-2 Privileged agent actions are approved | the hub runs in autonomous mode | `scans_need_approval` or `team_requires_approval` is off |
 | HB-AC-6 AI agent guardrails are enforced | `block_catastrophic_commands`, `team_actions_need_approval` or `limit_to_parent_permissions` is off | team size is unlimited or nested teams are allowed |
 | HB-CM-2 Changes to tools are reviewed | `self_patch_requires_approval` or `self_patch_requires_tests` is off | `extensions_need_approval` is off, or the hub runs in autonomous mode |
-| HB-CM-3 Network device changes are controlled | `device_changes_need_second_person` or `device_changes_need_backup` is off, or a change left a device in an unknown state | `device_changes_need_maintenance_window` is off, or emergency changes in the last 90 days |
+| HB-CM-3 Network device changes are controlled | `device_changes_need_second_person` or `device_changes_need_backup` is off, or a change left a device in an unknown state | `device_changes_need_maintenance_window` is off, or in the last 90 days there were emergency changes, changes approved by their own proposer or changes applied without a backup (even if the guardrails are on again now) |
 
 HB-AC-6 maps to ISO 27001 A.8.2 / A.8.32, SOC 2 CC6.1 / CC8.1, NIS2 21(2)(i), with the risk "AI agents operate
 without guardrails" (3 x 5). HB-CM-2 maps to ISO 27001 A.8.32, SOC 2 CC8.1, NIS2 21(2)(e).
@@ -421,7 +426,7 @@ How it works (`hub/extensions/selfpatch.py`):
    administrators decide it, and while `self_patch_requires_tests` is on a patch whose tests failed cannot be approved
    (409). The approval is bound to the branch's commit and expires after `approval_expiry_hours` (default 24): it is
    refused once expired or when the commit moved, and the worktree's commit is checked again before merging or
-   pushing (review-notes F2). While `approvals_need_second_person` is on, the admin who asked for the patch cannot
+   pushing. While `approvals_need_second_person` is on, the admin who asked for the patch cannot
    approve it. Rejecting removes the branch and the worktree.
 6. On approval:
    - **Pull request**, when `self_patch_via_pull_request` is on, the repository has an `origin` remote and the GitHub

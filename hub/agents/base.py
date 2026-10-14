@@ -21,6 +21,9 @@ class BaseAgent:
     default_instructions = ""
     uses_llm = False
     max_concurrency = 4
+    # Subjects handled outside the max_concurrency slots: quick, local work that must not wait behind slow handlers
+    # (e.g. the GRC Supervisor's evaluation behind a data flow that waits minutes for a tool).
+    unthrottled_subjects: frozenset[str] = frozenset()
     # What the agent may do through the shared toolkit, and the most a member of its team may get while the
     # limit_to_parent_permissions guardrail is on (see agents/teams.py).
     permissions: tuple[str, ...] = ("read",)
@@ -134,26 +137,32 @@ class BaseAgent:
             task.add_done_callback(self._tasks.discard)
 
     async def _process(self, msg: Message) -> None:
+        if msg.subject in self.unthrottled_subjects:
+            await self._handle(msg)
+            return
         async with self._sem:
-            self.active += 1
-            self.last_active = time.time()
+            await self._handle(msg)
+
+    async def _handle(self, msg: Message) -> None:
+        self.active += 1
+        self.last_active = time.time()
+        self._publish()
+        try:
+            handler = getattr(self, "on_" + msg.subject.replace(".", "_").replace("-", "_"), None)
+            if handler is None:
+                raise AgentError(f"{self.name} does not handle '{msg.subject}'")
+            result = await handler(msg.body, msg)
+            if msg.kind == "request":
+                await self.hub.bus.reply(msg, self.id, result or {})
+        except Exception as exc:  # an agent must survive any single failure
+            self.errors += 1
+            self.log("error", f"'{msg.subject}' failed: {exc}")
+            if msg.kind == "request":
+                await self.hub.bus.reply(msg, self.id, {"error": str(exc) or exc.__class__.__name__})
+        finally:
+            self.active -= 1
+            self.handled += 1
             self._publish()
-            try:
-                handler = getattr(self, "on_" + msg.subject.replace(".", "_").replace("-", "_"), None)
-                if handler is None:
-                    raise AgentError(f"{self.name} does not handle '{msg.subject}'")
-                result = await handler(msg.body, msg)
-                if msg.kind == "request":
-                    await self.hub.bus.reply(msg, self.id, result or {})
-            except Exception as exc:  # an agent must survive any single failure
-                self.errors += 1
-                self.log("error", f"'{msg.subject}' failed: {exc}")
-                if msg.kind == "request":
-                    await self.hub.bus.reply(msg, self.id, {"error": str(exc) or exc.__class__.__name__})
-            finally:
-                self.active -= 1
-                self.handled += 1
-                self._publish()
 
     # -- talking ---------------------------------------------------------------------
 

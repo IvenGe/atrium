@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 from typing import Any
 
@@ -24,7 +25,9 @@ TREATMENTS = ("mitigate", "accept", "transfer", "avoid")
 class GrcSupervisor(FlowOwner):
     role = "module-supervisor"
     title = "GRC Supervisor"
-    max_concurrency = 1  # evaluations must not interleave
+    # Data flows run in the usual slots; an evaluation (and the summary) never waits behind them - a pull from a slow
+    # GRC tool can take minutes - and evaluations are serialised by their own lock instead (_evaluating).
+    unthrottled_subjects = frozenset({"evaluate", "summary"})
     description = ("Responsible for the Compliance hub: evaluates controls against live hub state, collects evidence, "
                    "maps it to ISO 27001, SOC 2 and NIS2, opens or closes risks when controls fail or recover, pushes "
                    "controls and evidence to GRC tools and pulls their risk scenarios into the risk register; reads "
@@ -35,6 +38,7 @@ class GrcSupervisor(FlowOwner):
 
     def __init__(self, hub):
         super().__init__(hub, "module:grc", "GRC Supervisor", scope="grc")
+        self._evaluating = asyncio.Lock()  # evaluations must not interleave
 
     def snapshot(self) -> Snapshot:
         hub = self.hub
@@ -127,6 +131,10 @@ class GrcSupervisor(FlowOwner):
         return {"counts": counts}
 
     async def on_evaluate(self, body: dict[str, Any], msg: Message) -> dict[str, Any]:
+        async with self._evaluating:
+            return self._evaluate()
+
+    def _evaluate(self) -> dict[str, Any]:
         overrides = {s.id: s for s in self.hub.all("controls", ControlState)}
         states = evaluate_controls(self.snapshot(), overrides)
         changed = []

@@ -550,7 +550,8 @@ def test_sso_default_role_none_refuses_people_outside_the_atrium_groups(tmp_path
         hub.auth.oidc = OidcClient(hub.auth.oidc.settings, transport=idp.transport)
         stranger = new_browser(client)
         refused = sso(stranger, idp, claims={"sub": "g-1", "email": "someone@gmail.com", "groups": []})
-        assert "not in an Atrium group" in refused.headers["location"].replace("%20", " ")
+        assert refused.headers["location"] == "/#/login"
+        assert "not in an Atrium group" in stranger.get("/api/auth/me").json()["sso_error"]
         assert stranger.get("/api/people").status_code == 401 and hub.auth.find_user("someone") is None
         viewer = new_browser(client)
         sso(viewer, idp, claims={"sub": "v-1", "preferred_username": "vic", "groups": ["atrium-viewers"]})
@@ -599,7 +600,7 @@ def test_sso_before_setup_cannot_take_the_hub(tmp_path):
         hub.auth.oidc = OidcClient(hub.settings, transport=idp.transport)
         assert hub.auth.setup_required
         refused = sso(c, idp, claims={"groups": []})
-        assert "not set up yet" in refused.headers["location"].replace("%20", " ")
+        assert refused.headers["location"] == "/#/login" and "not set up yet" in c.get("/api/auth/me").json()["sso_error"]
         assert hub.auth.users() == [] and hub.auth.setup_required
         done = c.post("/api/auth/setup", json={"token": "first-run-token", "username": "root", "password": PASSWORD})
         assert done.status_code == 200 and hub.auth.find_user("root").role == "admin"

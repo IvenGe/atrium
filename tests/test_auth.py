@@ -10,7 +10,6 @@ import sys
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from urllib.parse import unquote
 
 import pytest
 from conftest import ADMIN_PASSWORD, PASSWORD, make_settings
@@ -279,7 +278,8 @@ def test_anonymous_requests(browser):
     assert anon.get("/").status_code == 200  # the UI itself is public; it shows the sign-in screen
     me = anon.get("/api/auth/me").json()
     assert me == {"authenticated": False, "user": None, "setup_required": False,
-                  "oidc": {"enabled": False, "label": "Sign in with SSO"}, "session": {"idle_minutes": 720, "days": 7}}
+                  "oidc": {"enabled": False, "label": "Sign in with SSO"}, "session": {"idle_minutes": 720, "days": 7},
+                  "sso_error": None}
     # the cross-site guard runs before authentication
     blocked = anon.post("/api/auth/login", json={"username": "admin", "password": ADMIN_PASSWORD}, headers={"X-Hub-Request": ""})
     assert blocked.status_code == 403 and "X-Hub-Request" in blocked.json()["detail"]
@@ -807,9 +807,10 @@ def test_sso_sign_in_provisions_and_syncs_accounts(client, browser):
     assert len(hub.auth.users()) == 2
 
     client.patch(f"/api/users/{user['id']}", json={"disabled": True})
-    refused = browser().get("/api/auth/oidc/callback?code=c3&state=s3", follow_redirects=False)
-    assert refused.headers["location"].startswith("/#/login?error=")
-    assert unquote(refused.headers["location"].split("error=", 1)[1]) == "This account is disabled."
+    stranger = browser()
+    refused = stranger.get("/api/auth/oidc/callback?code=c3&state=s3", follow_redirects=False)
+    assert refused.headers["location"] == "/#/login"  # the reason travels in a sealed cookie, never in the URL
+    assert stranger.get("/api/auth/me").json()["sso_error"] == "This account is disabled."
 
 
 def test_sso_failures_redirect_to_the_login_screen(client, browser):
@@ -817,9 +818,10 @@ def test_sso_failures_redirect_to_the_login_screen(client, browser):
     hub.auth.oidc = FakeOidc(identity(), error="State mismatch")
     anon = browser()
     failed = anon.get("/api/auth/oidc/callback?code=c&state=s", follow_redirects=False)
-    assert failed.status_code == 302 and unquote(failed.headers["location"]) == "/#/login?error=State mismatch"
+    assert failed.status_code == 302 and failed.headers["location"] == "/#/login"
+    assert anon.get("/api/auth/me").json()["sso_error"] == "State mismatch"
     denied = anon.get("/api/auth/oidc/callback?error=access_denied", follow_redirects=False)
-    assert "access_denied" in unquote(denied.headers["location"])
+    assert denied.headers["location"] == "/#/login" and "access_denied" in anon.get("/api/auth/me").json()["sso_error"]
     assert anon.get("/api/auth/me").json()["authenticated"] is False
     assert any(e["actor"] == "auth" and e["text"].startswith("Single sign-on failed") for e in activity(client))
 
