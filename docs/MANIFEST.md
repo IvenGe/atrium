@@ -122,4 +122,5 @@ does no harm). The event adapters the Patch Agent generates
 read `HUB_TOKEN` and send it this way. Tokens are covered in [AUTH.md](AUTH.md#api-tokens).
 
 The hub delivers the envelope `{source, event, payload, ts}` as a JSON `POST` to the
-`events.webhook_url` of every tool whose `events.listens` matches the event name.
+`events.webhook_url` of every tool whose `events.listens` matches the event name. The API and the UI
+never show that URL (only `events.has_webhook`), nor the values of `launch.env` (only `launch.env_keys`).

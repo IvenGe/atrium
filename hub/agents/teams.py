@@ -31,7 +31,7 @@ if TYPE_CHECKING:
 
 COLLECTION = "agent_defs"
 MODULE_TEAMS = {"module:assets": "Assets", "module:vulns": "Vulnerabilities", "module:grc": "Compliance",
-                "module:people": "People", "module:extensions": "Extensions"}
+                "module:people": "People", "module:extensions": "Extensions", "module:network": "Network"}
 STALE_RUN = 30 * 60
 PERMISSION_INFO = {
     "read": "Read the hub's state: tools, assets, findings, risks, flows, approvals.",

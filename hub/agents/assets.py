@@ -14,7 +14,7 @@ from .. import people
 from ..bus import Message
 from ..connectors.base import valid_scan_target
 from ..integration import flows
-from ..models import Asset, Flow
+from ..models import Asset, Flow, strip_url_credentials
 from ..store import new_id
 from .fabric import FlowOwner
 from .operator import DISCOVERY_SCRIPT
@@ -232,7 +232,7 @@ class AssetSupervisor(FlowOwner):
             source = f"tool:{tool.id}"
             seen.add(source)
             m = tool.manifest
-            facts = {"source": tool.source, "kind": m.kind if m else None, "version": m.version if m else None,
+            facts = {"source": strip_url_credentials(tool.source), "kind": m.kind if m else None, "version": m.version if m else None,
                      "license": m.license if m else None, "stack": ", ".join(m.stack) if m else None,
                      "url": m.ui.url if m else None, "integration_score": tool.report.score if tool.report else None}
             facts = {k: v for k, v in facts.items() if v not in (None, "")}

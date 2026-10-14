@@ -13,6 +13,7 @@ import httpx
 import yaml
 
 from .. import connectors, guardrails
+from ..approvals import sender_person
 from ..bus import Message
 from ..connectors import base as connector_sdk
 from ..connectors import generic_rest
@@ -31,6 +32,29 @@ from .base import BaseAgent
 
 MAX_SPEC = 5_000_000
 SPEC_PROMPT_CHARS = 60_000
+# Settings a flow repair never changes (review F22): what keeps a connection safe - Read only, TLS and SSH host
+# verification, the hub address the management-path guard uses, the root wrapper a host firewall runs - and the
+# switches that let the hub write to a tool are an administrator's decision (PUT /api/tools/{id}/connection).
+REPAIR_LOCKED = frozenset({"read_only", "verify_tls", "ca_file", "host_key", "known_hosts", "hub_address", "wrapper",
+                           "push_assessments", "read_accounts", "save_config"})
+
+
+def network_device(kind: str) -> bool:
+    """Whether connections of this connector kind manage a network device (a firewall)."""
+    try:
+        return "network" in connectors.connector_class(kind).capabilities
+    except ConnectorError:
+        return False
+
+
+def repairable(kind: str) -> set[str]:
+    """The settings a repair may change: for a network device's connection only its URLs (their path - the address
+    stays, connections.update_config checks it); otherwise every setting except the secrets and REPAIR_LOCKED."""
+    cls = connectors.connector_class(kind)
+    if network_device(kind):
+        return {f.name for f in cls.fields if f.kind == "url"}
+    return {f.name for f in cls.fields if f.kind != "secret" and f.name not in REPAIR_LOCKED}
+
 REPAIR_SCHEMA = {
     "type": "object",
     "properties": {"diagnosis": {"type": "string"}, "rationale": {"type": "string"}, "config_json": {"type": "string"}},
@@ -215,7 +239,9 @@ class PatchAgent(BaseAgent):
         error = body.get("error") or {}
         sample = flows.sanitize(body.get("sample"))
         proposal = None
-        if self.hub.llm.available:
+        # a network device's error text is the device's own words: it never reaches a model (review F22), so its
+        # repairs are the rules-based diagnosis
+        if self.hub.llm.available and not network_device(conn.kind):
             try:
                 proposal = await self._claude_repair(flow, tool, conn, error, sample)
             except Exception as exc:  # fall back to the rules
@@ -262,7 +288,8 @@ class PatchAgent(BaseAgent):
     async def _claude_repair(self, flow: Flow, tool: Tool, conn: connections.Connection, error: dict[str, Any],
                              sample: Any) -> dict[str, Any] | None:
         cls = connectors.connector_class(conn.kind)
-        fields = [f.model_dump(include={"name", "label", "kind", "help", "choices"}) for f in cls.fields if f.kind != "secret"]
+        allowed = repairable(conn.kind)
+        fields = [f.model_dump(include={"name", "label", "kind", "help", "choices"}) for f in cls.fields if f.name in allowed]
         spec = ""
         if conn.kind == "generic_rest":
             try:
@@ -284,7 +311,6 @@ class PatchAgent(BaseAgent):
         changes = json.loads(result.get("config_json") or "{}")
         if not isinstance(changes, dict):
             raise ValueError("config_json is not an object")
-        allowed = {f.name for f in cls.fields if f.kind != "secret"}
         changes = {k: v for k, v in changes.items() if k in allowed and conn.config.get(k) != v}
         rationale = str(result.get("rationale") or "").strip()
         diagnosis = "mapping" if conn.kind == "generic_rest" and "mapping" in changes else ("config" if changes else "manual")
@@ -338,11 +364,20 @@ class PatchAgent(BaseAgent):
                              error: dict[str, Any]) -> dict[str, Any]:
         conn = connections.get(self.hub, tool.id)
         change = proposal.get("change")
+        if change and not change.get("generated"):  # only the settings a repair may change (review F22)
+            allowed = repairable(change["kind"])
+            change = {**change, "config": {k: v for k, v in change["config"].items() if k in allowed}}
+            if not change["config"]:
+                change = None
+        # a repair of a network device's connection: an administrator approves it, never the agent alone
+        device = network_device(conn.kind if conn else (change or {}).get("kind") or "")
         payload = {"flow_id": flow.id if flow else None, "tool_id": tool.id, "diagnosis": proposal["diagnosis"],
                    "change": change, "diff": config_diff(conn.config if conn and change and conn.kind == change["kind"] else {},
                                                          change["config"]) if change else "",
                    "tried": proposal.get("tried", []), "error": {"message": error.get("message"), "status": error.get("status")}}
-        if change and self.hub.prefs["autonomy"] == "autonomous":
+        if device:
+            payload["device"] = True
+        if change and self.hub.prefs["autonomy"] == "autonomous" and not device:
             approval = self.hub.approvals.create("repair", proposal["title"], proposal["detail"], payload, self.id)
             await self._decide_repair(approval.id, True, self.id)
             return {"approval_id": approval.id, "diagnosis": proposal["diagnosis"], "applied": True}
@@ -510,6 +545,7 @@ class PatchAgent(BaseAgent):
         title, rationale, changes = await ext_generate.claude_self_patch(self.hub, goal, tool, self.model)
         patch = await selfpatch.propose(self.hub, title=title, rationale=rationale, changes=changes, goal=goal,
                                         tool_id=tool.id if tool else None, requested_by=self.id)
+        patch.proposed_by = sender_person(msg.sender)  # the person who asked: approving it needs a second person (F1)
         patch = await selfpatch.submit(self.hub, patch, self.id)
         self.log("info", f"Proposed the self-patch '{patch.title}' ({'tests passed' if patch.tests and patch.tests.get('ok') else 'tests failed'})",
                  self_patch_id=patch.id)

@@ -94,7 +94,7 @@ api_features; add vendor ones after them) so the Network app can show the same c
 SSH-based connectors (host firewalls, pfSense CE, IOS-XE CLI) use ``SSH_FIELDS`` as their connection settings,
 ``validate_ssh_config`` in ``validate_config`` and ``ssh_target(config, secrets)`` for ``Connector.ssh()``; build
 commands only from fixed verbs and ``runner.posix_command`` / ``runner.ps_quote``-quoted values, and pass scripts on
-stdin.
+stdin. XML read from a device (or from a backup) goes through ``parse_untrusted_xml`` (no DOCTYPE, no entities).
 """
 
 from __future__ import annotations
@@ -103,7 +103,9 @@ import hashlib
 import ipaddress
 import json
 import re
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
+from xml.parsers import expat
 from typing import Annotated, Any, Literal, Union
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError, field_validator, model_validator
@@ -162,6 +164,31 @@ def device_id_text(value: Any, limit: int = MAX_ID) -> str:
 def display_id(value: Any, limit: int = 64) -> str:
     """An id reduced to [A-Za-z0-9._:/-] - safe inside log lines and compliance details read by agents."""
     return re.sub(r"[^A-Za-z0-9._:/-]+", "_", str(value or ""))[:limit] or "_"
+
+
+class UnsafeXml(ValueError):
+    """Device XML that declares a DOCTYPE, entities or notations - refused before anything is declared or expanded."""
+
+
+def parse_untrusted_xml(content: str | bytes) -> ET.Element:
+    """An XML document read from a device (untrusted), refusing any document type declaration (UnsafeXml) wherever
+    it appears and whatever the document's encoding: an expat pass whose DTD handlers raise reads the WHOLE document
+    before ElementTree builds the tree (a byte scan would miss a DOCTYPE after a long comment, or in UTF-16). Not
+    well-formed: ET.ParseError. Use this for every XML document a connector reads from a device or a backup."""
+
+    def refuse(*_: Any) -> None:
+        raise UnsafeXml("the document declares a DOCTYPE or entities")
+
+    check = expat.ParserCreate()
+    check.StartDoctypeDeclHandler = check.EntityDeclHandler = check.UnparsedEntityDeclHandler = refuse
+    check.NotationDeclHandler = check.ExternalEntityRefHandler = refuse
+    try:
+        check.Parse(content, True)
+    except expat.ExpatError as exc:
+        error = ET.ParseError(f"{expat.ErrorString(exc.code)}: line {exc.lineno}, column {exc.offset}")
+        error.code, error.position = exc.code, (exc.lineno, exc.offset)
+        raise error from None
+    return ET.fromstring(content)
 
 
 def normalise_cidr(value: Any) -> str | None:
@@ -906,30 +933,54 @@ def _covers(cidrs: list[str], address: str) -> bool:
     return any(ip.version == (net := ipaddress.ip_network(c)).version and ip in net for c in cidrs)
 
 
-def targets_device(record: dict[str, Any], endpoint: dict[str, Any]) -> bool:
-    """Whether an endpoint can match the device itself (this firewall, any, or a network holding a self address)."""
-    if endpoint.get("negate"):
-        return True  # "not X" usually includes the device: be conservative
-    if endpoint.get("any") or endpoint.get("self"):
-        return True
+def _endpoint_cidrs(record: dict[str, Any], endpoint: dict[str, Any]) -> list[str] | None:
+    """The networks an endpoint names (aliases and interface nets resolved); None when it can be anything (any,
+    negated, an unknown or unresolved alias)."""
+    if endpoint.get("negate") or endpoint.get("any"):
+        return None
     cidrs = list(endpoint.get("cidrs") or [])
     aliases = {a["name"]: a for a in record.get("aliases") or []}
     for name in endpoint.get("aliases") or []:
         alias = aliases.get(name)
         if alias is None or not alias.get("resolved", True):
-            return True  # unknown content: assume it may
+            return None
         cidrs += alias.get("cidrs") or []
     nets = {i["id"]: i for i in record.get("interfaces") or []}
     for net in endpoint.get("nets") or []:
         cidrs += (nets.get(net) or {}).get("subnets") or []
-    return any(_covers(cidrs, a) for a in record.get("self_addresses") or [])
+    return cidrs
 
 
-def management_guard(record: dict[str, Any], ops: list[dict[str, Any]]) -> list[str]:
+def targets_device(record: dict[str, Any], endpoint: dict[str, Any]) -> bool:
+    """Whether an endpoint can match the device itself (this firewall, any, or a network holding a self address)."""
+    if endpoint.get("self"):
+        return True
+    cidrs = _endpoint_cidrs(record, endpoint)
+    return cidrs is None or any(_covers(cidrs, a) for a in record.get("self_addresses") or [])
+
+
+def _matches_any(record: dict[str, Any], endpoint: dict[str, Any], addresses: list[str]) -> bool:
+    cidrs = _endpoint_cidrs(record, endpoint)
+    return cidrs is None or any(_covers(cidrs, a) for a in addresses)
+
+
+def _carries_port(services: list[dict[str, Any]] | None, ports: list[int]) -> bool:
+    if not services:
+        return True
+    return any(s.get("proto") in ("tcp", "any") and (s.get("alias") and not s.get("ports")
+                                                      or any(lo <= p <= hi for p in ports
+                                                             for lo, hi in port_ranges(s.get("ports"))))
+               for s in services)
+
+
+def management_guard(record: dict[str, Any], ops: list[dict[str, Any]], *, hub_addresses: list[str] | None = None,
+                     management_ports: list[int] | None = None) -> list[str]:
     """Anti-lockout (S12): problems with `ops` against the device's current record. disable_rules is refused for any
-    pass rule whose destination can be the device itself (this firewall, any, or a network holding one of its
-    self_addresses) - those rules may carry the hub's management path. An unknown rule is a problem too (the
-    snapshot is stale). Connectors add their own vendor checks (the hub's source address, the management port)."""
+    pass rule that may carry the hub's management path: its destination can be the device itself (this firewall,
+    any, or a network holding one of its self_addresses) and - when the connector knows them - its source can be the
+    hub's address as the device sees it (``hub_addresses``, e.g. from SSH_CONNECTION) and its services include the
+    management port the connector uses (``management_ports``). Without those it stays conservative (any rule that
+    can reach the device). An unknown rule is a problem too (the snapshot is stale). Connectors add vendor checks."""
     rules = {r["id"]: r for r in record.get("rules") or []}
     by_ref = {r["vendor_ref"]: r for r in record.get("rules") or []}
     problems = []
@@ -940,9 +991,15 @@ def management_guard(record: dict[str, Any], ops: list[dict[str, Any]]) -> list[
             rule = rules.get(ref.get("id")) or by_ref.get(ref.get("vendor_ref"))
             if rule is None:
                 problems.append(f"rule {display_id(ref.get('id'))} is not on the device (re-read it first)")
-            elif rule.get("action") == "pass" and targets_device(record, rule.get("destination") or {}):
-                problems.append(f"rule {display_id(rule['id'])} lets traffic reach the device itself - disabling it "
-                                "could cut the hub off from the device")
+                continue
+            if rule.get("action") != "pass" or not targets_device(record, rule.get("destination") or {}):
+                continue
+            if hub_addresses and not _matches_any(record, rule.get("source") or {}, hub_addresses):
+                continue
+            if management_ports and not _carries_port(rule.get("services"), management_ports):
+                continue
+            problems.append(f"rule {display_id(rule['id'])} lets traffic reach the device itself - disabling it "
+                            "could cut the hub off from the device")
     return problems
 
 
@@ -1134,7 +1191,7 @@ def ops_applied(record: dict[str, Any], ops: list[dict[str, Any]]) -> list[str]:
         if op["op"] == "allow":
             change_id = find_marker(op["marker"])
             found = [r for r in record.get("rules") or [] if r.get("marker") == change_id]
-            if not any(rule_matches_allow(r, op) for r in found):
+            if not any(rule_matches_allow(r, op, record) for r in found):
                 problems.append(f"the rule marked {op['marker']} is " + ("not as proposed" if found else "missing"))
         else:
             want = op["op"] == "enable_rules"
@@ -1147,18 +1204,24 @@ def ops_applied(record: dict[str, Any], ops: list[dict[str, Any]]) -> list[str]:
     return problems
 
 
-def rule_matches_allow(rule: dict[str, Any], op: dict[str, Any]) -> bool:
+def rule_matches_allow(rule: dict[str, Any], op: dict[str, Any], record: dict[str, Any] | None = None) -> bool:
     """Whether a normalised rule is what an allow op asked for: an enabled pass rule from exactly the op's source
-    networks to exactly its destination networks for exactly its services (no wider)."""
+    networks to exactly its destination networks for exactly its services (no wider). With the device's `record`,
+    address objects (aliases) and interface networks the connector used are resolved to their networks."""
     source, destination = rule.get("source") or {}, rule.get("destination") or {}
-    if not rule.get("enabled", True) or rule.get("action") != "pass" or source.get("negate") or destination.get("negate"):
+    if not rule.get("enabled", True) or rule.get("action") != "pass" or source.get("self") or destination.get("self"):
         return False
-    if source.get("any") or destination.get("any") or source.get("aliases") or destination.get("aliases") \
-            or source.get("nets") or destination.get("nets") or source.get("self") or destination.get("self"):
-        return False
+
+    def networks(endpoint: dict[str, Any]) -> set[str] | None:
+        if record is None:
+            return None if endpoint.get("any") or endpoint.get("negate") or endpoint.get("aliases") \
+                or endpoint.get("nets") else set(endpoint.get("cidrs") or [])
+        cidrs = _endpoint_cidrs(record, endpoint)
+        return None if cidrs is None else set(cidrs)
+
     services = rule.get("services")
-    return (set(source.get("cidrs") or []) == set(op["source"]["cidrs"])
-            and set(destination.get("cidrs") or []) == set(op["destination"]["cidrs"])
+    return (networks(source) == set(op["source"]["cidrs"])
+            and networks(destination) == set(op["destination"]["cidrs"])
             and services is not None
             and {(s["proto"], s.get("ports")) for s in services} == {(s["proto"], s.get("ports")) for s in op["services"]})
 
@@ -1178,3 +1241,72 @@ def ops_reverted(before: dict[str, Any], after: dict[str, Any], ops: list[dict[s
                 if old is not None and (new is None or new.get("enabled", True) != old.get("enabled", True)):
                     problems.append(f"rule {display_id(ref['id'])} is not back to its previous state")
     return problems
+
+
+# --------------------------------------------------------------------------------------
+# SSH-based device connectors: the shared connection settings
+# --------------------------------------------------------------------------------------
+
+SSH_USER_RE = re.compile(r"^[A-Za-z0-9._][A-Za-z0-9._@\\-]{0,127}$")  # also DOMAIN\user and user@domain (Windows)
+
+
+def ssh_fields(default_user: str = "atrium") -> list[Any]:
+    """The connection settings of an SSH-based device connector (host, port, user, key or password, pinned host
+    key). Strict host-key checking is always on: the pinned key wins, else the given known_hosts file, else the hub
+    user's ~/.ssh/known_hosts."""
+    from .base import ConnectorField
+
+    return [
+        ConnectorField(name="host", label="Host", required=True, placeholder="10.0.99.1",
+                       help="The device's management address or DNS name."),
+        ConnectorField(name="port", label="SSH port", kind="number", default=22),
+        ConnectorField(name="username", label="User", default=default_user,
+                       help="A dedicated account for Atrium (see the docs for the least-privilege setup)."),
+        ConnectorField(name="private_key", label="Private key", kind="secret",
+                       help="OpenSSH or PEM private key text (recommended)."),
+        ConnectorField(name="passphrase", label="Key passphrase", kind="secret"),
+        ConnectorField(name="password", label="Password", kind="secret",
+                       help="Only when the device cannot use keys."),
+        ConnectorField(name="host_key", label="Host key", placeholder="ssh-ed25519 AAAA...",
+                       help="The device's public host key (pinned). Empty: the hub user's known_hosts must hold it."),
+        ConnectorField(name="known_hosts", label="known_hosts file", placeholder="~/.ssh/known_hosts",
+                       help="Optional: a known_hosts file on the hub to verify the host key with."),
+    ]
+
+
+SSH_FIELDS = ssh_fields()
+
+
+def validate_ssh_config(config: dict[str, Any]) -> dict[str, Any]:
+    """Checks the SSH settings (ValueError with a message for the person saving the connection)."""
+    host = str(config.get("host") or "").strip()
+    if not host or host.startswith("-") or any(c.isspace() for c in host) or len(host) > 253:
+        raise ValueError("Host must be an IP address or a DNS name")
+    try:
+        ipaddress.ip_address(host.strip("[]"))
+    except ValueError:
+        if not re.fullmatch(r"(?=.{1,253}$)(?!-)[A-Za-z0-9-]{1,63}(?:\.(?!-)[A-Za-z0-9-]{1,63})*\.?", host):
+            raise ValueError("Host must be an IP address or a DNS name") from None
+    port = int(config.get("port") or 22)
+    if not 1 <= port <= 65535:
+        raise ValueError("The SSH port is 1-65535")
+    user = str(config.get("username") or "").strip()
+    if not SSH_USER_RE.match(user):
+        raise ValueError("User: letters, digits, '.', '_', '-', '@' or DOMAIN\\user (no spaces)")
+    host_key = str(config.get("host_key") or "").strip()
+    if host_key and not re.fullmatch(r"(ssh-(ed25519|rsa|dss)|ecdsa-sha2-nistp(256|384|521)|sk-[a-z0-9@.-]+) "
+                                     r"[A-Za-z0-9+/]+={0,3}( \S.*)?", host_key):
+        raise ValueError("Host key must be a public key line such as 'ssh-ed25519 AAAA...'")
+    return {**config, "host": host, "port": port, "username": user, "host_key": host_key or None}
+
+
+def ssh_target(config: dict[str, Any], secrets: dict[str, str], *, command_timeout: float = 120.0) -> Any:
+    """The ``runner.SshTarget`` for an SSH-based connector's connection (see ``SSH_FIELDS``)."""
+    from ..execution.runner import SshTarget
+
+    if not (secrets.get("private_key") or secrets.get("password")):
+        raise ConnectorError("Set a private key (recommended) or a password for the SSH connection")
+    return SshTarget(host=str(config["host"]), port=int(config.get("port") or 22), username=str(config["username"]),
+                     private_key=secrets.get("private_key"), passphrase=secrets.get("passphrase"),
+                     password=secrets.get("password"), host_key=config.get("host_key") or None,
+                     known_hosts=config.get("known_hosts") or None, command_timeout=command_timeout)

@@ -271,15 +271,21 @@ def build(hub: "Hub", tool_id: str, config_override: dict[str, Any] | None = Non
 
 
 def capabilities(conn: Connection) -> dict[str, list[str]]:
-    """Domains and operations of a connection: what its last successful test reported, else what the connector
-    declares for these settings."""
-    if conn.last_test and conn.last_test.get("ok") and conn.last_test.get("domains"):
-        return {d: sorted(ops) for d, ops in conn.last_test["domains"].items() if ops}
+    """Domains and operations of a connection: what the connector declares for its current settings, narrowed to what
+    its last successful test reported (a test is kept while the endpoint stays the same, so a setting switched off
+    since - e.g. CISO Assistant's "Send CyFun self-assessments" - must not keep its domain)."""
     try:
         cls = connectors.connector_class(conn.kind)
-        return cls(conn.config, {}).domains()
+        declared = cls(conn.config, {}).domains()
     except Exception:
-        return {}
+        declared = None
+    if conn.last_test and conn.last_test.get("ok") and conn.last_test.get("domains"):
+        tested = {d: sorted(ops) for d, ops in conn.last_test["domains"].items() if ops}
+        if declared is None:
+            return tested
+        narrowed = {d: [op for op in ops if op in declared.get(d, [])] for d, ops in tested.items()}
+        return {d: ops for d, ops in narrowed.items() if ops}
+    return declared or {}
 
 
 def public(hub: "Hub", tool: Tool, conn: Connection | None) -> dict[str, Any]:

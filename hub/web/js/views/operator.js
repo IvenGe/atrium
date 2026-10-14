@@ -50,6 +50,7 @@ export async function render(el, ctx) {
                 <button class="btn primary">${icon("play")}Run</button></div>
             </form>
             <p class="faint" style="font-size:12px;margin-top:8px">Commands you type here run directly; catastrophic ones (wiping disks, shutting down, piping downloads into a shell) are always refused.
+              ${can("admin") ? "" : "On this machine only read-only commands run directly for you: anything else waits for an administrator's approval, because it would run with Atrium's own privileges."}
               Agent commands follow the <a href="#/settings">autonomy setting</a>: currently <b>${settings.autonomy}</b>.</p>
             ${output ? html`<div style="margin-top:12px"><div class="row" style="margin-bottom:6px">${badge(output.status === "done" ? (output.exit_code === 0 ? "exit 0" : `exit ${output.exit_code}`) : output.status,
               output.status === "done" && output.exit_code === 0 ? "ok" : "bad")}<span class="faint">${output.duration ? `${output.duration.toFixed(2)}s` : ""}</span></div>
@@ -87,6 +88,7 @@ export async function render(el, ctx) {
     try {
       output = await post("/commands", { command, target: data.get("target"), cwd: data.get("cwd") || null });
       if (output.status === "denied") toast(output.reason, "bad");
+      else if (output.status === "pending_approval") toast("Waiting for an administrator's approval (Approvals)", "warn");
     } catch (err) {
       output = { status: "error", output: err.message };
     }

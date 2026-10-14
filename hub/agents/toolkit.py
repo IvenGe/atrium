@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
@@ -40,6 +41,9 @@ class ToolContext:
     agent: "BaseAgent"
     permissions: frozenset[str]
     tool_scope: str | None = None  # a tool id: tools that act on one tool only reach this one
+    # the person ("user:<name>" / "token:<name>") whose chat message or manual run the agent acts on: the Operator
+    # Agent judges commands and tool starts on the hub machine by that person's role (F1)
+    requested_by: str | None = None
 
     def scoped(self, tool_id: str) -> str:
         tool_id = str(tool_id or "").strip()
@@ -53,7 +57,10 @@ class ToolContext:
         target = self.hub.agents.get(recipient)
         if target is not None and target.paused:  # it would answer only after it is resumed: fail now, not at the timeout
             raise RuntimeError(f"{target.name} is paused")
-        return await self.agent.ask(recipient, subject, body or {}, timeout)
+        body = dict(body or {})
+        if recipient == "operator":  # always set here, never taken from a tool's arguments
+            body["requested_by"] = self.requested_by
+        return await self.agent.ask(recipient, subject, body, timeout)
 
 
 Handler = Callable[[ToolContext, dict[str, Any]], Awaitable[Any]]
@@ -95,13 +102,51 @@ def definitions(permissions: set[str] | frozenset[str]) -> list[dict[str, Any]]:
 
 
 async def execute(ctx: ToolContext, name: str, args: dict[str, Any]) -> Any:
-    """Run one tool call - refused when the caller lacks the tool's permission."""
+    """Run one tool call - refused when the caller lacks the tool's permission or the arguments break the schema."""
     spec = TOOLS.get(name)
     if spec is None or spec.run is None:
         raise ValueError(f"Unknown tool {name}")
     if spec.permission not in ctx.permissions:
         raise PermissionError(f"{ctx.agent.name} lacks the '{spec.permission}' permission needed for {name}")
-    return await spec.run(ctx, dict(args or {}))
+    return await spec.run(ctx, validate_args(spec, args))
+
+
+def validate_args(spec: AgentTool, args: Any) -> dict[str, Any]:
+    """The arguments checked against the tool's schema here, not only by the model provider: a local model gets no
+    strict schemas, so enums (e.g. the domains read_tool_records may read) would otherwise be advisory. Unknown keys
+    are dropped, null (or "" for a non-string) means "not given" (dropped), a wrong type or a value outside an enum is
+    refused. Integers and booleans sent as strings ("5", "true") are accepted, as local models often send them."""
+    if not isinstance(args, dict):
+        raise ValueError(f"{spec.name}: the arguments must be an object")
+    return {key: _check_value(schema, args[key], f"{spec.name}.{key}") for key, schema in spec.properties.items()
+            if args.get(key) is not None and not (args[key] == "" and schema.get("type") != "string")}
+
+
+def _check_value(schema: dict[str, Any], value: Any, where: str) -> Any:
+    kind = schema.get("type")
+    if kind == "string":
+        if not isinstance(value, str):
+            raise ValueError(f"{where} must be a string")
+    elif kind == "integer":
+        if isinstance(value, str) and re.fullmatch(r"-?[0-9]{1,18}", value.strip()):
+            value = int(value)
+        elif isinstance(value, float) and value.is_integer():
+            value = int(value)
+        if not isinstance(value, int) or isinstance(value, bool):
+            raise ValueError(f"{where} must be an integer")
+    elif kind == "boolean":
+        value = {"true": True, "false": False}.get(value.strip().lower(), value) if isinstance(value, str) else value
+        if not isinstance(value, bool):
+            raise ValueError(f"{where} must be true or false")
+    elif kind == "array":
+        if not isinstance(value, list):
+            raise ValueError(f"{where} must be a list")
+        value = [_check_value(schema.get("items") or {}, item, f"{where}[]") for item in value]
+    elif kind == "object" and not isinstance(value, dict):
+        raise ValueError(f"{where} must be an object")
+    if "enum" in schema and value not in schema["enum"]:
+        raise ValueError(f"{where} must be one of: {', '.join(map(str, schema['enum']))}")
+    return value
 
 
 # --------------------------------------------------------------------------------------
@@ -121,7 +166,7 @@ async def _get_tool(ctx: ToolContext, args: dict[str, Any]) -> Any:
     tool_ = ctx.hub.get_tool(args["tool_id"])
     if tool_ is None:
         raise ValueError("Unknown tool id")
-    return {"tool": tool_.model_dump(mode="json"),
+    return {"tool": tool_.public(),  # no webhook URL or launch env values for the model or the run log (F24)
             "patches": [{"id": p.id, "title": p.title, "status": p.status} for p in ctx.hub.patches(tool_.id)]}
 
 
@@ -154,6 +199,12 @@ async def _assets(ctx: ToolContext, args: dict[str, Any]) -> Any:
       "company devices.", "read")
 async def _people(ctx: ToolContext, args: dict[str, Any]) -> Any:
     return await ctx.ask("module:people", "summary")
+
+
+@tool("network_summary", "Network devices (firewalls, routers, switches, host firewalls): how many, how many without a "
+      "current snapshot, unexplained configuration changes (drift) and how many accept changes now. Counts only.", "read")
+async def _network(ctx: ToolContext, args: dict[str, Any]) -> Any:
+    return await ctx.ask("module:network", "summary")
 
 
 @tool("compliance_summary", "Framework scores, failing controls and top risks.", "read")
@@ -240,12 +291,19 @@ async def _test_connection(ctx: ToolContext, args: dict[str, Any]) -> Any:
     return result
 
 
+# Not "network" (device configuration: untrusted rule descriptions and interface names) nor "frameworks" (licensed
+# requirement text): agents read those through the summaries of the apps that own them.
+READ_DOMAINS = ("assets", "vulnerabilities", "risks", "controls", "people", "accounts")
+
+
 @tool("read_tool_records", "Read records of one domain (assets, vulnerabilities, risks, controls, people or accounts) "
       "from a tool's own API; returns the count and the first 20 records.", "tool_api",
-      {"tool_id": STR, "domain": {"type": "string", "enum": ["assets", "vulnerabilities", "risks", "controls", "people",
-                                                              "accounts"]}})
+      {"tool_id": STR, "domain": {"type": "string", "enum": list(READ_DOMAINS)}})
 async def _read_records(ctx: ToolContext, args: dict[str, Any]) -> Any:
-    reply = await ctx.ask(f"tool:{ctx.scoped(args['tool_id'])}", "connector.pull", {"domain": args["domain"]}, timeout=600)
+    domain = args.get("domain")
+    if domain not in READ_DOMAINS:  # also checked by the schema; kept here so no caller can widen it
+        raise ValueError(f"read_tool_records reads only {', '.join(READ_DOMAINS)}")
+    reply = await ctx.ask(f"tool:{ctx.scoped(args['tool_id'])}", "connector.pull", {"domain": domain}, timeout=600)
     if reply.get("failure"):
         raise RuntimeError(reply["failure"].get("message") or "the connector failed")
     records = list(reply.get("records") or [])

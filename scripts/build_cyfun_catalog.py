@@ -268,6 +268,9 @@ def build(key: str, raw: bytes, nist_raw: bytes, source_url: str,
             tags = [str(t) for t in node.get("implementation_groups") or []]
             tags = [g for g in GROUPS if g in tags] + sorted(set(tags) - set(GROUPS))
             check_tags(hub_id, tags, spec["management_aspects"])
+            prefix = PREFIX.match(ref)  # CyFun 2023's BASIC_ / IMPORTANT_ prefix is the lowest level tag
+            require(prefix is None or next(t for t in "BIE" if t in tags) == prefix.group(1)[0],
+                    f"{key}: {ref} is prefixed {prefix.group(1) if prefix else ''} but tagged {tags}")
             title = spec["own_titles"].get(sub_id) or nist_title(sub_titles, sub_id, "subcategory")
             requirements.append({"ref_id": hub_id, "function": match["fn"], "category": match["cat"],
                                  "subcategory": sub_id, "tags": tags, "title": title})

@@ -15,6 +15,7 @@ used as instructions.
 from __future__ import annotations
 
 import time
+from collections import deque
 from typing import TYPE_CHECKING, Any
 
 from ...integration import connections, flows
@@ -29,6 +30,9 @@ EVENT = "external_framework"
 CONNECTOR = "ciso_assistant"
 FRAMEWORK_URNS = {key: load(key).data["source"]["framework_urn"].lower() for key in CATALOG_IDS}
 CYFUN_URNS = {urn: key for key, urn in FRAMEWORK_URNS.items()}
+CRA_CAVEAT = ("CISO Assistant's CRA library (cra-resolution-annexes, version 3, 2024-06-25) appears to be built from the "
+              "European Parliament's text, not the text published in the Official Journal (Regulation (EU) 2024/2847): "
+              "check requirement wording against the OJ text.")
 
 
 def doc_id(tool_id: str, external_id: str) -> str:
@@ -70,9 +74,13 @@ def store(hub: "Hub", tool_id: str, records: list[dict[str, Any]], retire_missin
     return counts
 
 
-def forget_tool(hub: "Hub", tool_id: str) -> None:
-    for doc in all_docs(hub, tool_id):
+def forget_tool(hub: "Hub", tool_id: str) -> int:
+    """The tool or its connection was removed: what was read from it goes too."""
+    docs = all_docs(hub, tool_id)
+    for doc in docs:
         hub.store.delete(COLLECTION, doc["id"])
+        hub.bus.publish(f"{EVENT}_removed", {"id": doc["id"], "tool_id": tool_id})
+    return len(docs)
 
 
 # -- pushing self-assessments --------------------------------------------------------------------------------------
@@ -179,37 +187,72 @@ def _brief(doc: dict[str, Any], tool_names: dict[str, str]) -> dict[str, Any]:
                        "assessments": len(doc.get("assessments") or [])},
             "assessments": [{k: a.get(k) for k in ("external_id", "name", "status", "selected_implementation_groups",
                                                    "updated_at", "scores", "results", "outcomes")}
-                            for a in doc.get("assessments") or []]}
+                            for a in doc.get("assessments") or []],
+            "caveat": CRA_CAVEAT if str(doc.get("library_urn") or "").lower() == LIBRARY_URNS["cra"] else None}
+
+
+def _current(hub: "Hub") -> list[dict[str, Any]]:
+    """What was read from tools that still have a CISO Assistant connection (a removed connection's frameworks
+    disappear with it)."""
+    tools = {c.id for c in connections.all_connections(hub) if c.kind == CONNECTOR}
+    return [d for d in hub.store.list(COLLECTION) if d.get("tool_id") in tools]
 
 
 def external_list(hub: "Hub") -> list[dict[str, Any]]:
     """Frameworks other than CyFun that CISO Assistant has loaded (CyFun shows as the built-in catalogs' status)."""
     names = {t.id: t.name for t in hub.tools()}
-    return [_brief(d, names) for d in hub.store.list(COLLECTION) if not d.get("cyfun")]
+    return [_brief(d, names) for d in _current(hub) if not d.get("cyfun")]
 
 
 def cyfun_status(hub: "Hub", framework_id: str) -> list[dict[str, Any]]:
     """For a built-in CyFun catalog: the instances that have it loaded and their compliance assessments of it."""
     names = {t.id: t.name for t in hub.tools()}
-    return [_brief(d, names) for d in hub.store.list(COLLECTION) if d.get("cyfun") == framework_id]
+    return [_brief(d, names) for d in _current(hub) if d.get("cyfun") == framework_id]
+
+
+TREE_DEPTH = 20  # levels of an external requirement tree; deeper nodes are shown at the last level
 
 
 def _tree(nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    by_urn = {n["urn"]: {**{k: n.get(k) for k in ("urn", "ref_id", "name", "description", "assessable",
-                                                   "implementation_groups", "depth")}, "children": []}
-              for n in nodes if n.get("urn")}
-    roots = []
+    """The requirement tree of a framework read from a tool (untrusted shape): nested by parent_urn, at most
+    TREE_DEPTH levels deep (a longer parent chain is flattened at the last level), nodes on a parent cycle at the
+    top."""
+    items: dict[str, dict[str, Any]] = {}
+    parents: dict[str, str] = {}
     for node in nodes:
-        item = by_urn.get(node.get("urn"))
-        parent = by_urn.get(node.get("parent_urn") or "")
-        if item is None:
-            continue
-        (parent["children"] if parent is not None and parent is not item else roots).append(item)
+        urn = node.get("urn")
+        if urn and urn not in items:
+            items[urn] = {**{k: node.get(k) for k in ("urn", "ref_id", "name", "description", "assessable",
+                                                     "implementation_groups", "depth")}, "children": []}
+            parents[urn] = node.get("parent_urn") or ""
+    children: dict[str, list[str]] = {}
+    for urn, parent in parents.items():
+        if parent in items and parent != urn:
+            children.setdefault(parent, []).append(urn)
+    roots: list[dict[str, Any]] = []
+    placed: set[str] = set()
+
+    def place(start: str) -> None:
+        queue = deque([(start, roots, 0)])
+        while queue:
+            urn, into, level = queue.popleft()
+            if urn in placed:
+                continue
+            placed.add(urn)
+            into.append(items[urn])
+            below = items[urn]["children"] if level < TREE_DEPTH - 1 else into
+            queue.extend((child, below, min(level + 1, TREE_DEPTH - 1)) for child in children.get(urn, []))
+
+    for urn, parent in parents.items():
+        if parent not in items or parent == urn:
+            place(urn)
+    for urn in parents:  # what is left hangs on a parent cycle
+        place(urn)
     return roots
 
 
 def external_detail(hub: "Hub", framework_id: str) -> dict[str, Any] | None:
-    doc = hub.store.get(COLLECTION, framework_id)
+    doc = next((d for d in _current(hub) if d["id"] == framework_id), None)
     if doc is None:
         return None
     names = {t.id: t.name for t in hub.tools()}

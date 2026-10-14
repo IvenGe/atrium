@@ -13,8 +13,9 @@ tools from there; tools never talk to each other directly.
 | --- | --- | --- |
 | Assets | `assets` | Asset Supervisor (`module:assets`) |
 | Vulnerabilities | `vulnerabilities` (and scans) | Vulnerability Supervisor (`module:vulns`) |
-| Compliance hub | `controls` (with evidence), `risks` | GRC Supervisor (`module:grc`) |
+| Compliance hub | `controls` (with evidence), `risks`, `frameworks` (read), `assessments` (write) | GRC Supervisor (`module:grc`), see [COMPLIANCE.md](COMPLIANCE.md) |
 | People | `people`, `accounts` | People Supervisor (`module:people`), see [PEOPLE.md](PEOPLE.md) |
+| Network | `network` (read) | Network Supervisor (`module:network`), see [NETWORK.md](NETWORK.md) |
 | Extension apps | `x:<key>`, e.g. `x:alerts`, `x:tickets` | Extensions Supervisor (`module:extensions`), see [AGENTS.md](AGENTS.md#extensions) |
 
 ```mermaid
@@ -27,10 +28,16 @@ flowchart LR
   assets -- push --> ciso
   controls[Hub controls + evidence] -- push --> ciso
   ciso -- risk scenarios --> risks
+  ciso -- frameworks, assessments --> fw[Hub Compliance frameworks]
+  fw -- CyFun self-assessments, when enabled --> ciso
   okta[Okta / Keycloak / SCIM] -- people, accounts --> people[Hub People]
   snipe -- assigned user --> people
+  devices[Firewalls, routers, switches, host firewalls] -- network snapshots --> network[Hub Network]
   wazuh[SIEM, service desk, monitoring] -- "x:alerts, x:tickets, x:incidents" --> xapps[Extension apps]
 ```
+
+The **Integration map** (Integration hub > Map) draws all of this and lets operators connect tools by dragging
+([below](#integration-map)).
 
 ## Connections
 
@@ -99,7 +106,9 @@ Rules the hub keeps:
   connector errors mask every secret value and credential-looking `key=value` pair.
 - A stored secret is only sent to the endpoint (scheme, host and port) it was entered for. Changing the address or the
   connector kind means entering the secrets again, so neither a person editing a setting nor an agent's repair can
-  redirect them. For OpenVAS, switching certificate checks off also counts as a new endpoint.
+  redirect them. For OpenVAS, switching certificate checks off also counts as a new endpoint; for SSH connections,
+  so does a new pinned host key or known_hosts file (with another key the password would go to whichever host
+  presents it).
 
 **Back up the key separately from the database.** Anyone with both `hub.db` and the key can read the secrets; without
 the key they cannot be decrypted, and every credential has to be entered again. With `secret.key` in the data
@@ -115,12 +124,16 @@ records in the canonical shapes below, runs actions (scans) and tests itself. `R
 | Kind | Product | Domains | Authentication |
 | --- | --- | --- | --- |
 | `snipeit` | Snipe-IT | `assets` read and write (system of record); `accounts` read with "Read user accounts" on | `Authorization: Bearer <token>` |
-| `ciso_assistant` | CISO Assistant | `assets` read and write, `controls` write, `risks` read, `vulnerabilities` write (when the instance has them) | `Authorization: Token <token>` |
-| `openvas` | OpenVAS / Greenbone | `vulnerabilities` read; actions `scan`, `scan_status` | GMP user name and password |
+| `ciso_assistant` | CISO Assistant | `assets` read and write, `controls` write, `risks` read, `vulnerabilities` write (when the instance has them), `frameworks` read, `assessments` write (only with "Send CyFun self-assessments" on) | `Authorization: Token <token>` |
+| `openvas` | OpenVAS / Greenbone | `vulnerabilities` read; actions `scan` (side-effecting), `scan_status` | GMP user name and password |
 | `okta` | Okta | `people` read; `accounts` read (app assignments) unless switched off | `Authorization: SSWS <token>` |
 | `keycloak` | Keycloak admin API | `people` read | client credentials of a service-account client |
 | `scim` | any SCIM 2.0 service | `people` read, or `accounts` read (setting "The users are") | `Authorization: Bearer <token>` |
-| `generic_rest` | any JSON REST API | the domains its mapping defines, including extension domains | bearer, token, custom header, basic or none |
+| `generic_rest` | any JSON REST API | the domains its mapping defines, including extension domains (never `network`, `frameworks` or `assessments`) | bearer, token, custom header, basic or none |
+| `opnsense`, `pfsense`, `mikrotik`, `fortigate`, `panos`, `cisco_iosxe`, `hostfw`, `windows_firewall` | firewalls, routers, switches, host firewalls | `network` read; guarded device changes where the product has a safe mechanism | per vendor, see [NETWORK.md](NETWORK.md#devices-and-connectors) |
+
+`fake_firewall` (an in-memory firewall) is registered only when the hub runs with `HUB_DEV_FAKE_DEVICES=1`, and in
+tests.
 
 ### Snipe-IT
 
@@ -155,6 +168,16 @@ The hub's compliance work lands in CISO Assistant and its risk scenarios come ba
   without writing, so the first push shows it.
 - Assumption (marked in the code): the undefined applied-control status `--` is accepted on write. The hub sends it
   for controls that are `manual` or `na`.
+- A `partial` hub control is sent as `in_progress`. Recent CISO Assistant versions also have `degraded`, which older
+  ones refuse: choose it with **Status of partially effective controls** (`partial_status`).
+- Each control's evidence is written with an **observation** holding the check result. CISO Assistant then keeps a
+  revision (status in review) instead of an empty draft.
+- **Frameworks** (`frameworks`, read): the frameworks loaded in CISO Assistant, their requirement trees, compliance
+  assessments with results and scores, and mapping sets. They appear read-only in the Compliance hub. This is also how
+  the EU Cyber Resilience Act reaches Atrium ([COMPLIANCE.md](COMPLIANCE.md#ciso-assistant-framework-sync)).
+- **Self-assessments** (`assessments`, write): with **Send CyFun self-assessments** (`push_assessments`, admin, off by
+  default) on, Atrium's CyFun self-assessments are written into compliance assessments there. Atrium never imports
+  libraries into CISO Assistant; the connection test reports whether CyFun 2025, CyFun 2023 and the CRA are loaded.
 
 ### OpenVAS / Greenbone
 
@@ -167,6 +190,10 @@ A vulnerability scanner reached over GMP, the Greenbone Management Protocol.
   (their well-known ids), alive test from the scan config, minimum quality of detection 70. All are selectable.
 - A scan creates a target and a task for the hub's in-scope hosts (IP addresses, networks and hostnames only;
   everything placed in XML is escaped) and starts it; `scan_status` follows the task.
+- `scan` is a **side-effecting action** (`side_effect_actions = {"scan": "scan"}`): the tool's supervisor runs it only
+  for a person (`user:` or `token:` sender) or for the Vulnerability Supervisor, which applies the scan approval
+  policy. An approval id passed with it must be an approved `scan` approval for this tool. Team agents and other
+  modules cannot start scans through `connector.action`. `scan_status` is read-only and stays open.
 - Findings: host, port, NVT name and OID, CVEs, description, solution, severity from the score (critical >= 9,
   high >= 7, medium >= 4, low > 0, info 0). `external_id` is `<nvt oid>|<host>|<port>`. An incomplete read of a
   report is refused, because findings missing from a scan are marked fixed.
@@ -265,28 +292,44 @@ OpenAPI spec, or merged in by an [extension pack](AGENTS.md#extensions).
 | `controls` | `external_id` (the hub control id), `ref_id`, `name`, `description`, `status` (pass, partial, fail, manual, na), `evidence`, `refs` |
 | `people` | `external_id`, `display_name`, `email`, `login`, `title`, `department`, `manager_external_id`, `status` (active, suspended, terminated), `groups`, `location`, `phone` |
 | `accounts` | `external_id`, `login`, `email`, `display_name`, `active`, `last_login`, `app` |
+| `network` | read only: ONE record for the device the connection reaches - `device`, `kind` (firewall, router, switch, host), `revision`, `interfaces`, `zones`, `aliases`, `self_addresses`, `rules` (each with its native `vendor_ref`), `default_policy`, `notes` (`hub/connectors/netmodel.py`; [NETWORK.md](NETWORK.md#the-read-model)) |
+| `frameworks` | read only: one record per framework a GRC tool has loaded, with its requirement tree, its assessments there and its mapping sets (`hub/connectors/grcmodel.py`) |
+| `assessments` | write only: the hub's CyFun self-assessments, with result and both maturity scores per scored requirement (`grcmodel.py`) |
 | `x:<key>` | `external_id` plus the extension domain's own fields by name |
 
 An asset's `facts` may carry `assigned_email` / `assigned_username`: the hub links the asset to that person.
+
+Text that `network` and `frameworks` records carry (rule descriptions, interface names, requirement names) is the
+device's or the tool's: shown as text only, never as HTML, never in commands, and never handed to agents.
 
 **Adding a connector**: subclass `connectors.base.Connector` (fields, capabilities, actions, `detect`, the operations
 it supports, records in the canonical shapes) and add one line to `REGISTRY`. The planner, the flows and the UI pick
 it up from there. Tests pass an `httpx.MockTransport`, so no network is needed.
 
+- **Side-effecting actions** go in `side_effect_actions` with the approval kind that governs them (OpenVAS:
+  `{"scan": "scan"}`). The tool's supervisor runs such an action only for a person, or for the agent that owns that
+  approval path (`tool_supervisor.ACTION_ROUTES`). Actions not listed must be read-only.
+- **Network device connectors** follow the contract in `base.py` and `netmodel.py`: reading, `test()` check names,
+  and the write methods. The write methods are never connector actions: a class that lists one is refused when it is
+  defined ([NETWORK.md](NETWORK.md#writing-a-device-connector)).
+
 ## Data flows
 
 A **flow** moves one data domain between a tool and a hub app (collection `flows`): `domain`, `source` and `target`
-(`hub` or `tool:<id>`), `action` (`scan` for scan flows), `schedule_minutes` (0 = only by hand, default 60),
-`status` (`proposed`, `enabled`, `disabled`), `strategy` (`connector`, or `generated` for a Claude-written mapping),
-`options`, the last run and result, and the number of consecutive failures.
+(`hub` or `tool:<id>`), `action` (`scan` for scan flows), `schedule_minutes` (0 = only by hand, default 60;
+network pulls 10), `status` (`proposed`, `enabled`, `disabled`), `strategy` (`connector`, or `generated` for a
+Claude-written mapping), `options`, the last run and result, and the number of consecutive failures.
 
 **Sync links** (collection `sync_links`) pair a hub record with its counterpart in a tool and keep a hash of what was
 last sent, so unchanged records are not sent again.
 
 ### Planning
 
-The Hub Supervisor proposes flows from each connection's capabilities (its last successful test, else what the
-connector declares):
+The Hub Supervisor proposes flows from each connection's capabilities: what the connector declares for its current
+settings, narrowed to what its last successful test reported (a test is kept while the endpoint stays the same, so a
+setting switched off since never keeps its domain). Saving a connection removes its enabled or proposed pulls and
+pushes it no longer supports (disabled ones stay, so a rejection stays a rejection); when saving widens the
+capabilities and the last test covers them, the planner runs again:
 
 | The tool | Flow |
 | --- | --- |
@@ -299,12 +342,25 @@ connector declares):
 | reads risks | pull them into the risk register |
 | reads people (Okta, Keycloak, SCIM, an HR system) | pull them into the People app |
 | reads accounts | pull its user accounts into the People app, linked to people |
+| reads network (a firewall, router, switch or host firewall) | pull its configuration into the Network app every 10 minutes ([NETWORK.md](NETWORK.md)) |
+| reads frameworks (CISO Assistant) | pull its loaded frameworks and assessments into the Compliance hub, read only |
+| writes assessments (an admin switched "Send CyFun self-assessments" on) | push the hub's CyFun self-assessments to it |
 | reads an enabled extension domain | pull it into that extension app; a tool that only writes it gets a push |
+
+Generated connections (a Claude-written generic REST mapping) never get `network`, `frameworks` or `assessments`
+flows: those need a built-in connector's normalised records.
+
+**Loop rule** (review-notes F7): a pull and a push of the same domain for the same tool never coexist while either is
+enabled or proposed. A scan is not a pull. The planner never proposes such a pair. `POST /api/flows` and enabling a
+flow with `PATCH /api/flows/{id}` answer 409 `flow_conflict` (with the conflicting `flow_id`) and change nothing.
+When a flow approval is decided while an enabled opposite flow exists, the flow stays disabled and the approval is
+marked failed. One effect: a tool that reads and writes vulnerabilities without scanning (only possible with a generic
+REST mapping) now gets only the pull.
 
 Each proposal is an approval of kind `flow`; in autonomous mode it is enabled straight away. A rejected proposal stays
 as a disabled flow and is not proposed again. Planning runs after a successful connection test, after a generated
 connector is approved, when extension packs change, and on demand (**Plan data flows** in the Integration hub,
-`POST /api/flows/plan`).
+`POST /api/flows/plan`). A flow can also be drawn on the [Integration map](#integration-map).
 
 ### Running
 
@@ -327,14 +383,16 @@ The scheduler in the Hub runtime (`Hub.tick_flows`, every `HUB_FLOW_INTERVAL` se
 polls running scans and checks the vulnerability deadlines hourly. It is off when `start_background_tasks` is false
 (tests). Pulled records can be large: bus bodies over 32 KB reach their recipient in full but are logged as a summary.
 
-In the UI, **Integration hub > Data flows** lists every flow with its status, schedule, last result and failures, with
-an enable switch, **Run now** and **Repair**. A tool's **Connection** tab shows its own flows.
+In the UI, **Integration hub > Overview > Data flows** lists every flow with its status, schedule, last result and
+failures, with an enable switch, **Run now** and **Repair**. A tool's **Connection** tab shows its own flows, and the
+[Integration map](#integration-map) draws them.
 
 | Endpoint | Role | Purpose |
 | --- | --- | --- |
 | `GET /api/flows` | viewer | every flow |
+| `POST /api/flows` | operator | `{domain, source, target, action?, schedule_minutes?, options?}`: create one flow (see [Integration map](#integration-map)) |
 | `POST /api/flows/plan` | operator | propose the flows the connections make possible |
-| `PATCH /api/flows/{id}` | operator | `{status: enabled or disabled, schedule_minutes, options}` |
+| `PATCH /api/flows/{id}` | operator | `{status: enabled or disabled, schedule_minutes, options}`; enabling one that would loop: 409 `flow_conflict` |
 | `POST /api/flows/{id}/run` | operator | run it now |
 | `POST /api/flows/{id}/repair` | operator | ask for a repair proposal |
 | `DELETE /api/flows/{id}` | operator | remove it |
@@ -354,13 +412,109 @@ After three consecutive failures of a flow (or when an operator presses **Repair
 secret values redacted.
 
 - **With Claude**: a changed generic REST mapping or connection setting, validated like one a person enters. It can
-  never point the connection at a different endpoint.
+  never point the connection at a different endpoint, and never changes the settings that keep a connection safe -
+  Read only, certificate and SSH host-key checks (`verify_tls`, `ca_file`, `host_key`, `known_hosts`), the hub
+  address the management-path guard uses, the host firewall's root wrapper, or the switches that let the hub write
+  to a tool (`push_assessments`, `read_accounts`, `save_config`). Those stay an administrator's
+  (`PUT /api/tools/{id}/connection`).
 - **Without Claude**, rules: 401 / 403 -> check the credentials; 404 -> try base-path variants (`/api` added or
   removed) with a connection test and propose the one that works; 400 / 409 / 422 -> the tool's validation message as
   it wrote it.
 
-The proposal is an approval of kind `repair` (applied directly in autonomous mode when it changes something);
-approving it applies the change and runs the flow again.
+A **network device's** connection (the firewall connectors) is repaired by the rules only: the device's error text
+never reaches a model, and agents read it only reduced to safe characters, without the answer's body. Such a repair
+may change only the connection's URL path, only an administrator approves it, and it is never applied by the agent
+alone, also in autonomous mode.
+
+The proposal is an approval of kind `repair` (applied directly in autonomous mode when it changes something, except
+for a network device); approving it applies the change and runs the flow again.
+
+## Integration map
+
+The Integration hub has three tabs: **Overview** (suite score, data flows, strategies, identity, event routes),
+**Map** and **Segmentation** (the firewall segmentation map, see [NETWORK.md](NETWORK.md#segmentation-map)). The
+**Map** (`#/integration/map`, also "Integration map" in Ctrl K) draws the whole suite in five lanes:
+
+| Lane | Holds |
+| --- | --- |
+| Identity providers | identity providers without a connection |
+| Sources | tools that mostly bring data into the hub |
+| Hub apps | the spine: Assets, Vulnerabilities, Compliance hub, People, Network and one app per enabled extension domain |
+| Destinations | tools that mostly receive data or scan |
+| Not connected | tools without a connection |
+
+**Edges**:
+
+- **Data flows** in all their states: enabled, proposed, failing, running, waiting for a scan approval, disabled.
+- On demand (**Filters**): single sign-on edges from each tool to its identity provider (connected or pending),
+  event routes from the tools' manifests with their last delivery, and shared capabilities.
+
+The map is a view of the same data as the Overview: nothing exists only on the map.
+
+**Reading the map** (everyone):
+
+- Select a tool, app or edge to see its details in the inspector. For a flow this reuses the data-flow controls (run,
+  enable, repair, edit); for an SSO edge, the provider and pending patch; for an event route, its pattern and recent
+  deliveries.
+- **Filters**:
+  - show SSO, event and capability edges;
+  - show all, failing or proposed flows;
+  - list the items you hid.
+- **Find** (`/`) and **Focus on selection** (dims everything not connected to it).
+- **Hide from my map** hides an item for you only, in your browser. Nobody can hide a tool from everyone.
+- **List view** (`L`, and a "Skip to list view" link) shows the same information as tables: tools, data flows,
+  single sign-on, event routes. Connecting, single sign-on and the flow controls work there without the map.
+- **Keyboard**: arrows move between items and lanes, Enter opens details, `E` / Shift+`E` walk an item's connections,
+  `+` / `-` / `0` zoom and fit, Shift+arrows pan, `F` is focus mode, `?` lists every shortcut.
+- **Deep links**: `#/integration/map/node/<item id>`, `#/integration/map/flow/<flow id>`,
+  `#/integration/map/edge/<edge id>`, `#/integration/map/failing`.
+
+**Changing the suite** (operators):
+
+- **Connect**: drag from a tool's grip to a hub app or another tool, click the grip and then the target, use **Connect
+  to...** in the inspector or the List view, or press `C`. The **Connect panel** lists what is possible between the
+  two items:
+  - a pull, push or scan per domain;
+  - for two tools, a chain through the hub (one tool's pull plus the other's push);
+  - the planner's own proposals first, marked **recommended**, with the same reasons.
+
+  Options that cannot be created say why: no connection, no capability, the other tool is the system of record, the
+  flow exists, or it would loop. Choosing one calls `POST /api/flows`:
+  - in manual and assisted mode the flow is proposed for approval (the person who drew it is recorded as its
+    proposer);
+  - in autonomous mode it is enabled at once.
+- **Single sign-on**: connecting a tool and an identity provider (or pressing `S` on a tool) opens the provider
+  picker, which proposes single sign-on as an SSO patch.
+- **Delete** on a selected flow offers **Disable** (the default) or **Remove**. Single sign-on, event routes and
+  capabilities cannot be removed from the map: they are changed in the provider picker or come from the tools'
+  manifests.
+- **Rearrange**: drag a tool, or press `M`, to reorder it within its lane or move it between Sources and Destinations.
+  `Ctrl+Z` undoes a move. The arrangement is shared by everyone (collection `canvas_layouts`, SSE `canvas_layout`).
+  **Reset arrangement** restores the default order for everyone.
+
+**What viewers never receive** (review-notes F24). The map and `GET /api/integration` carry:
+
+- no connection settings or secrets;
+- no webhook URLs: event routes only say `has_webhook` (and `webhook` as a boolean);
+- no event payloads: tool-event deliveries are listed without payloads, with URLs in their details replaced by
+  `<url>`.
+
+The `toolbus` SSE event no longer carries the payload either. The same holds for every other way a tool's manifest
+reaches people or models: `GET /api/tools`, `GET /api/tools/{id}`, the `tool` SSE event, the tool supervisors'
+replies in the agent bus log and the agents' `get_tool` tool show `events.has_webhook` instead of `events.webhook_url`,
+and `launch.env_keys` (the key names) instead of `launch.env`. The stored manifest keeps both.
+
+| Endpoint | Role | Purpose |
+| --- | --- | --- |
+| `GET /api/integration/map` | viewer | the map: hub apps, tool nodes (connection summary only), flows, SSO edges, event edges, capability links, identity overview and the shared layout |
+| `GET /api/integration/map/options?a=<item>&b=<item>` | viewer | the Connect panel's options between two items (`tool:<id>` or `app:<id>`); 404 for an unknown or inactive item |
+| `POST /api/flows` | operator | create a flow. Errors carry `detail = {code, message}`: 400 `invalid`, `no_connection`, `no_capability`, `system_of_record`; 404 `not_found`; 409 `flow_exists`, `flow_conflict` (with `flow_id`) |
+| `GET /api/layouts/{view}` | viewer | the shared arrangement of `integration` or `segmentation` |
+| `PATCH /api/layouts/{view}` | operator | `{items: {id: {order, lane?}}, remove?: [ids]}`: merge per id (at most 5000 items) |
+| `DELETE /api/layouts/{view}` | operator | reset the arrangement (logged) |
+
+Layouts hold only the shared arrangement (order in a lane and, for integration tools, a Sources/Destinations lane
+override). Camera, hidden items, collapsed zones and filters stay in each viewer's browser.
 
 ## Vulnerabilities and scans
 

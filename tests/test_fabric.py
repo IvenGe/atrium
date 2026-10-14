@@ -178,7 +178,8 @@ def test_connection_secrets_are_encrypted_and_never_shown(client, remote, sign_i
     assert view["capabilities"] == {"assets": ["read", "write"]} and view["system_of_record"] == ["assets"]
     stored = hub.store.get("connections", "inventory")["secrets"]["token"]
     assert stored != TOKEN and hub.secrets.decrypt(stored) == TOKEN
-    assert TOKEN.encode() not in Path(hub.settings.db_path).read_bytes()
+    on_disk = b"".join(p.read_bytes() for p in Path(hub.settings.db_path).parent.glob("hub.db*"))  # + the WAL
+    assert TOKEN.encode() not in on_disk
 
     # an empty secret keeps the stored one, as long as the address stays the same
     client.put("/api/tools/inventory/connection", json={"kind": "fake_inventory", "config": {"base_url": "https://inv.example.com/api"},

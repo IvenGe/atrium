@@ -64,6 +64,29 @@ ADMIN_ROUTES = (
     ("POST", re.compile(r"/api/tools/[^/]+/extend")),
     ("POST", re.compile(r"/api/self-patches")),
     ("POST", re.compile(r"/api/self-patches/[^/]+/apply")),
+    # Network app: accepting or removing a device's configuration baseline (it decides what counts as drift),
+    # downloading a backup (a device's full configuration, often with password hashes and keys) and the network
+    # settings (backup retention). Segmentation: zone roles and the policy decide the compliance verdicts (any zone id,
+    # which may contain "/"). Viewers read, operators refresh, back up, acknowledge drift and place assets (default).
+    ("POST", re.compile(r"/api/network/devices/[^/]+/baseline")),
+    ("DELETE", re.compile(r"/api/network/devices/[^/]+/baseline")),
+    ("GET", re.compile(r"/api/network/backups/[^/]+/download")),
+    ("PATCH", re.compile(r"/api/network/settings")),
+    ("PATCH", re.compile(r"/api/segmentation/zones/.+")),
+    ("PUT", re.compile(r"/api/segmentation/policy")),
+    # Device changes: operators preview, propose, withdraw and propose reverts / backup restores (the default);
+    # applying an approved change at once as an emergency and the maintenance windows are administrators' (deciding
+    # a device change needs admin too - checked by the approvals route for kind "firewall").
+    ("POST", re.compile(r"/api/segmentation/changes/[^/]+/emergency")),
+    ("POST", re.compile(r"/api/network/maintenance-windows")),
+    ("PATCH", re.compile(r"/api/network/maintenance-windows/[^/]+")),
+    ("DELETE", re.compile(r"/api/network/maintenance-windows/[^/]+")),
+    # The integration map (hub/canvas_api.py) follows the default on purpose: viewers read the map, the Connect
+    # options and the layouts; operators arrange the shared layouts (PATCH/DELETE /api/layouts/{view}) and create data
+    # flows (POST /api/flows, which proposes them for approval unless the hub is autonomous). Nothing there is admin's.
+    # Compliance frameworks: viewers read catalogs, assessments and audit packs, operators start and score
+    # self-assessments (the default); deleting one removes evidence of past assessments, so it needs admin.
+    ("DELETE", re.compile(r"/api/frameworks/[^/]+/assessments/[^/]+")),
 )
 # Reads that act on a tool with its stored credentials, so they need operator.
 OPERATOR_READS = (

@@ -3,8 +3,10 @@ import { followPicker, loadPeople, personChip, personOptions } from "../people.j
 import {
   actions, badge, can, confirmDialog, emptyState, field, html, icon, md, modal, options, setHTML, timeAgo, toast,
 } from "../ui.js";
+import { renderFrameworks } from "./frameworks.js";
 
 const STATUS_ICON = { pass: "check", partial: "minus", fail: "x", manual: "edit", na: "minus" };
+const CYFUN = { CyFun2025: "cyfun2025", CyFun2023: "cyfun2023" }; // control-coverage tiles -> the self-assessment of that edition
 const POLICY_CATEGORIES = ["security", "access", "incident", "backup", "acceptable-use", "supplier", "other"];
 
 function riskColor(score) {
@@ -32,7 +34,8 @@ function frameworkCards(frameworks) {
   return html`<div class="grid cols-5" style="margin-bottom:16px">${frameworks.map((f) => html`<div class="card">
     <div class="row" style="justify-content:space-between"><b>${f.name}</b><span style="font-size:20px;font-weight:750">${f.score ?? "-"}%</span></div>
     <div class="progress" style="margin:10px 0 8px"><span style="width:${f.score || 0}%"></span></div>
-    <div class="faint" style="font-size:12px">${f.passing}/${f.controls} controls passing${f.failing ? `, ${f.failing} failing` : ""}</div></div>`)}</div>`;
+    <div class="faint" style="font-size:12px">${f.passing}/${f.controls} controls passing${f.failing ? `, ${f.failing} failing` : ""}</div>
+    ${CYFUN[f.id] ? html`<a href="#/compliance/frameworks/${CYFUN[f.id]}" style="font-size:12px">Self-assessment &rarr;</a>` : ""}</div>`)}</div>`;
 }
 
 function controlRow(c) {
@@ -44,7 +47,7 @@ function controlRow(c) {
       <div style="margin-top:4px;font-size:13px">${c.detail}${c.note ? html` <span class="faint">- ${c.note}</span>` : ""}</div>
       ${c.evidence.length ? html`<details style="margin-top:4px"><summary class="faint" style="cursor:pointer;font-size:12px">Evidence (${c.evidence.length})</summary>
         <ul style="margin:4px 0;padding-left:18px;font-size:12.5px">${c.evidence.map((e) => html`<li>${e}</li>`)}</ul></details>` : ""}
-      <div class="row" style="gap:6px;margin-top:6px">${Object.entries(c.refs).map(([k, v]) => html`<span class="badge">${k} ${v}</span>`)}</div>
+      <div class="row" style="gap:6px;margin-top:6px">${Object.entries(c.refs).map(([k, v]) => html`<span class="badge wrap">${k} ${v}</span>`)}</div>
     </div>
     <div data-min-role="operator"><button class="btn sm" data-act="override" data-id="${c.id}">${icon("edit")}Set</button></div></div>`;
 }
@@ -106,10 +109,12 @@ export async function render(el, ctx) {
     const openRisks = risks.filter((r) => r.status !== "closed").sort((a, b) => b.score - a.score);
     const families = [...new Set(data.controls.map((c) => c.family))];
     setHTML(el, html`
-      <div class="page-head"><div><h1>Compliance hub</h1><p class="muted">Governance, risk and compliance. The GRC Supervisor checks controls against live hub state and maps the evidence to ISO 27001, SOC 2 and NIS2.</p></div>
+      <div class="page-head"><div><h1>Compliance hub</h1><p class="muted">Governance, risk and compliance. The GRC Supervisor checks controls against live hub state and maps the evidence to ISO 27001, SOC 2, NIS2 and CyberFundamentals (CyFun); under Frameworks you assess yourself against CyFun.</p></div>
         <button class="btn" data-act="evaluate" data-min-role="operator">${icon("refresh")}Re-evaluate</button></div>
-      <div class="tabs">${[["overview", "Overview"], ["controls", `Controls (${data.controls.length})`], ["risks", `Risks (${openRisks.length} open)`], ["policies", `Policies (${policies.length})`]]
+      <div class="tabs">${[["overview", "Overview"], ["frameworks", "Frameworks"], ["controls", `Controls (${data.controls.length})`], ["risks", `Risks (${openRisks.length} open)`], ["policies", `Policies (${policies.length})`]]
         .map(([k, label]) => html`<button class="${tab === k ? "active" : ""}" data-act="tab" data-tab="${k}">${label}</button>`)}</div>
+
+      ${tab === "frameworks" ? html`<div data-part="frameworks"><div class="empty faint">Loading...</div></div>` : ""}
 
       ${tab === "overview" ? html`${frameworkCards(data.frameworks)}
         <div class="grid split">
@@ -144,6 +149,8 @@ export async function render(el, ctx) {
             <div class="row" style="gap:6px">${p.status !== "approved" ? html`<button class="btn sm ok" data-act="approve-policy" data-id="${p.id}" data-min-role="operator">${icon("check")}Approve</button>` : ""}
               <button class="btn sm" data-act="edit-policy" data-id="${p.id}">${can("operator") ? html`${icon("edit")}Edit` : html`${icon("file")}View`}</button></div></div>`)
           : emptyState("file", "No policies yet", "Start from a template - the GRC Supervisor counts approved policies as evidence.")}</section>` : ""}`);
+    // The Frameworks tab draws (and live-updates) itself; it is drawn once per route, see `tab` below.
+    if (tab === "frameworks") await renderFrameworks(el.querySelector('[data-part="frameworks"]'), ctx, ctx.params.slice(1));
     el.querySelector("#tpl")?.addEventListener("change", async (e) => {
       const cat = e.target.value;
       if (!cat) return;
@@ -175,8 +182,12 @@ export async function render(el, ctx) {
   };
 
   actions(el, {
-    tab: (d) => { tab = d.tab; history.replaceState(null, "", `#/compliance/${tab}`); draw(); },
-    async evaluate() { await post("/grc/evaluate"); toast("Controls re-evaluated", "ok"); draw(); },
+    tab: (d) => {
+      // to and from Frameworks: a real navigation, so its live listeners belong to that route only
+      if (d.tab === "frameworks" || tab === "frameworks") { location.hash = `#/compliance/${d.tab}`; return; }
+      tab = d.tab; history.replaceState(null, "", `#/compliance/${tab}`); draw();
+    },
+    async evaluate() { await post("/grc/evaluate"); toast("Controls re-evaluated", "ok"); if (tab !== "frameworks") draw(); },
     override(d) {
       const c = data.controls.find((x) => x.id === d.id);
       const m = modal({
@@ -220,5 +231,5 @@ export async function render(el, ctx) {
     },
   });
   await draw();
-  ctx.live(["grc", "risk", "risk_removed", "policy", "policy_removed", "person_removed"], draw, 600);
+  ctx.live(["grc", "risk", "risk_removed", "policy", "policy_removed", "person_removed"], () => (tab === "frameworks" ? null : draw()), 600);
 }

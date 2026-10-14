@@ -29,7 +29,8 @@ export function setHTML(el, content) {
   return el;
 }
 
-const ICONS = {
+// Read-only outside this file (the canvas builds <symbol> definitions from it).
+export const ICONS = {
   home: '<path d="M3 11 12 4l9 7"/><path d="M5 10v10h14V10"/><path d="M10 20v-5h4v5"/>',
   grid: '<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>',
   search: '<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>',
@@ -91,6 +92,12 @@ const ICONS = {
   database: '<ellipse cx="12" cy="5.5" rx="8" ry="2.5"/><path d="M4 5.5v13c0 1.4 3.6 2.5 8 2.5s8-1.1 8-2.5v-13M4 12c0 1.4 3.6 2.5 8 2.5s8-1.1 8-2.5"/>',
   tag: '<path d="M3 12V4h8l10 10-8 8z"/><circle cx="7.5" cy="8.5" r="1.3"/>',
   flag: '<path d="M5 21V4M5 4h11l-2 4 2 4H5"/>',
+  network: '<rect x="9" y="3" width="6" height="5" rx="1"/><rect x="3" y="16" width="6" height="5" rx="1"/><rect x="15" y="16" width="6" height="5" rx="1"/><path d="M12 8v4M6 16v-4h12v4"/>',
+  firewall: '<rect x="3" y="5" width="18" height="14" rx="1.5"/><path d="M3 9.7h18M3 14.3h18M9 5v4.7M15 5v4.7M6 9.7v4.6M12 9.7v4.6M18 9.7v4.6M9 14.3V19M15 14.3V19"/>',
+  router: '<rect x="3" y="13" width="18" height="7" rx="1.5"/><path d="M7 16.5h.01M11 16.5h.01M15 16.5h3M12 13V9.5"/><path d="M8.8 7.3a4.5 4.5 0 0 1 6.4 0M6.3 4.8a8 8 0 0 1 11.4 0"/>',
+  switch: '<rect x="2.5" y="7" width="19" height="10" rx="1.5"/><path d="M6 11h1.5M9.5 11H11M13 11h1.5M16.5 11H18M6 14h12"/>',
+  expand: '<path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/>',
+  keyboard: '<rect x="2.5" y="6" width="19" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M8 14h8"/>',
 };
 
 export function icon(name, extra = "") {
@@ -266,13 +273,45 @@ export function toast(message, tone = "info") {
 
 // ---------- modals ----------
 
+// The element that opened each open modal (by backdrop): a dialog opened from inside another one falls back to it.
+const OPENERS = new WeakMap();
+
+/** A selector that finds an element again after its view re-rendered (live updates replace the DOM): id or data-*. */
+function locator(el) {
+  if (!el) return null;
+  if (el.id) return `#${CSS.escape(el.id)}`;
+  const attrs = ["act", "id", "key", "tab"].filter((k) => el.dataset?.[k] !== undefined)
+    .map((k) => `[data-${k}="${CSS.escape(el.dataset[k])}"]`).join("");
+  return attrs ? `${el.tagName.toLowerCase()}${attrs}` : null;
+}
+
+/** After a modal closed: focus the first opener still on the page (or its re-rendered twin), unless focus already moved
+ *  somewhere else or another dialog is open that the opener is not part of (that dialog keeps the focus). */
+function returnFocus(candidates) {
+  const active = document.activeElement;
+  if (active && active !== document.body && active.isConnected) return;
+  const top = [...document.querySelectorAll(".backdrop")].at(-1);
+  const target = candidates.map(([el, sel]) => (el?.isConnected ? el : sel ? document.querySelector(sel) : null))
+    .find((c) => c && (!top || top.contains(c)));
+  target?.focus({ preventScroll: true });
+}
+
 /**
  * Opens a modal. `body` is html``; returns {el, close}. onSubmit receives FormData when the form is submitted.
  * `minRole`: below that role the body is read-only and the submit button hidden. `sticky`: only the buttons close it.
+ * `onClose` runs exactly once however the modal closes (buttons, Esc, backdrop, submit); focus then returns to the
+ * element that opened it.
  */
-export function modal({ title, body, submit = "Save", cancel = "Cancel", wide = false, onSubmit, footer, minRole, sticky = false }) {
+export function modal({ title, body, submit = "Save", cancel = "Cancel", wide = false, onSubmit, footer, minRole, sticky = false, onClose }) {
   const readOnly = !can(minRole);
+  // HTML or SVG (a map item): anything focusable that is not the page itself
+  const active = document.activeElement;
+  const opener = (active instanceof HTMLElement || active instanceof SVGElement) && active !== document.body ? active : null;
+  const outer = opener?.closest(".backdrop");
+  const fallback = outer ? OPENERS.get(outer) : null;
   const backdrop = document.createElement("div");
+  const mine = [opener, locator(opener)];
+  if (opener) OPENERS.set(backdrop, mine);
   backdrop.className = "backdrop";
   const foot = footer ?? html`${cancel ? html`<button type="button" class="btn" data-close>${readOnly && cancel === "Cancel" ? "Close" : cancel}</button>` : ""}
       ${submit ? html`<button type="submit" class="btn primary" ${minRole ? html`data-min-role="${minRole}"` : ""}>${submit}</button>` : ""}`;
@@ -281,8 +320,20 @@ export function modal({ title, body, submit = "Save", cancel = "Cancel", wide = 
     <div class="body">${readOnly ? html`<fieldset class="plain" disabled>${body}</fieldset>` : body}</div>
     <footer>${foot}</footer></form>`);
   const form = backdrop.querySelector("form");
-  const close = () => { backdrop.remove(); document.removeEventListener("keydown", onKey); };
-  const onKey = (e) => { if (e.key === "Escape" && !sticky) close(); };
+  let closed = false;
+  const close = () => {
+    if (closed) return;
+    closed = true;
+    backdrop.remove();
+    document.removeEventListener("keydown", onKey);
+    try {
+      onClose?.();
+    } finally {
+      returnFocus([mine, fallback || [null, null]]);
+    }
+  };
+  // Esc closes the top-most dialog only (a dialog opened from another one closes first)
+  const onKey = (e) => { if (e.key === "Escape" && !sticky && [...document.querySelectorAll(".backdrop")].at(-1) === backdrop) close(); };
   document.addEventListener("keydown", onKey);
   backdrop.addEventListener("mousedown", (e) => { if (e.target === backdrop && !sticky) close(); });
   backdrop.querySelectorAll("[data-close]").forEach((b) => b.addEventListener("click", close));
@@ -301,17 +352,19 @@ export function modal({ title, body, submit = "Save", cancel = "Cancel", wide = 
     }
   });
   document.body.append(backdrop);
-  setTimeout(() => form.querySelector("input:not([type=hidden]):not([hidden]):not(:disabled), select:not(:disabled), textarea:not(:disabled)")?.focus(), 30);
+  // focus moves into the dialog: its first field, else its first footer button (Cancel before a destructive action)
+  setTimeout(() => (form.querySelector("input:not([type=hidden]):not([hidden]):not(:disabled), select:not(:disabled), textarea:not(:disabled)")
+    || form.querySelector("footer button:not(:disabled)") || form.querySelector("[data-close]"))?.focus(), 30);
   return { el: form, close };
 }
 
 export function confirmDialog(title, text, action = "Confirm") {
   return new Promise((resolve) => {
-    const m = modal({
+    modal({
       title, body: html`<p>${text}</p>`, submit: action,
       onSubmit: () => resolve(true),
+      onClose: () => resolve(false), // Cancel, Esc or a click outside (after a submit the promise is settled already)
     });
-    m.el.querySelectorAll("[data-close]").forEach((b) => b.addEventListener("click", () => resolve(false)));
   });
 }
 

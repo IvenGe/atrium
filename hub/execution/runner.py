@@ -22,6 +22,17 @@ from ..models import Host
 MAX_OUTPUT = 64_000
 IS_WINDOWS = sys.platform == "win32"
 READ_LIMIT = 32 * 1024 * 1024  # per stream in a device session: large rulesets fit, runaway output does not
+# Environment variables a command or tool process started from the hub never inherits: the hub's own settings
+# (HUB_SECRET_KEY, HUB_ADMIN_PASSWORD, HUB_OIDC_CLIENT_SECRET, ...) and anything named like a credential.
+SECRET_ENV = re.compile(r"(?i)(secret|token|password|passwd|credential|api[_-]?key|private[_-]?key|cookie|session|auth)")
+HUB_ENV_PREFIXES = ("HUB_", "ANTHROPIC_", "GH_", "GITHUB_")
+
+
+def child_env(extra: dict[str, str] | None = None) -> dict[str, str]:
+    """The environment of a shell command or tool process started from the hub: this process's environment without
+    the hub's settings and credentials (F1), plus `extra` (e.g. a tool's own launch.env)."""
+    env = {k: v for k, v in os.environ.items() if not SECRET_ENV.search(k) and not k.upper().startswith(HUB_ENV_PREFIXES)}
+    return {**env, **(extra or {})}
 
 
 @dataclass
@@ -72,7 +83,7 @@ async def run_local(
         cwd=cwd or None,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT,
-        env={**os.environ, **(env or {})},
+        env=child_env(env),
         **new_group_kwargs(),
     )
     try:
@@ -206,9 +217,21 @@ def posix_command(argv: list[str]) -> str:
     return shlex.join(str(a) for a in argv)
 
 
+# Every character PowerShell's tokenizer takes for a single quote (CharTraits.IsSingleQuote: ' U+2018 U+2019 U+201A
+# U+201B); inside a single-quoted literal each one is escaped by doubling it
+# (CodeGeneration.EscapeSingleQuotedStringContent).
+PS_SINGLE_QUOTES = re.compile("(['\u2018\u2019\u201a\u201b])")
+PS_REFUSED = re.compile("[\x00-\x08\x0a-\x1f\x7f-\x9f\u2028\u2029]")
+
+
 def ps_quote(value: str) -> str:
-    """A PowerShell single-quoted literal (no expansion inside; a quote is doubled)."""
-    return "'" + str(value).replace("'", "''").replace("‘", "‘‘").replace("’", "’’") + "'"
+    """A PowerShell single-quoted literal (no expansion inside; every kind of single quote is doubled). Control
+    characters and line breaks are refused (ValueError): a value is one line of data, never a second statement.
+    Prefer passing data as a Base64 JSON payload on stdin, as windows_firewall does."""
+    text = str(value)
+    if PS_REFUSED.search(text):
+        raise ValueError("a PowerShell value may not contain control characters or line breaks")
+    return "'" + PS_SINGLE_QUOTES.sub(r"\1\1", text) + "'"
 
 
 SSH_CONNECTION_RE = re.compile(r"^\s*(\S+)\s+(\d{1,5})\s+(\S+)\s+(\d{1,5})\s*$")
@@ -259,6 +282,8 @@ class _AsyncsshSession:
         data = input.encode("utf-8") if isinstance(input, str) else input
         try:
             process = await self._conn.create_process(command, input=data, encoding=None)
+            if data is None:
+                process.stdin.write_eof()  # a command that reads stdin must not wait forever
         except Exception as exc:  # channel refused (MaxSessions), connection lost
             raise SshError(f"{self.target.label}: cannot start a command ({exc.__class__.__name__})") from exc
         try:
@@ -303,8 +328,14 @@ class AsyncsshTransport:
                 options["known_hosts"] = asyncssh.import_known_hosts(f"{pattern} {target.host_key.strip()}\n")
             except (ValueError, asyncssh.KeyImportError) as exc:
                 raise SshError("The pinned host key is not a public key line such as 'ssh-ed25519 AAAA...'") from exc
-        elif target.known_hosts:
-            options["known_hosts"] = os.path.expanduser(target.known_hosts)
+        else:  # an explicit file: never asyncssh's defaults (a missing file must not mean "trust everything")
+            path = os.path.expanduser(target.known_hosts or "~/.ssh/known_hosts")
+            if os.path.isfile(path):
+                options["known_hosts"] = path
+            elif target.known_hosts:
+                raise SshError(f"The known_hosts file {target.known_hosts} does not exist on the hub")
+            else:
+                options["known_hosts"] = asyncssh.import_known_hosts("")  # nothing is trusted: pin the host key
         return options
 
     @contextlib.asynccontextmanager

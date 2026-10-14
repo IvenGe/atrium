@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Annotated, Any
+from typing import TYPE_CHECKING, Annotated, Any, Literal
 from urllib.parse import quote
 
 from fastapi import APIRouter, HTTPException, Request, Response
@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 
 from ..models import TokenRole, UserRole, public_token, public_user
 from . import sso_settings
-from .oidc import OidcClient, OidcError
+from .oidc import OidcClient, OidcError, safe_code
 from .service import STATE_COOKIE, AuthError, CurrentPrincipal, Principal, client_ip
 
 if TYPE_CHECKING:
@@ -63,6 +63,7 @@ class NewToken(BaseModel):
     name: str = Field(max_length=64)
     role: TokenRole
     expires_days: int | None = Field(None, ge=1, le=3650)
+    tool_id: str | None = Field(None, max_length=64)  # integration tokens: the tool they publish as (default: the name)
 
 
 class SsoBody(BaseModel):
@@ -79,8 +80,19 @@ class SsoBody(BaseModel):
     role_claim: str | None = Field(None, max_length=100)
     admin_values: list[str] | None = Field(None, max_length=50)
     operator_values: list[str] | None = Field(None, max_length=50)
-    default_role: UserRole | None = None
+    viewer_values: list[str] | None = Field(None, max_length=50)
+    default_role: Literal["viewer", "operator", "admin", "none"] | None = None  # "none": refuse everyone else (F18)
+    allowed_domains: list[str] | None = Field(None, max_length=50)
     allow_http: bool | None = None
+
+
+class ProviderRefused(OidcError):
+    """The identity provider answered the callback with an error: the person sees its description, the activity log
+    only its (reduced) error code."""
+
+    def __init__(self, error: str, description: str | None):
+        super().__init__(description or f"The identity provider refused the sign-in ({safe_code(error)}).")
+        self.logged = f"the identity provider refused the sign-in ({safe_code(error)})"
 
 
 def build_auth_router(hub: "Hub") -> APIRouter:
@@ -113,6 +125,7 @@ def build_auth_router(hub: "Hub") -> APIRouter:
     async def login(body: LoginBody, request: Request, response: Response) -> dict[str, Any]:
         user = await auth.login(body.username, body.password, request)
         auth.start_session(user, request, response)
+        auth.remember_device(user, request, response)
         return {"user": public_user(user)}
 
     @router.post("/auth/logout")
@@ -166,7 +179,7 @@ def build_auth_router(hub: "Hub") -> APIRouter:
         try:
             url, state = await auth.oidc.begin()
         except OidcError as exc:
-            hub.activity("auth", "warn", f"Single sign-on could not start: {exc}")
+            auth.log_sso_failure(f"Single sign-on could not start: {exc}", client_ip(request))
             return to_login(str(exc))
         response = RedirectResponse(url, status_code=302)
         response.set_cookie(STATE_COOKIE, state, max_age=600, path="/api/auth/oidc", secure=auth.secure_cookies(request),
@@ -180,13 +193,16 @@ def build_auth_router(hub: "Hub") -> APIRouter:
         response: Response
         try:
             if error:
-                raise OidcError(error_description or f"The identity provider refused the sign-in ({error}).")
+                raise ProviderRefused(error, error_description)
             if not code or not state:
                 raise OidcError("The identity provider did not return a sign-in code.")
             identity = await auth.oidc.complete(code, state, request.cookies.get(STATE_COOKIE))
             user = auth.provision_oidc(identity, request)
         except (OidcError, AuthError) as exc:
-            hub.activity("auth", "warn", f"Single sign-on failed: {str(exc)[:300]}", ip=client_ip(request))
+            # anyone can call this route: the log gets the provider's error code, never its free text, and only so
+            # many entries (review F15)
+            logged = exc.logged if isinstance(exc, ProviderRefused) else str(exc)[:300]
+            auth.log_sso_failure(f"Single sign-on failed: {logged}", client_ip(request))
             response = to_login(str(exc))
         else:
             response = RedirectResponse("/#/", status_code=302)
@@ -285,7 +301,7 @@ def build_auth_router(hub: "Hub") -> APIRouter:
 
     @router.post("/tokens", status_code=201)
     async def create_token(body: NewToken, principal: CurrentPrincipal) -> dict[str, Any]:
-        token, secret = auth.create_token(body.name, body.role, body.expires_days, principal)
+        token, secret = auth.create_token(body.name, body.role, body.expires_days, principal, tool_id=body.tool_id)
         return {**public_token(token), "token": secret}
 
     @router.delete("/tokens/{token_id}")

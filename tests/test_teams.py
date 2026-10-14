@@ -216,7 +216,11 @@ def test_guardrail_settings_are_admin_only_validated_and_logged(client, sign_in,
         "scans_need_approval": True, "team_requires_approval": True,
         # extensions and self-patching (EXTEND_SPEC)
         "allow_extensions": True, "extensions_need_approval": True, "allow_self_patching": True,
-        "self_patch_requires_tests": True, "self_patch_requires_approval": True, "self_patch_via_pull_request": True}
+        "self_patch_requires_tests": True, "self_patch_requires_approval": True, "self_patch_via_pull_request": True,
+        # the second-person rule for other approvals and network device changes (R3-NETCHANGE)
+        "approvals_need_second_person": False, "device_changes": False, "device_changes_need_second_person": True,
+        "device_changes_need_maintenance_window": True, "device_changes_need_backup": True,
+        "approval_expiry_hours": 24}
     catalog = {g["key"]: g for g in settings["guardrail_catalog"]}
     assert catalog["block_catastrophic_commands"]["risk"] and catalog["max_team_size"]["max"] == 50
     assert not any(g["relaxed"] for g in catalog.values())
@@ -259,7 +263,9 @@ def test_agent_guardrails_control():
     assert status(scans_need_approval=False, team_requires_approval=False).status == "pass"
     control = CONTROLS_BY_ID["HB-AC-6"]
     assert control.title == "AI agent guardrails are enforced"
-    assert control.refs == {"ISO27001": "A.8.2 / A.8.32", "SOC2": "CC6.1 / CC8.1", "NIS2": "21(2)(i)"}
+    assert control.refs == {"ISO27001": "A.8.2 / A.8.32", "SOC2": "CC6.1 / CC8.1", "NIS2": "21(2)(i)",
+                            "CyFun2025": "ID.RA-01.5 / ID.RA-01.4 / PR.AA-05.7",
+                            "CyFun2023": "DE.CM-8.1 / ID.RA-1.3 / PR.AC-4.7"}
     assert control.risk == ("AI agents operate without guardrails", 3, 5)
 
 
@@ -546,7 +552,8 @@ def test_local_provider_and_the_openai_compatible_tool_loop(client, sign_in):
     exposed = [client.get(p).text for p in ("/api/llm/providers", "/api/agents", "/api/agents/teams", "/api/settings",
                                             "/api/messages?limit=2000", "/api/activity?limit=2000", "/api/approvals")]
     assert all(KEY not in text for text in exposed)
-    assert KEY.encode() not in Path(hub.settings.db_path).read_bytes()
+    on_disk = b"".join(p.read_bytes() for p in Path(hub.settings.db_path).parent.glob("hub.db*"))  # + the WAL
+    assert KEY.encode() not in on_disk
     client.delete(f"/api/agents/{record['id']}")
     assert client.delete("/api/llm/providers/ollama").json() == {"ok": True}
 

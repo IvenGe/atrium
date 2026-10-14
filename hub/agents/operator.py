@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from .. import guardrails
+from ..approvals import sender_person
 from ..bus import Message
+from ..connectors.base import redact
 from ..execution import policy
 from ..execution.runner import CommandResult, run_local, run_ssh
+from ..secrets import hub_secret_values
 from .base import BaseAgent
 
 # Built-in, read-only host discovery script used by the Asset Supervisor.
@@ -25,6 +29,23 @@ DISCOVERY_SCRIPT = (
 def from_person(sender: str) -> bool:
     """A command comes from a person when a signed-in user sent it; tokens and agents are automation."""
     return sender.startswith("user:")
+
+
+# user info in a URL (https://user:token@host, as `git remote -v` may print it)
+URL_USERINFO = re.compile(r"(?i)\b([a-z][a-z0-9+.-]*://)[^\s/@]+@")
+
+
+def mask_output(hub, text: str) -> str:
+    """Command output as the hub stores, publishes and returns it (F4): every secret value the hub holds (its key,
+    its settings, the stored credentials), credential-looking key=value pairs and URL user info masked. Viewers read
+    the command history and the agents' messages, and a model reads what its command printed."""
+    return URL_USERINFO.sub(r"\1***@", redact(text, hub_secret_values(hub)))
+
+
+ADMIN_ONLY = ("Needs an administrator's approval: commands on the hub machine run with Atrium's own privileges "
+              "(its data, its key and every stored credential), so only administrators run them directly")
+ADMIN_ONLY_START = ("Needs an administrator's approval: a tool's launch command runs on the hub machine with Atrium's own "
+                    "privileges, so only administrators start tools directly")
 
 
 class OperatorAgent(BaseAgent):
@@ -46,8 +67,13 @@ class OperatorAgent(BaseAgent):
         target = body.get("target") or "local"
         trusted = bool(body.get("discovery")) and command == DISCOVERY_SCRIPT
         decision = self._decide(command, msg.sender, trusted)
+        requester = self._requester(body, msg)
+        if target == "local" and decision.action == "run" and decision.risk != "read_only" and self._below_admin(requester):
+            decision = policy.Decision("approve", decision.risk, ADMIN_ONLY)
         request = {"command": command, "target": target, "cwd": body.get("cwd"), "timeout": body.get("timeout", 120),
                    "reason": body.get("reason", ""), "origin": msg.sender}
+        if requester != msg.sender:
+            request["requested_by"] = requester
         if decision.action == "deny":
             self.log("warn", f"Refused command from {msg.sender}: {command}", reason=decision.reason)
             return {"status": "denied", "reason": decision.reason, "risk": decision.risk}
@@ -69,6 +95,8 @@ class OperatorAgent(BaseAgent):
             raise ValueError("This tool has no launch command in its manifest")
         command = tool.manifest.launch.command
         decision = self._decide(command, msg.sender)
+        if decision.action == "run" and self._below_admin(self._requester(body, msg)):  # the tool's code, on the hub
+            decision = policy.Decision("approve", decision.risk, ADMIN_ONLY_START)
         if decision.action == "deny":
             return {"status": "denied", "reason": decision.reason}
         payload = {"tool_id": tool.id, "origin": msg.sender}
@@ -139,7 +167,34 @@ class OperatorAgent(BaseAgent):
         level unless team_actions_need_approval is off, and blocked patterns stay refused while
         block_catastrophic_commands is on."""
         return policy.decide(command, guardrails.effective_autonomy(self.hub, sender), from_person=from_person(sender),
-                             trusted=trusted, block_catastrophic=bool(guardrails.value(self.hub, "block_catastrophic_commands")))
+                             trusted=trusted, block_catastrophic=bool(guardrails.value(self.hub, "block_catastrophic_commands")),
+                             protected=self._protected())
+
+    def _protected(self) -> tuple[str, ...]:
+        """The data directory, as configured and as an absolute path: no read-only command names it (F4)."""
+        data_dir = self.hub.settings.data_dir
+        try:
+            return (str(data_dir), str(data_dir.resolve()))
+        except OSError:
+            return (str(data_dir),)
+
+    @staticmethod
+    def _requester(body: dict[str, Any], msg: Message) -> str:
+        """Who a command or tool start is for: the person or API token that sent it, or - when an agent relays a
+        person's chat message or manual run - that person (``requested_by``, honoured from agents only: a person
+        cannot name someone else)."""
+        if sender_person(msg.sender) is not None:
+            return msg.sender
+        relayed = str(body.get("requested_by") or "")
+        return relayed if sender_person(relayed) is not None else msg.sender
+
+    def _below_admin(self, sender: str) -> bool:
+        """Whether `sender` is a person or an API token without the admin role (F1): their commands on the hub machine
+        (other than read-only ones) and the tools they start wait for an administrator's approval - running code
+        as the hub would let them change their own role. Agents follow the autonomy level."""
+        if sender_person(sender) is None:
+            return False
+        return self.hub.auth.sender_role(sender) != "admin"
 
     def _now_blocked(self, command: str) -> str | None:
         """Why an approved command is refused after all - the block_catastrophic_commands guardrail as it is now (it
@@ -163,6 +218,7 @@ class OperatorAgent(BaseAgent):
                 result = await run_ssh(host, command, timeout=timeout)
             except Exception as exc:  # connection, auth and host-key errors
                 result = CommandResult(-1, f"SSH error: {exc}", 0.0)
+        result.output = mask_output(self.hub, result.output)
         record = {"target": target, "command": command, "origin": request.get("origin"), **result.as_dict()}
         entry = self.hub.store.append("commands", {**record, "output": result.output[-4000:]})
         self.hub.bus.publish("command", entry)

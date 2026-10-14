@@ -13,6 +13,7 @@ import time
 from typing import Any
 
 from .. import llm_providers
+from ..approvals import sender_person
 from ..bus import Message
 from ..integration import flows
 from ..models import OPEN_STATES, SEVERITY_ORDER, AgentDef, ControlState, Risk, Vulnerability
@@ -102,7 +103,7 @@ class CustomAgent(BaseAgent):
                 self._history, self._history_key = [], key  # another model: start a fresh conversation
             before = len(self._history)
             try:
-                reply, mode = await self.converse(text, self._history)
+                reply, mode = await self.converse(text, self._history, sender_person(msg.sender) and msg.sender)
             except Exception:
                 del self._history[before:]  # never keep half a turn
                 raise
@@ -122,7 +123,7 @@ class CustomAgent(BaseAgent):
             raise ValueError(f"{self.name} has no standing task - give it one, or send a task")
         started = time.time()
         try:
-            reply, mode = await self.converse(task, [])
+            reply, mode = await self.converse(task, [], sender_person(msg.sender) and msg.sender)
             ok = True
         except Exception as exc:  # recorded like any result; the scheduler must not stop
             reply = str(exc) if isinstance(exc, ValueError) else f"{exc.__class__.__name__}: {exc}"
@@ -149,9 +150,11 @@ class CustomAgent(BaseAgent):
 
     # -- thinking ----------------------------------------------------------------------
 
-    def context(self) -> toolkit.ToolContext:
+    def context(self, requested_by: str | None = None) -> toolkit.ToolContext:
+        """`requested_by`: the person whose chat message or manual run this is (commands on the hub machine and tool
+        starts are judged by their role, F1); None for scheduled runs."""
         scope = self.defn.team if teams.team_kind(self.defn.team) == "tool" else None
-        return toolkit.ToolContext(self.hub, self, frozenset(self.permissions), scope)
+        return toolkit.ToolContext(self.hub, self, frozenset(self.permissions), scope, requested_by or None)
 
     def system_prompt(self) -> str:
         d = self.defn
@@ -162,12 +165,12 @@ class CustomAgent(BaseAgent):
                 "approval - say so when they do. Never invent ids or results: look them up. Answer concisely: what "
                 "you found, what you did, and what needs a person.")
 
-    async def converse(self, text: str, history: list[dict[str, Any]]) -> tuple[str, str]:
-        """One turn: (reply, mode) with mode "llm" (Claude), "local" or "rules"."""
+    async def converse(self, text: str, history: list[dict[str, Any]], requested_by: str | None = None) -> tuple[str, str]:
+        """One turn: (reply, mode) with mode "llm" (Claude), "local" or "rules"; `requested_by`: see ``context``."""
         blocked = teams.outside_guardrails(self.hub, self.defn)
         if blocked:
             raise ValueError(f"{self.name} may not act: {blocked}")
-        ctx = self.context()
+        ctx = self.context(requested_by)
         provider = self.defn.provider
         if provider == "rules":
             return await self.rules(text, ctx), "rules"
@@ -288,6 +291,11 @@ class CustomAgent(BaseAgent):
             return (f"**People:** {s['total']} ({', '.join(f'{v} {k}' for k, v in s['by_status'].items())}), "
                     f"{s['accounts']} accounts; {s['leavers_count']} leaver(s) still holding access or assets"
                     + ("".join(f"\n- {line}" for line in s["leavers"]) if s["leavers"] else ""))
+        if team == "module:network":  # counts only: device text never reaches an agent
+            s = await ctx.ask("module:network", "summary")
+            return (f"**Network:** {s['devices']} device(s), {s['stale']} without a current snapshot; "
+                    f"{s['open_drift']} unexplained change(s) ({s['critical_drift']} critical); "
+                    f"{s['writable']} writable now")
         if team == "module:grc":
             s = await ctx.ask("module:grc", "summary")
             return "**Compliance:**\n" + "\n".join(f"- {f['name']}: {f['score']}%" for f in s["frameworks"]) + (

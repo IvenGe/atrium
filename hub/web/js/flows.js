@@ -25,7 +25,7 @@ export function domainInfo(domain) {
 }
 const ASSET_TYPES = ["server", "workstation", "network", "software", "saas", "cloud", "data", "other"];
 const SEVERITIES = ["critical", "high", "medium", "low", "info"];
-const SCHEDULES = [[0, "Only when run by hand"], [15, "Every 15 minutes"], [30, "Every 30 minutes"], [60, "Every hour"],
+export const SCHEDULES = [[0, "Only when run by hand"], [15, "Every 15 minutes"], [30, "Every 30 minutes"], [60, "Every hour"],
   [180, "Every 3 hours"], [360, "Every 6 hours"], [720, "Every 12 hours"], [1440, "Every day"], [10080, "Every week"],
   [43200, "Every 30 days"]];
 const RETIRE_LABEL = {
@@ -122,7 +122,8 @@ export function flowsTable(flows, { showTool = true, names = {}, empty = "No dat
     <tbody>${flows.map((f) => flowRow(f, showTool, names))}</tbody></table></div>`;
 }
 
-function optionsForm(f) {
+/** The option fields of a flow (or a pseudo-flow {domain, direction, options}); read back with readOptions. */
+export function optionsForm(f) {
   const o = f.options || {};
   const parts = [];
   if (f.domain === "assets" && f.direction === "push") {
@@ -148,7 +149,7 @@ function optionsForm(f) {
   return parts;
 }
 
-function readOptions(f, form) {
+export function readOptions(f, form) {
   const out = {};
   if (f.domain === "assets" && f.direction === "push") out.asset_types = [...form.querySelectorAll("[name=asset_types]:checked")].map((c) => c.value);
   if (f.direction === "pull") out.retire_missing = form.querySelector("[name=retire_missing]").checked;

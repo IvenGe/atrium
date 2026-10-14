@@ -20,6 +20,7 @@ from __future__ import annotations
 import re
 import time
 from dataclasses import dataclass
+from dataclasses import field as dataclass_field
 from typing import TYPE_CHECKING, Any
 
 from .models import (OPEN_STATES, PERSON_STATUS_RANK, SEVERITY_ORDER, Account, Asset, Person, Policy, Risk, User,
@@ -100,33 +101,37 @@ def recompute(person: Person) -> Person:
 
 @dataclass
 class Index:
-    """email / login -> person id (first registered wins)."""
+    """email / login -> person id (first registered wins), and each person's email."""
 
     emails: dict[str, str]
     logins: dict[str, str]
+    person_emails: dict[str, str] = dataclass_field(default_factory=dict)
 
     @classmethod
     def of(cls, people: list[Person]) -> "Index":
-        emails: dict[str, str] = {}
-        logins: dict[str, str] = {}
+        index = cls({}, {})
         for p in sorted(people, key=lambda x: x.created_at):
-            if p.email:
-                emails.setdefault(key(p.email), p.id)
-            if p.login:
-                logins.setdefault(key(p.login), p.id)
-        return cls(emails, logins)
+            index.add(p)
+        return index
 
     def match(self, email: str | None, login: str | None) -> str | None:
-        """By email, then by login (a login that is an email address also matches an email)."""
+        """By email, then by login (a login that is an email address also matches an email) - but never by login when
+        both sides have an email and they differ: two people who share a short login (jsmith, admin) in different
+        tools are different people (review F11)."""
         if email and key(email) in self.emails:
             return self.emails[key(email)]
         if login:
-            return self.logins.get(key(login)) or self.emails.get(key(login))
+            found = self.logins.get(key(login)) or self.emails.get(key(login))
+            theirs = self.person_emails.get(found or "")
+            if found and email and theirs and theirs != key(email):
+                return None
+            return found
         return None
 
     def add(self, person: Person) -> None:
         if person.email:
             self.emails.setdefault(key(person.email), person.id)
+            self.person_emails[person.id] = key(person.email)
         if person.login:
             self.logins.setdefault(key(person.login), person.id)
 
@@ -337,9 +342,9 @@ class Links:
             if account.person_id:
                 mine.setdefault(account.person_id, []).append(account)
         by_email: dict[str, list[User]] = {}
-        for u in users:
-            if key(u.email):
-                by_email.setdefault(key(u.email), []).append(u)
+        for u in users:  # an account stays linked through the emails single sign-on replaced (review F17)
+            for email in dict.fromkeys(key(e) for e in (u.email, *u.previous_emails) if key(e)):
+                by_email.setdefault(email, []).append(u)
         return cls(held, mine, by_email)
 
     def users_of(self, person: Person) -> list[User]:
@@ -631,11 +636,29 @@ def unassign_assets(hub: "Hub", person: Person, actor: str, asset_ids: list[str]
     return {"ok": True, "changed": changed, "detail": note or f"{len(changed)} asset(s) unassigned."}
 
 
-def disable_atrium_account(hub: "Hub", person: Person, principal: "Principal") -> dict[str, Any]:
+class AmbiguousAccounts(LookupError):
+    """More than one enabled Atrium account is linked to the person: the administrator picks (review F27)."""
+
+
+def disable_atrium_account(hub: "Hub", person: Person, principal: "Principal",
+                           user_ids: list[str] | None = None) -> dict[str, Any]:
+    """Disable the person's enabled Atrium account(s) - those linked by email (the leaver finding lists them). With
+    `user_ids` (the accounts the administrator saw and confirmed) only those, and only while they are still linked;
+    without, only when exactly one account is linked: a person's email can be edited by operators and account emails
+    are not unique, so the hub never picks among several accounts by itself (review F27)."""
+    linked = [u for u in Links.of([], [], hub.auth.users()).users_of(person) if not u.disabled]
+    if user_ids is not None:
+        chosen = [u for u in linked if u.id in set(user_ids)]
+        if len(chosen) != len(set(user_ids)):
+            raise LookupError("Those accounts are not (or no longer) the enabled Atrium accounts of this person - "
+                              "reload and check who they are")
+    elif len(linked) > 1:
+        raise AmbiguousAccounts(f"More than one enabled Atrium account uses this person's email "
+                                f"({', '.join(u.username for u in linked)}) - choose the account(s) to disable")
+    else:
+        chosen = linked
     disabled = []
-    for user in hub.auth.users():
-        if user.disabled or not person.email or key(user.email) != key(person.email):
-            continue
+    for user in chosen:
         hub.auth.update_user(user.id, {"disabled": True}, principal)  # AuthError for yourself / the last admin
         disabled.append(user.username)
     if disabled:

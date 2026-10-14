@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import time
+from pathlib import Path
 from typing import Any, TypeVar
 
 import httpx
@@ -18,6 +19,7 @@ from .bus import Bus
 from .config import AUTONOMY_LEVELS, Settings
 from .execution.processes import ProcessManager
 from .extensions import selfpatch
+from .integration import changes as device_changes
 from .integration import flows
 from .integration.toolbus import ToolBus
 from .llm import LLM
@@ -27,9 +29,22 @@ from .store import Store
 
 M = TypeVar("M", bound=BaseModel)
 
+
+def private_dir(path: Path) -> None:
+    """Create `path` readable by this account only, and tighten it when it already exists (review F14)."""
+    path.mkdir(parents=True, exist_ok=True, mode=0o700)
+    try:
+        path.chmod(0o700)
+    except OSError:  # best effort (Windows ACLs are not mode bits; a folder someone else owns)
+        pass
+
 # Service-level targets for fixing vulnerabilities, in days from first seen (Settings > Vulnerabilities).
 DEFAULT_SLA_DAYS = {"critical": 7, "high": 30, "medium": 90, "low": 180}
 SLA_CHECK_INTERVAL = 3600.0
+# How many entries of the operational logs are kept (review F38); the activity log and the command history are the
+# audit trail and are kept.
+LOG_RETENTION = {"messages": 50_000, "toolbus": 20_000}
+PRUNE_INTERVAL = 3600.0
 
 
 class Hub:
@@ -37,8 +52,8 @@ class Hub:
         from .agents.registry import AgentRegistry
 
         self.settings = settings
-        settings.data_dir.mkdir(parents=True, exist_ok=True)
-        settings.workspace.mkdir(parents=True, exist_ok=True)
+        for folder in (settings.data_dir, settings.workspace):  # owner-only: the database, key and secrets (F14)
+            private_dir(folder)
         self.store = Store(settings.db_path)
         self.bus = Bus(self.store)
         self.secrets = SecretBox.for_settings(settings)
@@ -54,8 +69,10 @@ class Hub:
         self.self_patch = selfpatch.SelfPatchConfig()
         self.restart_required: dict[str, Any] | None = None  # set when a self-patch was merged; a restart clears it
         self.approvals.guards["self_patch"] = lambda approval, approve: selfpatch.check_decision(self, approval, approve)
+        self.approvals.guards["firewall"] = lambda approval, approve: device_changes.check_decision(self, approval, approve)
         self._background: list[asyncio.Task[None]] = []
         self._sla_checked = 0.0
+        self._pruned = 0.0
 
     # -- lifecycle -------------------------------------------------------------------
 
@@ -83,10 +100,16 @@ class Hub:
         await self.agents.stop_all()
         self.store.close()
 
+    def _paused(self, agent_id: str) -> bool:
+        """A paused agent gets no scheduled work: it would only queue up and run all at once on resume (F25)."""
+        agent = self.agents.get(agent_id)
+        return agent is not None and agent.paused
+
     async def _health_loop(self) -> None:
         await asyncio.sleep(5)
         while True:
-            await self.bus.tell("hub", "supervisor", "health.sweep")
+            if not self._paused("supervisor"):
+                await self.bus.tell("hub", "supervisor", "health.sweep")
             await asyncio.sleep(self.settings.health_interval)
 
     async def _flow_loop(self) -> None:
@@ -123,17 +146,31 @@ class Hub:
         started, polled = [], []
         for flow in flows.all_flows(self):
             if flow.job and flow.job.get("status") == "running":
-                await self.bus.tell("hub", "module:vulns", "scan.poll", {"flow_id": flow.id})
-                polled.append(flow.id)
-            elif flows.is_due(flow, now):
+                if not self._paused("module:vulns"):
+                    await self.bus.tell("hub", "module:vulns", "scan.poll", {"flow_id": flow.id})
+                    polled.append(flow.id)
+            elif flows.is_due(flow, now) and not self._paused(flows.owner(flow)):
                 flow.running = now  # the next pass must not start it again while the owner works on it
                 flows.save(self, flow)
                 await self.bus.tell("hub", flows.owner(flow), "flow.run", {"flow_id": flow.id, "trigger": "schedule"})
                 started.append(flow.id)
-        if now - self._sla_checked >= SLA_CHECK_INTERVAL:
+        # the SLA check re-evaluates compliance too, so controls that depend on time alone follow within the hour
+        # (HB-PO-3: a self-assessment last scored more than 12 months ago)
+        if now - self._sla_checked >= SLA_CHECK_INTERVAL and not self._paused("module:vulns"):
             self._sla_checked = now
             await self.bus.tell("hub", "module:vulns", "sla.check")
+        # device changes: expiry, scheduled changes whose maintenance window opened, changes left verifying
+        if not self._paused("module:network"):
+            await self.bus.tell("hub", "module:network", "changes.tick")
+        if now - self._pruned >= PRUNE_INTERVAL:
+            self._pruned = now
+            self.prune_logs()
         return {"started": started, "polled": polled}
+
+    def prune_logs(self) -> dict[str, int]:
+        """Keep the agent message and tool event logs to their LOG_RETENTION size (the activity log and the command
+        history are never pruned)."""
+        return {stream: self.store.prune(stream, keep) for stream, keep in LOG_RETENTION.items()}
 
     # -- preferences -----------------------------------------------------------------
 
@@ -192,7 +229,9 @@ class Hub:
         return self.one("tools", tool_id, Tool)
 
     def save_tool(self, tool: Tool) -> Tool:
-        return self.save("tools", tool, "tool")
+        self.store.put("tools", tool.model_dump(mode="json"))
+        self.bus.publish("tool", tool.public())  # every signed-in viewer gets it: no webhook URL (review-notes F24)
+        return tool
 
     def hosts(self) -> list[Host]:
         return self.all("hosts", Host)

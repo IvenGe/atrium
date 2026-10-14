@@ -4,7 +4,9 @@ Each guardrail is registered once - its default, its type, and what relaxing it 
 a person switches a protection off). Later features add their own with `register`, naming the compliance control that
 relaxing it weakens (`control`, `weakens`, `finding`; see `weakened`). Values live in the "guardrails" preference;
 every change is logged with the actor (relaxations as warnings) and the GRC Supervisor re-evaluates the controls
-(HB-AC-6 for the agent guardrails, HB-AC-2 for the approval switches, HB-CM-2 for extensions and self-patching).
+(HB-AC-6 for the agent guardrails, HB-AC-2 for the approval switches, HB-CM-2 for extensions and self-patching,
+HB-CM-3 for network device changes). Switching ``device_changes`` off is the kill switch: approved device changes
+that were not applied yet become "blocked" at once (``integration.changes.kill_switch``).
 """
 
 from __future__ import annotations
@@ -136,6 +138,43 @@ for _g in (
               "instead of being merged locally. Without the GitHub CLI or an origin remote it is merged locally.", True,
               "Approved changes to Atrium's own code would be merged straight into the current branch, without the "
               "review and CI of a pull request.", group="self_patching"),
+    # the second-person rule for approvals that record their proposer (device changes have their own switch below)
+    Guardrail("approvals_need_second_person", "Approvals need a second person",
+              "An approval that records who proposed it (a self-patch someone asked for, a data flow proposed from the "
+              "integration map) must be decided by someone else. Device changes follow their own switch (Network).",
+              False, "The person who proposed a change could approve it themselves.", safe_value=True),
+    # network device changes (hub/integration/changes.py, canvas-design 6.6): off by default; every change is a
+    # proposal an administrator approves, applied by the Network Supervisor with a backup and an automatic rollback
+    Guardrail("device_changes", "Allow device changes",
+              "Atrium may change firewall and network device rules: only changes a person proposed and an "
+              "administrator approved, after a configuration backup, with the device's automatic rollback and a "
+              "verification. Off: Atrium only reads devices, and approved changes that were not applied yet are "
+              "blocked.", False,
+              "Approved changes would be written to firewalls and network devices. A wrong rule can open the network "
+              "or cut systems off; the rollback and the anti-lockout check limit that but cannot exclude it.",
+              group="network"),
+    Guardrail("device_changes_need_second_person", "Device changes need a second administrator",
+              "Only an administrator who did not propose a device change can approve it. Switch off only where a "
+              "single administrator runs Atrium.", True,
+              "One person could propose and approve their own firewall change: nobody else reviews it.",
+              group="network", control="HB-CM-3", weakens="fail"),
+    Guardrail("device_changes_need_maintenance_window", "Device changes wait for a maintenance window",
+              "An approved device change waits (status 'scheduled') until a maintenance window that covers the device "
+              "starts; an administrator may apply one at once as an emergency, with a justification.", True,
+              "Approved changes would be applied as soon as they are approved, also during working hours.",
+              group="network", control="HB-CM-3", weakens="partial",
+              finding="device changes are applied outside maintenance windows"),
+    Guardrail("device_changes_need_backup", "Back up a device before changing it",
+              "Atrium takes an encrypted, checksummed configuration backup before every device change and does not "
+              "apply the change when the backup fails.", True,
+              "Changes would be applied without a backup of the configuration to go back to when the device's own "
+              "rollback fails.", group="network", control="HB-CM-3", weakens="fail"),
+    Guardrail("approval_expiry_hours", "Approvals of device changes expire after (hours)",
+              "A proposed device change must be approved and applied within this many hours of its proposal (an "
+              "approval of a self-patch must be decided within it); afterwards it expires and is proposed again "
+              "against the device's current rules.", 24,
+              "A change could be applied long after the review that judged it, on a network that changed since.",
+              group="network", minimum=1, maximum=72),
 ):
     register(_g)
 
@@ -209,6 +248,10 @@ def update(hub: "Hub", actor: str, changes: dict[str, Any]) -> dict[str, Any]:
         hub.activity(actor, "warn" if relaxed else "info",
                      f"Guardrail '{g.title}' {'relaxed' if relaxed else 'changed'}: {shown(before)} -> {shown(after)}",
                      guardrail=key, before=before, after=after)
+    if changes.get("device_changes") is False:  # the kill switch (canvas-design S14)
+        from .integration import changes as device_changes
+
+        device_changes.kill_switch(hub, actor)
     return new
 
 

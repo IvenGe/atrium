@@ -29,7 +29,8 @@ A pulled directory entry is matched to a person in this order:
 
 1. the person this directory entry was matched to before (its id in that tool),
 2. the same email address (case-insensitive),
-3. the same login, or a login that is the person's email address.
+3. the same login, or a login that is the person's email address - but never when both sides have an email and the
+   emails differ: two people who share a short login (`jsmith`, `admin`) in different tools stay two people.
 
 Two entries of the same directory with the same email address stay two people. Then:
 
@@ -58,7 +59,8 @@ An **account** is a user account in a tool (collection `accounts`, id `<tool id>
 name, the application (Okta app assignments), whether it is active and its last sign-in. A directory's own entries are
 stored as accounts too (origin `people`), so an enabled Okta or Keycloak user is an active account.
 
-Accounts are linked to a person by email, then login. **Accounts in tools** (`#/people/accounts`) lists them, filtered by
+Accounts are linked to a person by email, then login (with the same rule: not by login when the account and the person
+have different emails). **Accounts in tools** (`#/people/accounts`) lists them, filtered by
 tool or **Not linked only**; operators can link an account to a person by hand, unlink it, or set it back to automatic. A
 link made by hand sticks until someone sets it back to automatic.
 
@@ -78,7 +80,9 @@ person picked by hand sticks until someone chooses **Automatic - follow the inve
 fills the free-text owner when none was given.
 
 Risks and policies can name an owner person too (`owner_person_id`), and Atrium accounts are linked to the person with
-the same email. **Users & access** shows each account's person and warns when a person who left still has an enabled
+the same email. Single sign-on only takes an email the identity provider marks as verified, and when a person's email
+changes there the account stays linked through its previous addresses too (the change is logged as a warning), so a
+leaver cannot hide by changing their email. **Users & access** shows each account's person and warns when a person who left still has an enabled
 account.
 
 ## The person page
@@ -100,7 +104,7 @@ initials avatars, asset counts and active / total tool accounts.
 A **leaver finding** is a suspended or terminated person who still has any of:
 
 - an asset (not retired) they own or use,
-- an enabled Atrium account with their email,
+- an enabled Atrium account with their email (or one it had before single sign-on changed it),
 - an active account in a tool.
 
 A finding with access (an Atrium account or a tool account) has severity `fail`; one with only assets is `partial`.
@@ -112,7 +116,7 @@ asset's owner or user is changed by hand, after an asset pull links a device to 
 | Action | Role | What it does |
 | --- | --- | --- |
 | Unassign assets | operator | takes the person off the assets they own or use (all, or the ones chosen). Devices the inventory assigned get `assigned_source: manual`, so the next pull does not link them again |
-| Disable Atrium account | admin | disables the Atrium account with the person's email and ends its sessions, through the normal account update: you cannot disable yourself or the last admin |
+| Disable Atrium account | admin | disables the Atrium account(s) the finding names - linked by the person's email, or by an address single sign-on replaced - ends their sessions and revokes the API tokens they own, through the normal account update: you cannot disable yourself or the last admin. The confirmation names each account and its role and the request sends exactly those (`user_ids`); an account no longer linked to the person is refused (409), and so is a request without `user_ids` when more than one account matches (a person's email can be edited by operators and account emails are not unique) |
 
 Both ask for confirmation. Atrium does not change anything in the tools: unassigning only removes the hub's links (the
 answer names the devices still checked out in the inventory tool), and accounts in tools have to be disabled there.
@@ -148,7 +152,7 @@ answer names the devices still checked out in the inventory tool), and accounts 
 | `PATCH /api/people/{id}` | operator | change fields; `status: null` clears the hand-set status |
 | `DELETE /api/people/{id}` | operator | remove a person and every link to them |
 | `POST /api/people/{id}/actions/unassign_assets` | operator | optional `{asset_ids}` |
-| `POST /api/people/{id}/actions/disable_atrium_account` | admin | |
+| `POST /api/people/{id}/actions/disable_atrium_account` | admin | optional `{user_ids}`: the accounts confirmed (409 when they are not this person's enabled accounts, or when none are given and several match) |
 | `GET /api/accounts?tool_id=&person_id=&unlinked=true` | viewer | accounts with their person |
 | `PATCH /api/accounts/{id}` | operator | `{person_id}` (a link or unlink by hand) or `{auto: true}` |
 

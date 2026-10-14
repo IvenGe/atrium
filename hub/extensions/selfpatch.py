@@ -11,6 +11,10 @@ cannot express what a new tool needs.
 4. Approval kind "self_patch" shows the diff and the test result; with failing tests it cannot be approved while
    self_patch_requires_tests is on, and only administrators decide it. With self_patch_requires_approval off a change
    that would be merged locally (tests passed) is applied at once - a pull request never is.
+   The approval is bound to the branch's commit and expires after approval_expiry_hours (review-notes F2): an
+   approval is refused once expired or when the commit moved, and the worktree's HEAD is checked again before the
+   branch is pushed or merged. The person who asked for the change cannot approve it while
+   approvals_need_second_person is on (F1, ``Approvals.check_second_person``).
 5. On approval: with self_patch_via_pull_request on, the GitHub CLI authenticated and an "origin" remote, the branch
    is pushed and a pull request opened (this outward action only ever follows a person's approval). Otherwise the
    branch is merged into the current branch - only when the working tree is clean - and Atrium shows "restart
@@ -22,6 +26,7 @@ never run the real suite or reach the network.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import re
 import shutil
@@ -77,6 +82,7 @@ class SelfPatchConfig:
     gh: Runner = default_runner  # called with ["gh", ...]
     tests: Runner = default_runner  # runs test_command in the worktree
     extra: dict[str, Any] = field(default_factory=dict)
+    applying: dict[str, asyncio.Lock] = field(default_factory=dict, repr=False)  # per self-patch, around apply()
 
     def root(self) -> Path | None:
         """Atrium's checkout: `repo`, else the folder above the hub package - unless HUB_SELF_PATCH=off (the test
@@ -94,6 +100,7 @@ class SelfPatch(BaseModel):
     goal: str = ""
     tool_id: str | None = None
     requested_by: str = ""
+    proposed_by: str | None = None  # the person who asked for it (an approval by them needs a second person)
     changes: list[FileChange] = []
     files: list[str] = []
     branch: str = ""
@@ -336,11 +343,13 @@ async def propose(hub: "Hub", *, title: str, rationale: str, changes: list[FileC
     return save(hub, patch)
 
 
-def approval_payload(patch: SelfPatch) -> dict[str, Any]:
+def approval_payload(patch: SelfPatch, expires_at: float | None = None) -> dict[str, Any]:
     tests = patch.tests or {}
     return {"self_patch_id": patch.id, "title": patch.title, "branch": patch.branch, "base_branch": patch.base_branch,
             "files": patch.files, "tool_id": patch.tool_id, "mode": patch.mode, "mode_reason": patch.mode_reason,
-            "tests": {k: tests.get(k) for k in ("ok", "exit_code", "timed_out", "duration", "command", "tail")}}
+            "tests": {k: tests.get(k) for k in ("ok", "exit_code", "timed_out", "duration", "command", "tail")},
+            # the approval binds to this commit and expires (review-notes F2); proposed_by: the second-person rule
+            "commit": patch.commit, "expires_at": expires_at, "proposed_by": patch.proposed_by}
 
 
 async def submit(hub: "Hub", patch: SelfPatch, requester: str) -> SelfPatch:
@@ -353,8 +362,9 @@ async def submit(hub: "Hub", patch: SelfPatch, requester: str) -> SelfPatch:
               + ("pushed and opened as a pull request." if patch.mode == "pull_request" else
                  f"merged into {patch.base_branch or 'the current branch'} (needs a clean working tree), then Atrium "
                  "must be restarted."))
-    approval = hub.approvals.create("self_patch", f"Change Atrium: {patch.title}", detail, approval_payload(patch),
-                                    requester)
+    expires_at = time.time() + int(guardrails.value(hub, "approval_expiry_hours")) * 3600
+    approval = hub.approvals.create("self_patch", f"Change Atrium: {patch.title}", detail,
+                                    approval_payload(patch, expires_at), requester)
     patch.approval_id = approval.id
     save(hub, patch)
     tests_ok = ok or not guardrails.value(hub, "self_patch_requires_tests")
@@ -377,6 +387,8 @@ def check_decision(hub: "Hub", approval: "Approval", approve: bool) -> None:
     patch = get(hub, str(approval.payload.get("self_patch_id")))
     if patch is None:
         raise ValueError("The self-patch no longer exists")
+    if approval.payload.get("commit") != patch.commit:
+        raise ValueError("The self-patch's branch moved since this approval was requested - reject it")
     if guardrails.value(hub, "self_patch_requires_tests") and not (patch.tests and patch.tests.get("ok")):
         raise ValueError("The tests failed on this change, so it cannot be approved while the guardrail "
                          "self_patch_requires_tests is on - reject it")
@@ -405,7 +417,18 @@ async def decided(hub: "Hub", approval_id: str, approved: bool, actor: str) -> N
 
 async def apply(hub: "Hub", patch: SelfPatch, actor: str) -> dict[str, Any]:
     """Open a pull request or merge an approved self-patch. {ok, mode, detail, pr_url?, commit?, restart_required}.
-    A refusal (e.g. a dirty working tree) keeps the patch approved, so it can be applied again later."""
+    A refusal (e.g. a dirty working tree) keeps the patch approved, so it can be applied again later. One apply at a
+    time per self-patch, on the stored record as it is then: "Apply again" while the approval's own apply runs is
+    refused ({busy: True}) instead of racing it and saving a stale record over the merged one (review F24)."""
+    lock = config(hub).applying.setdefault(patch.id, asyncio.Lock())
+    if lock.locked():
+        return {"ok": False, "busy": True, "mode": patch.mode, "restart_required": False,
+                "detail": "This self-patch is being applied right now"}
+    async with lock:
+        return await _apply(hub, get(hub, patch.id) or patch, actor)
+
+
+async def _apply(hub: "Hub", patch: SelfPatch, actor: str) -> dict[str, Any]:
     try:
         if patch.status != "approved":
             raise SelfPatchError(f"The self-patch is {patch.status}, not approved")
@@ -414,6 +437,7 @@ async def apply(hub: "Hub", patch: SelfPatch, actor: str) -> dict[str, Any]:
         root = config(hub).root()
         if root is None:
             raise SelfPatchError("Atrium no longer runs from a git checkout")
+        await check_commit(hub, patch)
         mode, reason = await predict_mode(hub)
         patch.mode, patch.mode_reason = mode, reason  # type: ignore[assignment]
         if mode == "pull_request":
@@ -428,6 +452,18 @@ async def apply(hub: "Hub", patch: SelfPatch, actor: str) -> dict[str, Any]:
     patch.error, patch.applied_at = None, time.time()
     save(hub, patch)
     return result
+
+
+async def check_commit(hub: "Hub", patch: SelfPatch) -> None:
+    """The branch must still be at the commit that was tested and approved (review-notes F2)."""
+    approval = hub.approvals.get(patch.approval_id) if patch.approval_id else None
+    approved = (approval.payload.get("commit") if approval else None) or patch.commit
+    worktree = Path(patch.worktree) if patch.worktree else None
+    if worktree is None or not worktree.is_dir():
+        raise SelfPatchError("The self-patch's worktree is gone - propose the change again")
+    head = (await _git(hub, ["-C", str(worktree), "rev-parse", "HEAD"])).output.strip()
+    if not approved or head != approved or patch.commit != approved:
+        raise SelfPatchError("The self-patch's branch is no longer at the approved commit - propose the change again")
 
 
 async def _pull_request(hub: "Hub", root: Path, patch: SelfPatch) -> dict[str, Any]:

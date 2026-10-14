@@ -33,9 +33,11 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from .base import Connector, ConnectorError, ConnectorField, check
-from .netmodel import ROLLBACK_MODES, Backup, ChangeError, management_guard, normalize_record, parse_ops, validate_write_spec
+from .netmodel import (LEAST_PRIVILEGE_NOTE, ROLLBACK_MODES, Backup, ChangeError, management_guard, normalize_record,
+                       parse_ops, validate_write_spec)
 
 TIMED = ("savepoint", "deadman", "commit_confirm")
+OPS = ["allow", "disable_rules", "enable_rules"]
 
 
 def _default_state(name: str) -> dict[str, Any]:
@@ -79,6 +81,9 @@ def _default_state(name: str) -> dict[str, Any]:
         "default_policy": {"inbound": "block", "forward": "block"},
         "hostname": name,
         "version": "1.4.2",
+        # only in backups, never in what pull() returns: a stand-in for the password hashes and keys real
+        # configurations hold (tests check it never reaches the database unencrypted)
+        "secrets": {"admin_password_hash": f"$2y$10$fake-device-secret-{name}"},
     }
 
 
@@ -94,6 +99,8 @@ class FakeDevice:
     calls: list[str] = field(default_factory=list)
     clock: Callable[[], float] = time.time
     next_rule: int = 1
+    hub_address: str = "10.0.99.10"  # where the hub's management connection comes from (as the device sees it)
+    management_port: int = 443
 
     def __post_init__(self) -> None:
         self.state = self.state or _default_state(self.name)
@@ -119,6 +126,10 @@ class FakeDevice:
         rule = {"order": max((r["order"] for r in self.rules()), default=0) + 1, **rule}
         self.change(lambda s: s["rules"].append(rule))
         return rule
+
+    def unlock(self) -> None:
+        """Someone at the console restores access (after a "lockout" with a mode that has no device timer)."""
+        self.locked_out, self.simulate = False, None
 
     # -- device behaviour ----------------------------------------------------------------
 
@@ -179,7 +190,7 @@ class FakeFirewallConnector(Connector):
         ConnectorField(name="read_only", label="Read-only credential", kind="bool", default=False),
     ]
     capabilities = {"network": {"read"}}
-    network_write = {"ops": ["allow", "disable_rules"], "rollback": "savepoint", "window_s": 60}
+    network_write = {"ops": OPS, "rollback": "savepoint", "window_s": 60}
 
     @classmethod
     def validate_config(cls, config: dict[str, Any]) -> dict[str, Any]:
@@ -203,8 +214,7 @@ class FakeFirewallConnector(Connector):
         mode = self.config.get("rollback") or "savepoint"
         if self.config.get("read_only") or mode == "none":
             return None
-        return validate_write_spec({"ops": ["allow", "disable_rules"], "rollback": mode,
-                                    "window_s": int(self.config.get("window_s") or 60)})
+        return validate_write_spec({"ops": OPS, "rollback": mode, "window_s": int(self.config.get("window_s") or 60)})
 
     def _auth(self) -> None:
         self.dev.reachable()
@@ -229,8 +239,7 @@ class FakeFirewallConnector(Connector):
         checks.append(check("authentication", True, "API key accepted"))
         write = self.write_capability()
         checks.append(check("privileges", True, "read-only credential: device changes are unavailable" if write is None
-                            else "this credential can write; a read-only one is recommended until device changes are "
-                                 "enabled"))
+                            else LEAST_PRIVILEGE_NOTE))
         checks.append(check("version", True, f"Atrium fake firewall {dev.state['version']} (supported)"))
         checks.append(check("api_features", True, f"rollback: {write['rollback']}, window {write['window_s']}s"
                             if write else "rules, interfaces, aliases readable; writes off"))
@@ -254,6 +263,11 @@ class FakeFirewallConnector(Connector):
         dev.backups[ref] = content
         return {"content": content, "format": "json", "device_backup_id": ref, "revision": dev.rev}
 
+    def _guard(self, ops: list[dict[str, Any]]) -> list[str]:
+        dev = self.dev
+        return management_guard(normalize_record(dev.record()), ops, hub_addresses=[dev.hub_address],
+                                management_ports=[dev.management_port])
+
     def _zones(self) -> set[str]:
         s = self.dev.state
         return {i["id"] for i in s["interfaces"]} | {z["id"] for z in s["zones"]}
@@ -262,7 +276,7 @@ class FakeFirewallConnector(Connector):
         self._auth()
         self.dev.calls.append("preview_change")
         ops = parse_ops(ops)
-        problems = management_guard(normalize_record(self.dev.record()), ops)
+        problems = self._guard(ops)
         steps, zones = [], self._zones()
         for index, op in enumerate(ops):
             if op["op"] == "allow":
@@ -272,8 +286,9 @@ class FakeFirewallConnector(Connector):
                 steps.append({"op": index, "kind": "add_rule", "position": f"top of {op['source']['zone']} rules",
                               "detail": "one pass rule, marked " + op["marker"]})
             else:
-                steps.extend({"op": index, "kind": "disable_rule", "position": "in place",
-                              "detail": f"disable {ref['vendor_ref']}"} for ref in op["rules"])
+                verb = "disable" if op["op"] == "disable_rules" else "enable"
+                steps.extend({"op": index, "kind": f"{verb}_rule", "position": "in place",
+                              "detail": f"{verb} {ref['vendor_ref']}"} for ref in op["rules"])
         return {"steps": steps, "notes": ["simulated device"], "problems": problems}
 
     async def apply_change(self, ops: list[dict[str, Any]], base_revision: str, backup: Backup | None) -> dict[str, Any]:
@@ -287,7 +302,7 @@ class FakeFirewallConnector(Connector):
         if dev.simulate == "stale" or dev.rev != base_revision:
             raise ChangeError(f"The device is at revision {dev.rev}, not {base_revision}: re-read it and preview again",
                               code="stale", state="unchanged")
-        problems = management_guard(normalize_record(dev.record()), ops)
+        problems = self._guard(ops)
         if problems:
             raise ChangeError("Refused by the management-path guard: " + "; ".join(problems), code="lockout",
                               state="unchanged")
@@ -301,7 +316,7 @@ class FakeFirewallConnector(Connector):
             raise ChangeError("This connection is read-only", code="unsupported", state="unchanged")
         window = int(self.config.get("window_s") or 60)
         before = copy.deepcopy(dev.state)
-        created, disabled = [], []
+        created, disabled, enabled = [], [], []
         for index, op in enumerate(ops):
             if op["op"] == "allow":
                 number = dev.next_rule
@@ -323,8 +338,8 @@ class FakeFirewallConnector(Connector):
                         raise ChangeError(f"Rule {ref['vendor_ref']} is not on the device", code="invalid",
                                           state="unchanged")
                     if dev.simulate != "verify_fail":
-                        rule["enabled"] = False
-                    disabled.append(rule["vendor_ref"])
+                        rule["enabled"] = op["op"] == "enable_rules"
+                    (enabled if op["op"] == "enable_rules" else disabled).append(rule["vendor_ref"])
         dev.revision += 1
         token = f"fake-{uuid.uuid4().hex[:16]}"
         deadline = dev.clock() + window if mode in TIMED else None
@@ -332,7 +347,7 @@ class FakeFirewallConnector(Connector):
         if dev.simulate == "lockout":
             dev.locked_out = True
         return {"token": token, "rollback_until": deadline, "revision": dev.rev, "created": created,
-                "disabled": disabled, "notes": [f"rollback: {mode}"]}
+                "disabled": disabled, "enabled": enabled, "notes": [f"rollback: {mode}"]}
 
     async def confirm_change(self, token: str) -> dict[str, Any]:
         dev = self.dev

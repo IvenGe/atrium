@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 import time
 from typing import Any, Literal
+from urllib.parse import parse_qsl, urlsplit, urlunsplit
 
 from pydantic import BaseModel, Field, computed_field, field_validator
 
@@ -13,6 +14,32 @@ from .store import new_id
 
 def now() -> float:
     return time.time()
+
+
+# A query parameter named like one of these carries a credential (?api_key=, ?access_token=, ?sig=...).
+CREDENTIAL_PARAM = re.compile(r"(?i)(token|key|secret|passw|pwd|auth|sig|credential|session)")
+
+
+def url_credentials(url: str | None) -> list[str]:
+    """What in a URL looks like a credential: user info (https://user:token@host) and query parameters named like
+    one. git SSH addresses (git@host:path) carry no secret."""
+    try:
+        parts = urlsplit(str(url or "").strip())
+    except ValueError:
+        return []
+    found = ["user info"] if parts.username or parts.password else []
+    found += [f"query parameter '{k}'" for k, _ in parse_qsl(parts.query, keep_blank_values=True) if CREDENTIAL_PARAM.search(k)]
+    return found
+
+
+def strip_url_credentials(url: str | None) -> str | None:
+    """`url` without user info and with credential-looking query values replaced by "***" (review F3) - for showing a
+    URL that may have been stored with a token in it."""
+    if not url or not url_credentials(url):
+        return url
+    parts = urlsplit(url.strip())
+    query = "&".join(f"{k}={'***' if CREDENTIAL_PARAM.search(k) else v}" for k, v in parse_qsl(parts.query, keep_blank_values=True))
+    return urlunsplit(parts._replace(netloc=parts.netloc.rsplit("@", 1)[-1], query=query))
 
 
 # --------------------------------------------------------------------------------------
@@ -82,6 +109,15 @@ class Manifest(BaseModel):
     ui: PortalUi = Field(default_factory=PortalUi)
     native: bool = False  # True when the tool ships (or adopted) its own hub manifest
 
+    def public(self) -> dict[str, Any]:
+        """The manifest as the API, the bus log and SSE show it (review-notes F24): whether a webhook URL is set
+        (``events.has_webhook``), never the URL - it may carry a token - and the launch environment's key names
+        (``launch.env_keys``), not their values. The stored manifest keeps both."""
+        data = self.model_dump(mode="json")
+        data["events"]["has_webhook"] = bool(data["events"].pop("webhook_url", None))
+        data["launch"]["env_keys"] = sorted(data["launch"].pop("env", None) or {})
+        return data
+
 
 class Check(BaseModel):
     id: str
@@ -115,6 +151,13 @@ class Tool(BaseModel):
     health: dict[str, Any] | None = None
     created_at: float = Field(default_factory=now)
 
+    def public(self) -> dict[str, Any]:
+        """The tool for API reads and the ``tool`` SSE event, with ``Manifest.public`` (no webhook URL or env values)
+        and no credentials in its source or OpenAPI URL (review F3: refused at import, stripped for older tools)."""
+        return {**self.model_dump(mode="json", exclude={"manifest"}),
+                "source": strip_url_credentials(self.source), "openapi_url": strip_url_credentials(self.openapi_url),
+                "manifest": self.manifest.public() if self.manifest else None}
+
 
 # --------------------------------------------------------------------------------------
 # Operations: hosts, approvals, patches
@@ -135,7 +178,8 @@ class Host(BaseModel):
 
 class Approval(BaseModel):
     id: str
-    kind: Literal["command", "patch", "process", "flow", "scan", "repair", "agent_team", "extension", "self_patch"]
+    kind: Literal["command", "patch", "process", "flow", "scan", "repair", "agent_team", "extension", "self_patch",
+                  "firewall"]
     title: str
     detail: str = ""
     payload: dict[str, Any] = {}
@@ -531,6 +575,9 @@ class User(BaseModel):
     password_hash: str | None = None  # None for accounts that only sign in through SSO
     auth_source: Literal["local", "oidc"] = "local"
     oidc_subject: str | None = None  # "<issuer>|<sub>"
+    # Emails single sign-on replaced on this account (review F17): it stays linked to the people who had them, so a
+    # change at the identity provider never unlinks it from its owner's leaver checks.
+    previous_emails: list[str] = []
     must_change_password: bool = False
     created_at: float = Field(default_factory=now)
     last_login: float | None = None
@@ -549,6 +596,13 @@ class ApiToken(BaseModel):
     token_hash: str  # sha256 hex of the full "atr_..." secret
     prefix: str  # first characters of the secret, for recognising a token
     created_by: str
+    # The account the token acts for (F2): the id of the person who created it, or of the person behind the token
+    # that created it. Never changes; the token works only while that account exists and is enabled, and never with
+    # more than that account's role. None only on tokens stored before it existed (bound at their next use).
+    owner_id: str | None = None
+    # Integration tokens: the tool whose events the token publishes - /api/bus/publish refuses any other source
+    # (review F31). Tokens from before are bound to the first source they publish as.
+    tool_id: str | None = None
     created_at: float = Field(default_factory=now)
     last_used: float | None = None
     expires_at: float | None = None
@@ -560,4 +614,4 @@ def public_user(user: User) -> dict[str, Any]:
 
 
 def public_token(token: ApiToken) -> dict[str, Any]:
-    return token.model_dump(mode="json", exclude={"token_hash"})
+    return token.model_dump(mode="json", exclude={"token_hash", "owner_id"} | ({"tool_id"} if token.tool_id is None else set()))

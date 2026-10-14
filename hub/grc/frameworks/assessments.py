@@ -16,7 +16,7 @@ from ... import people as people_app
 from ...models import ControlState, Policy, Risk
 from ...store import new_id
 from ..baseline import CONTROLS_BY_ID
-from . import LEVEL_NAMES, Catalog, load, mapping, scoring
+from . import LEVEL_NAMES, SCALE, Catalog, load, mapping, scoring
 
 if TYPE_CHECKING:
     from ...core import Hub
@@ -26,6 +26,7 @@ EVENT = "framework_assessment"
 Level = Literal["B", "I", "E"]
 Status = Literal["in_progress", "completed", "archived"]
 EvidenceKind = Literal["control", "policy", "risk", "url", "file"]
+ITEM_COLLECTIONS = {"policy": "policies", "risk": "risks"}  # evidence kinds that point at a hub record
 MAX_EVIDENCE = 25
 HISTORY = 20  # changes kept per requirement
 STALE_AFTER = 365 * 24 * 3600
@@ -35,6 +36,13 @@ CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
 def _text(value: str, limit: int) -> str:
     return CONTROL_CHARS.sub("", value or "").strip()[:limit]
+
+
+def _name(value: str) -> str:
+    name = _text(value, 200)
+    if not name:
+        raise AssessmentError("Give the assessment a name")
+    return name
 
 
 class EvidenceLink(BaseModel):
@@ -156,18 +164,23 @@ def create(hub: "Hub", catalog: Catalog, body: AssessmentCreate, actor: str, tod
     if window and not window["open"]:
         raise AssessmentError(f"{catalog.short_name} can no longer be used for new assessments (allowed until "
                               f"{window['assess_until']}). Use CyFun 2025.")
+    name = _name(body.name)
     entries: dict[str, Entry] = {}
+    assessed_at = None
     if body.copy_from:
         source = get(hub, catalog.id, body.copy_from)
         if source is None:
             raise AssessmentError(f"No {catalog.short_name} assessment '{body.copy_from}' to copy from")
         entries = {ref: entry.model_copy(update={"history": []}) for ref, entry in source.requirements.items()
                    if ref in catalog.by_ref}
+        # copied scores keep their age: the copy counts as assessed again only once a person changes a requirement
+        if entries:
+            assessed_at = source.assessed_at or max((e.updated_at or 0 for e in entries.values()), default=0) or None
     now = time.time()
-    assessment = FrameworkAssessment(framework=catalog.id, name=_text(body.name, 200), target_level=body.target_level,
+    assessment = FrameworkAssessment(framework=catalog.id, name=name, target_level=body.target_level,
                                      scope=_text(body.scope, 4000), notes=_text(body.notes, 8000), requirements=entries,
                                      created_by=actor, created_at=now, updated_by=actor, updated_at=now,
-                                     assessed_at=now if entries else None)
+                                     assessed_at=assessed_at)
     save(hub, assessment)
     copied = f", scores copied from '{body.copy_from}'" if body.copy_from else ""
     hub.activity(actor, "info", f"Started the {catalog.short_name} self-assessment '{assessment.name}' (target "
@@ -176,15 +189,21 @@ def create(hub: "Hub", catalog: Catalog, body: AssessmentCreate, actor: str, tod
 
 
 def update(hub: "Hub", assessment: FrameworkAssessment, body: AssessmentPatch, actor: str) -> FrameworkAssessment:
-    changes = body.model_dump(exclude_unset=True)
+    changes = {k: v for k, v in body.model_dump(exclude_unset=True).items() if v is not None}
     if not changes:
         raise AssessmentError("Nothing to change")
+    if "name" in changes:
+        changes["name"] = _name(changes["name"])
+    for name, limit in (("scope", 4000), ("notes", 8000)):
+        if name in changes:
+            changes[name] = _text(changes[name], limit)
+    edits = [k for k, v in changes.items() if k != "status" and v != getattr(assessment, k)]
+    if assessment.status == "archived" and changes.get("status", "archived") == "archived" and edits:
+        raise AssessmentError("This assessment is archived: reopen it (status in_progress) before changing its "
+                              + ", ".join(k.replace("_", " ") for k in edits), 409)
     before = assessment.model_copy()
     for name, value in changes.items():
-        if value is None:
-            continue
-        setattr(assessment, name, _text(value, 8000) if isinstance(value, str) and name not in ("status", "target_level")
-                else value)
+        setattr(assessment, name, value)
     if body.status == "completed" and before.status != "completed":
         assessment.completed_at = time.time()
     elif body.status and body.status != "completed":
@@ -224,6 +243,10 @@ def update_requirement(hub: "Hub", catalog: Catalog, assessment: FrameworkAssess
     if body.evidence is not None:
         now = time.time()
         known = {(e.kind, e.ref): e for e in entry.evidence}
+        for link in body.evidence:
+            if (link.kind, link.ref) not in known and link.kind in ITEM_COLLECTIONS \
+                    and hub.store.get(ITEM_COLLECTIONS[link.kind], link.ref) is None:
+                raise AssessmentError(f"Unknown {link.kind} '{link.ref}'")
         entry.evidence = [known.get((e.kind, e.ref)) or e.model_copy(update={"added_by": actor, "added_at": now})
                           for e in _unique(body.evidence)]
     if entry.na and len(entry.na_justification) < 3:
@@ -326,26 +349,41 @@ def evidence_view(hub: "Hub", link: EvidenceLink, states: dict[str, ControlState
     return out
 
 
+class _Context:
+    """What requirement views share: control states, people and the suggested controls, read once."""
+
+    def __init__(self, hub: "Hub", framework_id: str):
+        self.states = control_states(hub)
+        self.people = {p.id: p for p in people_app.all_people(hub)}
+        self.suggested = suggestions(framework_id, self.states)
+
+
+def requirement_view(hub: "Hub", catalog: Catalog, assessment: FrameworkAssessment, ref: str,
+                     context: _Context | None = None) -> dict[str, Any]:
+    """One requirement's entry with its maturity, owner, evidence (with current status) and suggested hub controls."""
+    context = context or _Context(hub, catalog.id)
+    requirement = catalog.by_ref[ref]
+    entry = assessment.requirements.get(ref)
+    owner = context.people.get(entry.owner_person_id) if entry and entry.owner_person_id else None
+    return {
+        **(entry or Entry()).model_dump(mode="json"), "ref_id": ref,
+        "maturity": scoring.requirement_maturity(catalog, entry),
+        "in_scope": requirement.in_level(assessment.target_level),
+        "key_measure": requirement.key_measure(assessment.target_level),
+        "owner": {"id": owner.id, "display_name": owner.display_name, "email": owner.email} if owner else None,
+        "evidence": [evidence_view(hub, link, context.states) for link in (entry.evidence if entry else [])],
+        "suggested": context.suggested.get(ref, []),
+    }
+
+
 def detail(hub: "Hub", assessment: FrameworkAssessment) -> dict[str, Any]:
     catalog = load(assessment.framework)
     result = evaluation(assessment)
-    states = control_states(hub)
-    people = {p.id: p for p in people_app.all_people(hub)}
-    suggested = suggestions(catalog.id, states)
-    requirements = {}
-    for requirement in catalog.requirements:
-        entry = assessment.requirements.get(requirement.ref_id)
-        owner = people.get(entry.owner_person_id) if entry and entry.owner_person_id else None
-        requirements[requirement.ref_id] = {
-            **(entry.model_dump(mode="json") if entry else Entry().model_dump(mode="json")),
-            "maturity": scoring.requirement_maturity(catalog, entry),
-            "in_scope": requirement.in_level(assessment.target_level),
-            "owner": {"id": owner.id, "display_name": owner.display_name, "email": owner.email} if owner else None,
-            "evidence": [evidence_view(hub, link, states) for link in (entry.evidence if entry else [])],
-            "suggested": suggested.get(requirement.ref_id, []),
-        }
+    context = _Context(hub, catalog.id)
+    requirements = {r.ref_id: requirement_view(hub, catalog, assessment, r.ref_id, context) for r in catalog.requirements}
     return {**brief(assessment, result), "evaluation": result, "requirements": requirements,
-            "transition": catalog.transition(), "text_url": catalog.data["text_url"]}
+            "transition": catalog.transition(), "text_url": catalog.data["text_url"],
+            "scale": list(SCALE)}
 
 
 def control_summaries(hub: "Hub") -> list[dict[str, Any]]:

@@ -35,7 +35,8 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from ..connectors.netmodel import display_id, endpoint_text, interface_names, is_any_any, parse_ports, port_ranges, service_text
+from ..connectors.netmodel import (PORTS_RE, display_id, endpoint_text, interface_names, is_any_any, parse_ports,
+                                   port_ranges, service_text)
 from ..models import OPEN_STATES, SEVERITY_ORDER, Asset, Vulnerability
 from . import network
 
@@ -283,15 +284,11 @@ class Topology:
             zid = self.iface_zone.get(net_id)
             if zid:
                 out.add(zid)
-        for cidr in cidrs:
+        for cidr in cidrs:  # longest-prefix semantics: an address belongs to the most specific zone subnet holding it
             net = ipaddress.ip_network(cidr)
-            covered = False
-            for subnet, zid in self.internal:
-                if subnet.version == net.version and net.overlaps(subnet):
-                    out.add(zid)
-                    covered = covered or net.subnet_of(subnet)
-            if not covered:
-                out.add(INTERNET)
+            holder = self.zone_of_network(net)
+            out.add(holder or INTERNET)  # not inside any zone subnet: (part of) it lies outside every known network
+            out |= {zid for subnet, zid in self.internal if subnet.version == net.version and subnet.subnet_of(net)}
         return out
 
     def interface_zones(self, ids: list[str]) -> set[str]:
@@ -374,8 +371,9 @@ def _network(text: str) -> Any:
 
 def place(topology: Topology, assets: list[Asset], manual: dict[str, str]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """(placed assets, unplaced assets) for one firewall. Longest-prefix match per address; the first address that
-    matches decides the zone, others make the asset multi-homed; a public address outside every zone is
-    "external" (z:internet); a private address outside every zone or a hostname is unplaced (no DNS lookups).
+    matches one of the firewall's networks decides the zone, other matches make the asset multi-homed; an asset whose
+    only matches are public addresses outside every zone is "external" (z:internet); a private address outside every
+    zone or a hostname is unplaced (no DNS lookups).
     A manual placement wins, with a warning when the addresses point elsewhere."""
     from ..agents.assets import addresses
 
@@ -399,7 +397,8 @@ def place(topology: Topology, assets: list[Asset], manual: dict[str, str]) -> tu
                 found.append(INTERNET)
             else:
                 unmatched.append(text)
-        found = list(dict.fromkeys(found))
+        # an address inside one of the firewall's networks decides; a public one only when none does
+        found = sorted(dict.fromkeys(found), key=lambda z: z == INTERNET)
         zone, how, warning = (found[0], "external" if found[0] == INTERNET else "subnet", None) if found else (None, None, None)
         pinned = manual.get(asset.id)
         if pinned and pinned in topology.by_id:
@@ -444,25 +443,31 @@ def aggregate(topology: Topology) -> list[dict[str, Any]]:
         if not rule.get("enabled", True) or rule.get("action") != "pass":
             continue
         notes: list[str] = []
-        restrict: set[str] | None = None
-        if rule.get("direction") == "out":
-            ingress = set(everything)
-            restrict = topology.interface_zones(rule.get("interfaces") or [])
-        elif rule.get("interfaces"):
-            ingress = topology.interface_zones(rule["interfaces"])
-        elif rule.get("source_zones"):
-            ingress = {topology.vendor_zone[z] for z in rule["source_zones"] if z in topology.vendor_zone}
-        else:
-            ingress = set(everything)
+        # (ingress zones, destination restriction) per way the rule can match: pf "in" binds the ingress interface,
+        # "out" the egress one, "any" both (union, over-approximated)
+        bound = topology.interface_zones(rule.get("interfaces") or [])
+        variants: list[tuple[set[str], set[str] | None]] = []
+        if rule.get("interfaces") and rule.get("direction") in ("in", "any"):
+            variants.append((bound, None))
+        if rule.get("interfaces") and rule.get("direction") in ("out", "any"):
+            variants.append((set(everything), bound))
+        if not rule.get("interfaces"):
+            if rule.get("source_zones"):
+                variants.append(({topology.vendor_zone[z] for z in rule["source_zones"] if z in topology.vendor_zone},
+                                 None))
+            else:
+                variants.append((set(everything), None))
         egress = topology.interface_zones(rule.get("out_interfaces") or []) | {
             topology.vendor_zone[z] for z in rule.get("destination_zones") or [] if z in topology.vendor_zone}
-        if rule.get("out_interfaces") or rule.get("destination_zones"):
-            restrict = egress if restrict is None else restrict & egress
-        sources = ingress & topology.endpoint_zones(rule.get("source") or {}, notes)
-        targets = topology.endpoint_zones(rule.get("destination") or {}, notes)
-        if restrict is not None:
-            targets &= restrict
-        if not sources or not targets:
+        source_zones = topology.endpoint_zones(rule.get("source") or {}, notes)
+        destination_zones = topology.endpoint_zones(rule.get("destination") or {}, notes)
+        pairs: set[tuple[str, str]] = set()
+        for ingress, restrict in variants:
+            if rule.get("out_interfaces") or rule.get("destination_zones"):
+                restrict = egress if restrict is None else restrict & egress
+            targets = destination_zones if restrict is None else destination_zones & restrict
+            pairs |= {(s, d) for s in ingress & source_zones for d in targets if s != d}
+        if not pairs:
             continue
         ref = f"{tool_id}:{rule['id']}"
         entry = {"id": ref, "order": rule.get("order"), "action": "pass", "enabled": True,
@@ -472,32 +477,29 @@ def aggregate(topology: Topology) -> list[dict[str, Any]]:
                  "service": service_text(rule.get("services")), "log": bool(rule.get("log")),
                  "description": rule.get("description") or "", "hits": rule.get("hits"),
                  "any_any": bool(is_any_any(rule)), "marker": rule.get("marker")}
-        for s in sorted(sources):
-            for d in sorted(targets):
-                if s == d:
-                    continue
-                edge = edges.setdefault((s, d), {
-                    "id": f"zp:{s}>{d}", "source": s, "target": d, "services": [], "any_service": False,
-                    "rule_count": 0, "hits": None, "bidirectional": False, "approximate": True, "notes": [],
-                    "rules": [], "violations": [], "exposure": None, "pending_changes": [], "evaluable": True})
-                edge["rule_count"] += 1
-                edge["rules"].append(entry)
-                if rule.get("hits") is not None:
-                    edge["hits"] = (edge["hits"] or 0) + rule["hits"]
-                for note in notes:
-                    if note not in edge["notes"]:
-                        edge["notes"].append(note)
-                if rule.get("services") is None:
-                    edge["any_service"] = True
-                    continue
-                for svc in rule["services"]:
-                    key = (svc["proto"], svc.get("ports") or svc.get("alias"))
-                    existing = next((x for x in edge["services"] if (x["proto"], x["ports"]) == key), None)
-                    if existing is None:
-                        existing = {"proto": svc["proto"], "ports": key[1], "label": service_label(*key), "rule_ids": []}
-                        edge["services"].append(existing)
-                    if ref not in existing["rule_ids"]:
-                        existing["rule_ids"].append(ref)
+        for s, d in sorted(pairs):
+            edge = edges.setdefault((s, d), {
+                "id": f"zp:{s}>{d}", "source": s, "target": d, "services": [], "any_service": False,
+                "rule_count": 0, "hits": None, "bidirectional": False, "approximate": True, "notes": [],
+                "rules": [], "violations": [], "exposure": None, "pending_changes": [], "evaluable": True})
+            edge["rule_count"] += 1
+            edge["rules"].append(entry)
+            if rule.get("hits") is not None:
+                edge["hits"] = (edge["hits"] or 0) + rule["hits"]
+            for note in notes:
+                if note not in edge["notes"]:
+                    edge["notes"].append(note)
+            if rule.get("services") is None:
+                edge["any_service"] = True
+                continue
+            for svc in rule["services"]:
+                key = (svc["proto"], svc.get("ports") or svc.get("alias"))
+                existing = next((x for x in edge["services"] if (x["proto"], x["ports"]) == key), None)
+                if existing is None:
+                    existing = {"proto": svc["proto"], "ports": key[1], "label": service_label(*key), "rule_ids": []}
+                    edge["services"].append(existing)
+                if ref not in existing["rule_ids"]:
+                    existing["rule_ids"].append(ref)
     for (s, d), edge in edges.items():
         edge["bidirectional"] = (d, s) in edges
     return sorted(edges.values(), key=lambda e: e["id"])
@@ -506,6 +508,8 @@ def aggregate(topology: Topology) -> list[dict[str, Any]]:
 def _within(services: list[dict[str, Any]], allowed: list[dict[str, Any]]) -> bool:
     """Every edge service is covered by one of the allowed services (same protocol, ports inside)."""
     for svc in services:
+        if svc.get("ports") and not PORTS_RE.match(svc["ports"]):
+            return False  # an unresolved port alias: it may hold any port
         ranges = port_ranges(svc.get("ports")) if svc["proto"] in ("tcp", "udp") else [(0, 0)]
         ok = any(a["proto"] == svc["proto"] and (svc["proto"] not in ("tcp", "udp") or all(
             any(lo2 <= lo and hi <= hi2 for lo2, hi2 in port_ranges(a.get("ports"))) for lo, hi in ranges))

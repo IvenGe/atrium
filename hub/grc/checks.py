@@ -276,6 +276,11 @@ def _shown(items: list[str], limit: int = 5) -> str:
     return ", ".join(items[:limit]) + (f" and {len(items) - limit} more" if len(items) > limit else "")
 
 
+def _rule_names(devices: list[dict[str, Any]], key: str, limit: int = 20) -> list[str]:
+    """Evidence lines naming the device's own rule ids (details only use positions: they reach agents)."""
+    return [f"{d['ref']} {r['pos']}: {r['name']}" for d in devices for r in d.get(key) or []][:limit]
+
+
 def _stale_note(devices: list[dict[str, Any]]) -> list[str]:
     stale = [d["ref"] for d in devices if d.get("stale")]
     return [f"snapshot not current for {_shown(stale)}"] if stale else []
@@ -323,8 +328,8 @@ def check_network_management(s: Snapshot) -> Result:
     devices = s.network.get("devices") or []
     if not devices:
         return "manual", f"{NO_DEVICE}; management exposure is not verified.", []
-    exposed = [f"{d['ref']}:{ref}" for d in devices for ref in d.get("management_exposed") or []]
-    evidence = [f"{len(devices)} device(s) checked", *_stale_note(devices)]
+    exposed = [f"{d['ref']} {r['pos']}" for d in devices for r in d.get("management_exposed") or []]
+    evidence = [f"{len(devices)} device(s) checked", *_stale_note(devices), *_rule_names(devices, "management_exposed")]
     if exposed:
         return "fail", f"{len(exposed)} rule(s) let traffic from anywhere reach device management: {_shown(exposed)}.", evidence
     return "pass", f"No rule exposes device management to the internet on {len(devices)} device(s).", evidence
@@ -346,11 +351,12 @@ def check_network_rules(s: Snapshot) -> Result:
     devices = s.network.get("devices") or []
     if not devices:
         return "manual", f"{NO_DEVICE}; firewall rules are not reviewed.", []
-    any_any = [f"{d['ref']}:{ref}" for d in devices for ref in d.get("any_any") or []]
-    undocumented = [f"{d['ref']}:{ref}" for d in devices for ref in d.get("undocumented_pass") or []]
+    any_any = [f"{d['ref']} {r['pos']}" for d in devices for r in d.get("any_any") or []]
+    undocumented = [f"{d['ref']} {r['pos']}" for d in devices for r in d.get("undocumented_pass") or []]
     total = sum(d.get("pass_rules", 0) for d in devices)
     evidence = [f"{total} enabled pass rule(s) on {len(devices)} device(s)",
-                f"{sum(d.get('unlogged_pass', 0) for d in devices)} pass rule(s) without logging", *_stale_note(devices)]
+                f"{sum(d.get('unlogged_pass', 0) for d in devices)} pass rule(s) without logging", *_stale_note(devices),
+                *_rule_names(devices, "any_any"), *_rule_names(devices, "undocumented_pass")]
     if any_any:
         return "fail", f"{len(any_any)} pass rule(s) allow any source to any destination on any service: {_shown(any_any)}.", evidence
     if undocumented:
@@ -358,7 +364,74 @@ def check_network_rules(s: Snapshot) -> Result:
     return "pass", f"No any-to-any pass rule; all {total} pass rule(s) are described.", evidence
 
 
+def check_network_changes(s: Snapshot) -> Result:
+    """HB-CM-3: the device-change guardrails (second person and backup -> fail, maintenance window -> partial) and
+    the change history: a device left in an unknown state fails it, emergency changes are exceptions (partial)."""
+    devices = s.network.get("devices") or []
+    facts = s.network.get("changes") or {}
+    off, loose, evidence = _guardrail_findings(s, "HB-CM-3")
+    g = guardrails.merged(s.guardrails)
+    evidence = [f"device_changes={g.get('device_changes')}", f"approval_expiry_hours={g.get('approval_expiry_hours')}",
+                *evidence]
+    if facts:
+        evidence.append(f"in 90 days: {facts.get('applied_90d', 0)} applied, {facts.get('rolled_back_90d', 0)} rolled "
+                        f"back, {facts.get('failed_90d', 0)} failed, {len(facts.get('emergency_90d') or [])} emergency")
+    if not devices and not facts.get("applied_90d"):
+        return "manual", f"{NO_DEVICE}; no device changes to control.", evidence
+    if facts.get("unknown_state"):
+        return "fail", (f"{len(facts['unknown_state'])} device change(s) left a device in an unknown state "
+                        f"({_shown(facts['unknown_state'])}) - check the device and restore a backup."), evidence
+    if off:
+        return "fail", "Device changes are not controlled - switched off: " + "; ".join(off) + ".", evidence
+    emergencies = facts.get("emergency_90d") or []
+    problems = list(loose)
+    if emergencies:
+        problems.append(f"{len(emergencies)} emergency change(s) bypassed the maintenance windows "
+                        f"({_shown(emergencies)}) - review them")
+    if problems:
+        return "partial", "Device changes are reviewed and backed up, but " + " and ".join(problems) + ".", evidence
+    if not facts.get("device_changes"):
+        return "pass", ("Atrium does not change network devices (device changes are off); when they are on, a second "
+                        "administrator, a maintenance window and a backup are required."), evidence
+    return "pass", ("Device changes need a second administrator, wait for maintenance windows, are backed up first and "
+                    "roll back unless verified."), evidence
+
+
+# -- framework self-assessments (HB-PO-3): scores are people's judgement - only their age and key measures count -----
+
+ASSESSMENT_CURRENT = 365 * 24 * 3600
+
+
+def _day(ts: float | None) -> str:
+    return time.strftime("%Y-%m-%d", time.gmtime(ts)) if ts else "never"
+
+
+def check_framework_assessment(s: Snapshot) -> Result:
+    if not s.frameworks:
+        return "manual", ("No compliance framework self-assessment yet: start one in the Compliance hub "
+                          "(Frameworks)."), []
+    latest = max(s.frameworks, key=lambda a: (a.get("assessed_at") or 0, a.get("updated_at") or 0))
+    evidence = [f"{a['framework_name']} '{a['name']}' (target {a['target_name']}): {a['verdict'].replace('_', ' ')}, "
+                f"{a['progress']['percent']}% assessed, last scored {_day(a.get('assessed_at'))}"
+                for a in sorted(s.frameworks, key=lambda a: -(a.get("assessed_at") or 0))[:5]]
+    which = f"{latest['framework_name']} self-assessment '{latest['name']}'"
+    problems = []
+    if not latest.get("assessed_at"):
+        problems.append("nothing scored yet")
+    elif time.time() - latest["assessed_at"] > ASSESSMENT_CURRENT:
+        problems.append(f"last scored on {_day(latest['assessed_at'])}, more than 12 months ago")
+    below = latest.get("key_measures_below") or []
+    if below:
+        problems.append(f"{len(below)} key measure(s) of the {latest['target_name']} level below their threshold, N/A "
+                        f"or not scored ({', '.join(below[:8])}{' ...' if len(below) > 8 else ''})")
+    if problems:
+        return "partial", f"The {which}: " + "; ".join(problems) + ".", evidence
+    return "pass", (f"The {which} was last scored on {_day(latest['assessed_at'])}; every key measure of the "
+                    f"{latest['target_name']} level reaches its threshold."), evidence
+
+
 CHECKS: dict[str, Callable[[Snapshot], Result]] = {
+    "framework_assessment": check_framework_assessment,
     "assets_inventory": check_assets_inventory,
     "assets_owned": check_assets_owned,
     "tools_sso": check_tools_sso,
@@ -382,6 +455,7 @@ CHECKS: dict[str, Callable[[Snapshot], Result]] = {
     "network_management": check_network_management,
     "network_backups": check_network_backups,
     "network_rules": check_network_rules,
+    "network_changes": check_network_changes,
 }
 
 

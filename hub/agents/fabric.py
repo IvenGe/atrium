@@ -113,6 +113,14 @@ class FlowOwner(BaseAgent):
             raise ValueError(f"{self.name} does not own {flow.domain} flows")
         trigger = str(body.get("trigger") or ("manual" if msg.sender.startswith(("user:", "token:")) else "agent"))
         async with self._flow_locks.setdefault(flow_id, asyncio.Lock()):
+            current = flows.get(self.hub, flow_id)
+            if trigger != "manual" and current is not None and current.status != "enabled" and not current.job:
+                # disabled (or still proposed) since the run was asked for - e.g. queued while this agent was paused:
+                # only a person running it by hand runs it now (F25)
+                current.running = None
+                flows.save(self.hub, current)
+                return {"ok": False, "skipped": True, "detail": f"Not run: the flow is {current.status}",
+                        "flow": self._public(flow_id)}
             flow = flows.begin(self.hub, flow_id)
             started = time.time()
             try:

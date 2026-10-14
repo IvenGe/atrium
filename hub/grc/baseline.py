@@ -104,6 +104,17 @@ CONTROLS: list[Control] = [
             "patch_review", {"ISO27001": "A.8.32", "SOC2": "CC8.1", "NIS2": "21(2)(e)",
                              "CyFun2025": "PR.PS-06.2 / PR.PS-06.4 / PR.PS-01.5 / ID.AM-08.10",
                              "CyFun2023": "DE.CM-7.2 / PR.IP-3.1 / PR.IP-3.2 / PR.MA-1.7"}, None),
+    # UNVERIFIED: analyst mapping (ISO/IEC 27001:2022 A.8.32 change management, SOC 2 CC8.1, NIS2 Art. 21(2)(e); CyFun
+    # 2025 ids from the CISO Assistant library copy, CyFun 2023 derived through mapping.py) - not checked against the
+    # official texts.
+    Control("HB-CM-3", "Change management", "Network device changes are controlled",
+            "Atrium changes firewalls and network devices only for proposals an administrator other than the "
+            "proposer approved, bound to the reviewed rules and expiring, inside maintenance windows, after an "
+            "encrypted configuration backup, with an automatic rollback that a re-read must prove. Emergency "
+            "changes outside a window are exceptions that are reviewed.",
+            "network_changes", {"ISO27001": "A.8.32", "SOC2": "CC8.1", "NIS2": "21(2)(e)",
+                                "CyFun2025": "PR.PS-06.2 / PR.PS-01.5 / PR.IR-01.1", "CyFun2023": "DE.CM-7.2"},
+            ("Unreviewed or failed firewall changes open the network or cut systems off", 2, 4)),
     Control("HB-OP-1", "Operations", "Health monitoring for every tool",
             "Each integrated tool exposes a health check the hub monitors.",
             "tools_health", {"ISO27001": "A.8.16", "SOC2": "CC7.2", "NIS2": "21(2)(b)",

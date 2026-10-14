@@ -13,7 +13,7 @@ import time
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
-from ..config import OIDC_ENV, USER_ROLES, Settings
+from ..config import OIDC_ENV, SSO_DEFAULT_ROLES, Settings
 from ..connectors.base import endpoint_of
 from ..secrets import SecretError
 from .oidc import OidcClient
@@ -25,9 +25,10 @@ DOC = "sso"  # in the "settings" collection
 KEYS = {  # API key -> Settings attribute
     "issuer": "oidc_issuer", "client_id": "oidc_client_id", "client_secret": "oidc_client_secret",
     "scopes": "oidc_scopes", "role_claim": "oidc_role_claim", "admin_values": "oidc_admin_values",
-    "operator_values": "oidc_operator_values", "default_role": "oidc_default_role", "label": "oidc_label",
-    "allow_http": "oidc_allow_http",
+    "operator_values": "oidc_operator_values", "viewer_values": "oidc_viewer_values", "default_role": "oidc_default_role",
+    "allowed_domains": "oidc_allowed_domains", "label": "oidc_label", "allow_http": "oidc_allow_http",
 }
+DOMAIN_RE = re.compile(r"^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$")
 CLAIM_RE = re.compile(r"^[A-Za-z0-9_.:/-]{1,100}$")
 SCOPE_RE = re.compile(r"^[\w:/.-]{1,100}$")
 LOCAL_HOSTS = ("localhost", "127.0.0.1")
@@ -48,12 +49,16 @@ PRESETS: list[dict[str, Any]] = [
      "notes": ["Register an app (Web platform) with the redirect URI below and create a client secret.",
                "Roles: define app roles atrium-admins and atrium-operators and assign them (claim 'roles'), or emit a "
                "groups claim (claim 'groups' - Entra sends group object IDs, so enter those IDs as the values).",
-               "Use the tenant ID in the issuer, not 'common'."]},
+               "Use the tenant ID in the issuer, not 'common'.",
+               "In Enterprise applications set 'Assignment required' to Yes and assign the people (or groups) who may "
+               "use Atrium: otherwise every member and guest of the tenant can sign in."]},
     {"id": "google", "name": "Google", "provider_name": "Google", "issuer": "https://accounts.google.com",
      "scopes": "openid profile email", "role_claim": "groups", "admin_values": [], "operator_values": [],
      "notes": ["Create an OAuth client ID (Web application) in Google Cloud with the redirect URI below.",
-               "Google's ID tokens carry no groups: everyone signs in with the default role. Keep a local "
-               "administrator account."]},
+               "Google's ID tokens carry no groups: everyone allowed in gets the default role. Keep a local "
+               "administrator account.",
+               "With an External consent screen any Google account can authenticate: use an Internal one (Google "
+               "Workspace) and list your domains under Allowed domains, then set the default role to viewer."]},
     {"id": "keycloak", "name": "Keycloak", "provider_name": "Keycloak", "issuer": "https://<host>/realms/<realm>",
      "scopes": "openid profile email", "role_claim": "groups", "admin_values": ["atrium-admins"],
      "operator_values": ["atrium-operators"],
@@ -214,14 +219,22 @@ def clean(body: dict[str, Any], current: dict[str, Any], env: set[str], settings
         if claim and not CLAIM_RE.match(claim):
             raise ValueError("The role claim is a claim name or a dotted path such as realm_access.roles")
         out["role_claim"] = claim or None
-    for key, what in (("admin_values", "Admin values"), ("operator_values", "Operator values")):
+    for key, what in (("admin_values", "Admin values"), ("operator_values", "Operator values"),
+                      ("viewer_values", "Viewer values")):
         if key in body and key not in env:
             out[key] = _values(body.get(key), what)
+    if "allowed_domains" in body and "allowed_domains" not in env:
+        domains = [d.lower().lstrip("@") for d in _values(body.get("allowed_domains"), "Allowed domains")]
+        if any(not DOMAIN_RE.match(d) for d in domains):
+            raise ValueError("Allowed domains are domain names such as example.com")
+        out["allowed_domains"] = domains
     if "default_role" in body and "default_role" not in env:
         role = body.get("default_role") or "viewer"
-        if role not in USER_ROLES:
-            raise ValueError(f"The default role is one of {', '.join(USER_ROLES)}")
+        if role not in SSO_DEFAULT_ROLES:
+            raise ValueError(f"The default role is one of {', '.join(SSO_DEFAULT_ROLES)}")
         out["default_role"] = role
+    elif not current and "default_role" not in env:  # new settings refuse people outside the Atrium groups (F18)
+        out["default_role"] = "none"
     return out
 
 
@@ -250,7 +263,8 @@ def save(hub: "Hub", body: dict[str, Any], actor: str, *, generated_secret: str 
     hub.store.put("settings", doc)  # straight to the store: never broadcast
     rebuild(hub)
     shown = [k for k in ("preset", "provider_name", "issuer", "client_id", "scopes", "role_claim", "admin_values",
-                         "operator_values", "default_role", "allow_http") if doc.get(k) != current.get(k)]
+                         "operator_values", "viewer_values", "default_role", "allowed_domains", "allow_http")
+             if doc.get(k) != current.get(k)]
     hub.activity(actor, "warn" if doc.get("allow_http") and not current.get("allow_http") else "info",
                  "Changed the Sign-in & SSO settings" + (f": {', '.join(shown)}" if shown else "")
                  + ("; client secret updated" if changed_secret else ""))

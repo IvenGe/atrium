@@ -31,7 +31,8 @@ APPS = {"assets": "Hub Assets", "vulnerabilities": "Hub Vulnerabilities", "risks
         "network": "Hub Network", "frameworks": "Hub Compliance frameworks",
         "assessments": "Hub framework self-assessments"}
 DEFAULT_SCHEDULE = {"pull": 60, "push": 60, "scan": 7 * 24 * 60}
-DOMAIN_SCHEDULE = {"network": 15}  # pull minutes where the default does not fit (device drift is noticed sooner)
+DOMAIN_SCHEDULE = {"network": 10}  # pull minutes where the default does not fit: device drift is noticed sooner, and
+# snapshots stay younger than the 15 minutes a device change needs (integration/network.py stale_after_minutes)
 REPAIR_AFTER = 3  # consecutive failures before the Hub Supervisor asks the Patch Agent for a repair
 STALE_RUN = 30 * 60  # a run marked as under way for longer than this was interrupted
 ASSET_TYPES = ("server", "workstation", "network", "software", "saas", "cloud", "data", "other")
@@ -185,6 +186,26 @@ def remove(hub: "Hub", flow_id: str, actor: str, note: str = "The data flow was 
     hub.store.delete(COLLECTION, flow_id)
     hub.bus.publish("flow_removed", {"id": flow_id})
     return flow
+
+
+def retire_unsupported(hub: "Hub", tool_id: str, actor: str) -> list[Flow]:
+    """The tool's connection changed: remove the enabled or proposed pulls and pushes it no longer supports (e.g.
+    "Send CyFun self-assessments" switched off), so they neither fail on every run nor get approved later; allowing
+    it again leads to a new proposal. Disabled flows stay (a rejected proposal stays rejected), and so do sync links,
+    so a flow proposed again updates the same records. Scans depend on the connector's actions, not its domains."""
+    conn = connections.get(hub, tool_id)
+    caps = connections.capabilities(conn) if conn is not None else {}
+    removed = []
+    for flow in all_flows(hub, tool_id):
+        op = {"pull": "read", "push": "write"}.get(flow.direction)
+        if op is None or flow.status == "disabled" or op in caps.get(flow.domain, []):
+            continue
+        remove(hub, flow.id, actor, "Superseded: the tool's connection no longer supports this data flow.")
+        hub.activity(actor, "warn", f"Removed data flow {flow.title or title(hub, flow)}: the connection no longer "
+                                    f"{'reads' if op == 'read' else 'writes'} {flow.domain.removeprefix('x:')}",
+                     flow_id=flow.id, tool_id=tool_id)
+        removed.append(flow)
+    return removed
 
 
 def forget_tool(hub: "Hub", tool_id: str, actor: str) -> None:

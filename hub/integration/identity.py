@@ -283,9 +283,15 @@ def secret(workspace: Path, owner: str, provider: str, name: str = "client-secre
         value = path.read_text(encoding="utf-8").strip()
         if value:
             return value
-    path.parent.mkdir(parents=True, exist_ok=True)
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     value = _new_secret(name)
-    path.write_text(value, encoding="utf-8")
+    try:  # owner-only from the first byte (review F14), as secrets._write_key_file
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    except OSError:
+        path.write_text(value, encoding="utf-8")
+    else:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(value)
     private_file(path)
     return value
 
@@ -640,6 +646,10 @@ def overview(hub: "Hub") -> dict[str, Any]:
     ids = {p.tool_id for p in providers}
     default = prefs.default if prefs.default in ids else None
     pending_approvals = {a.payload.get("patch_id"): a.id for a in hub.approvals.list("pending") if a.kind == "patch"}
+    sso_patches: dict[str, list[Any]] = {}  # loaded once: the integration map asks this for every tool
+    for patch in hub.patches():
+        if patch.strategy in SSO_STRATEGIES:
+            sso_patches.setdefault(patch.tool_id, []).append(patch)
     rows = []
     for tool in tools:
         m = tool.manifest
@@ -647,7 +657,7 @@ def overview(hub: "Hub") -> dict[str, Any]:
             continue
         selection = select(tool, providers, prefs)
         check = next((c for c in (tool.report.checks if tool.report else []) if c.id == "sso"), None)
-        patches = sorted((p for p in hub.patches(tool.id) if p.strategy in SSO_STRATEGIES), key=lambda p: -p.created_at)
+        patches = sorted(sso_patches.get(tool.id, []), key=lambda p: -p.created_at)
         pending = next((p for p in patches if p.status == "proposed"), None)
         applied = next((p for p in patches if p.status == "applied" and p.sso), None)
         connected = m.auth.provider in ids and m.auth.sso in ("oidc", "saml", "oauth2")

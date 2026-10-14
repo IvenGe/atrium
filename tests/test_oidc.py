@@ -305,13 +305,20 @@ def test_state_expires(idp, monkeypatch):
 
 
 def test_pending_sign_ins_are_bounded(idp, monkeypatch):
+    """The client keeps nothing per started sign-in, so a flood of anonymous starts cannot push a person's sign-in
+    out (review F30); it remembers only finished ones - at most MAX_PENDING - so each state is used once."""
     monkeypatch.setattr(oidc_module, "MAX_PENDING", 3)
     oidc = client_for(idp)
-    started = [asyncio.run(oidc.begin()) for _ in range(4)]
-    (first_url, first_state), (last_url, last_state) = started[0], started[-1]
+    started = [asyncio.run(oidc.begin()) for _ in range(50)]
+    assert len(oidc._used) == 0
+    first_url, first_state = started[0]
+    assert asyncio.run(oidc.complete(idp.authorize(first_url), first_state, first_state)).subject == SUBJECT
+    for url, state in started[1:6]:
+        assert asyncio.run(oidc.complete(idp.authorize(url), state, state)).subject == SUBJECT
+    assert len(oidc._used) == 3  # bounded
+    last_url, last_state = started[5]
     with pytest.raises(OidcError, match="expired or was already used"):
-        asyncio.run(oidc.complete(idp.authorize(first_url), first_state, first_state))
-    assert asyncio.run(oidc.complete(idp.authorize(last_url), last_state, last_state)).subject == SUBJECT
+        asyncio.run(oidc.complete(idp.authorize(last_url), last_state, last_state))
 
 
 @pytest.mark.parametrize("issuer, allow_http, allowed", [
