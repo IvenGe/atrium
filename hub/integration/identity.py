@@ -28,6 +28,7 @@ import yaml
 from pydantic import BaseModel, SecretStr
 
 from ..models import FileChange, Tool
+from .analyzer import read_repo_file
 
 if TYPE_CHECKING:
     from ..core import Hub
@@ -54,6 +55,19 @@ SECRET_TOKENS = {CLIENT_SECRET: "client-secret", COOKIE_SECRET: "cookie-secret"}
 SAFE_ID = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 REALM_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,49}$")
+# A provider's base URL: scheme, host (or [IPv6]), optional port and a plain path. Nothing a shell, YAML or an env file
+# would read as syntax ($, `, quotes, ;, &, |, <, >, (, ), \, whitespace), because the URL is written into generated
+# registration scripts the hub runs. A manifest URL that does not match counts as unknown.
+BASE_URL_RE = re.compile(r"^https?://(\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9.-]+)(:[0-9]{1,5})?(/[A-Za-z0-9._~%/:@+,=-]*)?$")
+# Docker Compose service names (compose-spec); a name outside this pattern is never written into a script.
+COMPOSE_SERVICE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
+CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f\u2028\u2029]+")
+
+
+def one_line(text: str) -> str:
+    """`text` without line breaks or other control characters, for comment lines of generated files: a name taken from
+    a repository must not end a `#` comment and start a command, a YAML entry or an environment variable."""
+    return CONTROL_CHARS.sub(" ", str(text)).strip()
 
 
 # --------------------------------------------------------------------------------------
@@ -129,18 +143,40 @@ def provider_kind(tool: Tool) -> IdpKind:
     return next((k for k in KINDS if k in text), "generic")
 
 
+def safe_base_url(url: str | None) -> str | None:
+    """`url` without a trailing slash when it is a plain http(s) URL (BASE_URL_RE), else None."""
+    if not url:
+        return None
+    url = url.strip().rstrip("/")
+    return url if BASE_URL_RE.fullmatch(url) else None
+
+
 def _base_url(tool: Tool, settings: dict[str, str]) -> str | None:
     m = tool.manifest
-    url = settings.get("base_url") or (m.ui.url if m else None) or (m.api.base_url if m else None)
+    url = (safe_base_url(settings.get("base_url")) or safe_base_url(m.ui.url if m else None)
+           or safe_base_url(m.api.base_url if m else None))
     if not url and m and m.launch.port:
-        url = f"http://localhost:{m.launch.port}"
-    return url.rstrip("/") if url else None
+        url = f"http://localhost:{int(m.launch.port)}"
+    return url
+
+
+def _valid_settings(kind: IdpKind, settings: dict[str, str]) -> dict[str, str]:
+    """The settings `kind` takes, each passing validate_setting (values stored before a rule tightened are dropped)."""
+    valid: dict[str, str] = {}
+    for key, value in settings.items():
+        if key not in SETTING_KEYS.get(kind, ("base_url",)) or not value:
+            continue
+        try:
+            valid[key] = validate_setting(key, value)
+        except ValueError:
+            continue
+    return valid
 
 
 def make_provider(tool: Tool, settings: dict[str, str] | None = None) -> IdentityProvider:
     assert tool.manifest is not None
     kind = provider_kind(tool)
-    settings = {k: v for k, v in (settings or {}).items() if k in SETTING_KEYS.get(kind, ("base_url",)) and v}
+    settings = _valid_settings(kind, settings or {})
     base = _base_url(tool, settings)
     protocols: list[Protocol] = [p for p in ("oidc", "saml") if f"auth.{p}" in tool.manifest.provides]  # type: ignore[misc]
     provider = IdentityProvider(tool_id=tool.id, name=tool.name, kind=kind, base_url=base or PLACEHOLDER_BASE,
@@ -241,9 +277,13 @@ def validate_setting(key: str, value: str) -> str:
     if key == "slug" and not SLUG_RE.match(value):
         raise ValueError("An authentik application slug is 1-50 lowercase letters, digits, dashes or underscores.")
     if key == "base_url":
-        if not re.match(r"^https?://[^\s/]+(/[^\s]*)?$", value):
+        if not re.match(r"^https?://", value):
             raise ValueError("The provider URL must start with http:// or https://")
-        value = value.rstrip("/")
+        url = safe_base_url(value)
+        if url is None:
+            raise ValueError("The provider URL must be a plain address: http(s)://host[:port][/path], without spaces, "
+                             "quotes or characters such as $ ` ; & | < > ( ) \\")
+        value = url
     return value
 
 
@@ -283,9 +323,15 @@ def secret(workspace: Path, owner: str, provider: str, name: str = "client-secre
         value = path.read_text(encoding="utf-8").strip()
         if value:
             return value
-    path.parent.mkdir(parents=True, exist_ok=True)
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     value = _new_secret(name)
-    path.write_text(value, encoding="utf-8")
+    try:  # owner-only from the first byte (review F14), as secrets._write_key_file
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    except OSError:
+        path.write_text(value, encoding="utf-8")
+    else:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(value)
     private_file(path)
     return value
 
@@ -365,23 +411,27 @@ def compose_target(provider: IdentityProvider) -> tuple[str, str] | None:
         return None
     root = Path(provider.path)
     for name in COMPOSE_FILES:
-        path = root / name
-        if not path.is_file():
+        text = read_repo_file(root, name, 2_000_000)  # never through a symbolic link out of the repository
+        if text is None:
             continue
         try:
-            data = yaml.safe_load(path.read_text(encoding="utf-8", errors="replace")) or {}
+            data = yaml.safe_load(text) or {}
         except yaml.YAMLError:
             return None
         services = data.get("services") if isinstance(data, dict) else None
-        if not isinstance(services, dict) or not services:
+        if not isinstance(services, dict):
             return None
-        names = [str(n) for n in services]
+        # Only names compose itself accepts: the service name is written into the script the Register button runs.
+        services = {str(n): spec for n, spec in services.items() if COMPOSE_SERVICE_RE.fullmatch(str(n))}
+        if not services:
+            return None
+        names = list(services)
         if provider.kind == "authentik" and "worker" in names:  # the worker applies blueprints
             return root.as_posix(), "worker"
         for svc, spec in services.items():
             image = str(spec.get("image", "")) if isinstance(spec, dict) else ""
-            if provider.kind in str(svc).lower() or provider.kind in image.lower():
-                return root.as_posix(), str(svc)
+            if provider.kind in svc.lower() or provider.kind in image.lower():
+                return root.as_posix(), svc
         return root.as_posix(), names[0]
     return None
 
@@ -430,6 +480,12 @@ def keycloak_client(c: ClientSpec) -> dict[str, Any]:
     return rep
 
 
+def _defaults(**values: str) -> str:
+    """Shell assignments NAME_DEFAULT='value', each value quoted. Scripts read them as "${OVERRIDE:-$NAME_DEFAULT}":
+    a value from a repository or a manifest is never pasted into a ${...:-word}, where bash would expand $(...) in it."""
+    return "".join(f"{name}={sh(value)}\n" for name, value in values.items())
+
+
 def _keycloak_scripts(provider: IdentityProvider, c: ClientSpec) -> tuple[str, str | None]:
     groups = " ".join(sh(g) for g in c.groups)
     group_lines = (f'for g in {groups}; do kc create groups -r "$REALM" -s name="$g" >/dev/null 2>&1 || true; done\n'
@@ -445,28 +501,27 @@ def _keycloak_scripts(provider: IdentityProvider, c: ClientSpec) -> tuple[str, s
           echo "Created client $CLIENT_ID in realm $REALM"
         fi
         """) + group_lines
-    head = textwrap.dedent(f"""\
+    head = textwrap.dedent("""\
         # Generated by the Atrium Patch Agent. Safe to run again: an existing client is updated.
         # Written for kcadm.sh of Keycloak 17+ (no /auth path). The client secret is in keycloak-client.json;
         # this script never prints it.
         set -euo pipefail
-        HERE="$(cd "$(dirname "${{BASH_SOURCE[0]}}")" && pwd)"
-        REALM="${{KEYCLOAK_REALM:-{provider.realm}}}"
-        CLIENT_ID={sh(c.client_id)}
-        """)
+        HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+        """) + _defaults(REALM_DEFAULT=provider.realm, CLIENT_ID=c.client_id) + 'REALM="${KEYCLOAK_REALM:-$REALM_DEFAULT}"\n'
+    what = one_line(f"{c.name} ({c.protocol.upper()} client {c.client_id}) in Keycloak realm {provider.realm}")
     host = ("#!/usr/bin/env bash\n"
-            f"# Registers {c.name} ({c.protocol.upper()} client {c.client_id}) in Keycloak realm {provider.realm} at {provider.base_url}\n"
+            f"# Registers {what} at {one_line(provider.base_url)}\n"
             "# with kcadm.sh on this machine. It needs a Keycloak administrator: set KEYCLOAK_ADMIN_USER and\n"
             "# KEYCLOAK_ADMIN_PASSWORD (environment, or a .env file next to this script). The hub never stores them.\n"
-            + head + textwrap.dedent(f"""\
+            + head + _defaults(SERVER_DEFAULT=provider.base_url) + textwrap.dedent("""\
         if [ -f "$HERE/.env" ]; then set -a; . "$HERE/.env"; set +a; fi
-        KCADM="${{KCADM:-kcadm.sh}}"
-        SERVER="${{KEYCLOAK_URL:-{provider.base_url}}}"
-        : "${{KEYCLOAK_ADMIN_USER:?Set KEYCLOAK_ADMIN_USER and KEYCLOAK_ADMIN_PASSWORD to a Keycloak administrator}}"
-        : "${{KEYCLOAK_ADMIN_PASSWORD:?Set KEYCLOAK_ADMIN_PASSWORD}}"
+        KCADM="${KCADM:-kcadm.sh}"
+        SERVER="${KEYCLOAK_URL:-$SERVER_DEFAULT}"
+        : "${KEYCLOAK_ADMIN_USER:?Set KEYCLOAK_ADMIN_USER and KEYCLOAK_ADMIN_PASSWORD to a Keycloak administrator}"
+        : "${KEYCLOAK_ADMIN_PASSWORD:?Set KEYCLOAK_ADMIN_PASSWORD}"
         CONFIG="$(mktemp)"
         trap 'rm -f "$CONFIG"' EXIT
-        kc() {{ local cmd="$1"; shift; "$KCADM" "$cmd" --config "$CONFIG" "$@"; }}
+        kc() { local cmd="$1"; shift; "$KCADM" "$cmd" --config "$CONFIG" "$@"; }
         "$KCADM" config credentials --config "$CONFIG" --server "$SERVER" --realm master \\
           --user "$KEYCLOAK_ADMIN_USER" --password "$KEYCLOAK_ADMIN_PASSWORD" >/dev/null
         """) + body)
@@ -475,19 +530,19 @@ def _keycloak_scripts(provider: IdentityProvider, c: ClientSpec) -> tuple[str, s
         return host, None
     compose_dir, service = target
     compose = ("#!/usr/bin/env bash\n"
-               f"# Registers {c.name} ({c.protocol.upper()} client {c.client_id}) in Keycloak realm {provider.realm} by running\n"
-               f"# kcadm.sh inside the {service} container of {provider.name} (docker compose exec), signed in with the\n"
+               f"# Registers {what} by running\n"
+               f"# kcadm.sh inside the {one_line(service)} container of {one_line(provider.name)} (docker compose exec), signed in with the\n"
                "# administrator the container was started with (KC_BOOTSTRAP_ADMIN_* or KEYCLOAK_ADMIN*).\n"
-               + head + textwrap.dedent(f"""\
+               + head + _defaults(COMPOSE_DIR_DEFAULT=compose_dir, SERVICE_DEFAULT=service) + textwrap.dedent("""\
         export MSYS_NO_PATHCONV=1  # Git Bash on Windows: pass container paths through unchanged
-        COMPOSE_DIR="${{KEYCLOAK_COMPOSE_DIR:-{compose_dir}}}"
-        SERVICE="${{KEYCLOAK_SERVICE:-{service}}}"
+        COMPOSE_DIR="${KEYCLOAK_COMPOSE_DIR:-$COMPOSE_DIR_DEFAULT}"
+        SERVICE="${KEYCLOAK_SERVICE:-$SERVICE_DEFAULT}"
         KCADM=/opt/keycloak/bin/kcadm.sh
         CONFIG=/tmp/kcadm-atrium.config
-        dc() {{ (cd "$COMPOSE_DIR" && docker compose exec -T "$@"); }}
-        kc() {{ local cmd="$1"; shift; dc "$SERVICE" "$KCADM" "$cmd" --config "$CONFIG" "$@"; }}
-        dc -e KC_URL="${{KEYCLOAK_INTERNAL_URL:-http://localhost:8080}}" "$SERVICE" bash -c \\
-          'exec /opt/keycloak/bin/kcadm.sh config credentials --config /tmp/kcadm-atrium.config --server "$KC_URL" --realm master --user "${{KC_BOOTSTRAP_ADMIN_USERNAME:-$KEYCLOAK_ADMIN}}" --password "${{KC_BOOTSTRAP_ADMIN_PASSWORD:-$KEYCLOAK_ADMIN_PASSWORD}}"' >/dev/null
+        dc() { (cd "$COMPOSE_DIR" && docker compose exec -T "$@"); }
+        kc() { local cmd="$1"; shift; dc "$SERVICE" "$KCADM" "$cmd" --config "$CONFIG" "$@"; }
+        dc -e KC_URL="${KEYCLOAK_INTERNAL_URL:-http://localhost:8080}" "$SERVICE" bash -c \\
+          'exec /opt/keycloak/bin/kcadm.sh config credentials --config /tmp/kcadm-atrium.config --server "$KC_URL" --realm master --user "${KC_BOOTSTRAP_ADMIN_USERNAME:-$KEYCLOAK_ADMIN}" --password "${KC_BOOTSTRAP_ADMIN_PASSWORD:-$KEYCLOAK_ADMIN_PASSWORD}"' >/dev/null
         """) + body)
     return host, compose
 
@@ -499,7 +554,7 @@ def authentik_blueprint(provider: IdentityProvider, c: ClientSpec) -> str:
     self-signed certificate an authentik installation creates."""
     slug = c.app_slug or c.client_id
     cert = '!Find [authentik_crypto.certificatekeypair, [name, "authentik Self-signed Certificate"]]'
-    lines = [f"# authentik blueprint generated by the Atrium Patch Agent: {c.name} signs in through {provider.name}.",
+    lines = [f"# authentik blueprint generated by the Atrium Patch Agent: {one_line(c.name)} signs in through {one_line(provider.name)}.",
              "# Apply it with `ak apply_blueprint`, or put it in the blueprints folder authentik watches.",
              "version: 1", "metadata:", f"  name: {yq('atrium-' + slug)}", "entries:"]
     model = "authentik_providers_saml.samlprovider" if c.protocol == "saml" else "authentik_providers_oauth2.oauth2provider"
@@ -538,20 +593,21 @@ def _authentik_script(provider: IdentityProvider, c: ClientSpec) -> str | None:
     compose_dir, service = target
     slug = c.app_slug or c.client_id
     return ("#!/usr/bin/env bash\n"
-            f"# Applies authentik-blueprint.yaml in the {service} container of {provider.name} (docker compose exec):\n"
-            f"# creates or updates the {c.protocol.upper()} provider and application for {c.name}. Safe to run again.\n"
+            f"# Applies authentik-blueprint.yaml in the {one_line(service)} container of {one_line(provider.name)} (docker compose exec):\n"
+            f"# creates or updates the {c.protocol.upper()} provider and application for {one_line(c.name)}. Safe to run again.\n"
             "# Generated by the Atrium Patch Agent. Assumes the default blueprints folder /blueprints in the container.\n"
-            + textwrap.dedent(f"""\
-        set -euo pipefail
-        export MSYS_NO_PATHCONV=1  # Git Bash on Windows: pass container paths through unchanged
-        HERE="$(cd "$(dirname "${{BASH_SOURCE[0]}}")" && pwd)"
-        COMPOSE_DIR="${{AUTHENTIK_COMPOSE_DIR:-{compose_dir}}}"
-        SERVICE="${{AUTHENTIK_SERVICE:-{service}}}"
-        FILE={sh(f"custom/atrium-{slug}.yaml")}
+            "set -euo pipefail\n"
+            "export MSYS_NO_PATHCONV=1  # Git Bash on Windows: pass container paths through unchanged\n"
+            'HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"\n'
+            + _defaults(COMPOSE_DIR_DEFAULT=compose_dir, SERVICE_DEFAULT=service, FILE=f"custom/atrium-{slug}.yaml",
+                        DONE=f"Applied the blueprint for {c.client_id}")
+            + textwrap.dedent("""\
+        COMPOSE_DIR="${AUTHENTIK_COMPOSE_DIR:-$COMPOSE_DIR_DEFAULT}"
+        SERVICE="${AUTHENTIK_SERVICE:-$SERVICE_DEFAULT}"
         cd "$COMPOSE_DIR"
-        docker compose exec -T "$SERVICE" sh -c "mkdir -p /blueprints/custom && cat > /blueprints/$FILE" < "$HERE/authentik-blueprint.yaml"
+        docker compose exec -T "$SERVICE" sh -c 'mkdir -p /blueprints/custom && cat > "/blueprints/$1"' sh "$FILE" < "$HERE/authentik-blueprint.yaml"
         docker compose exec -T "$SERVICE" ak apply_blueprint "$FILE"
-        echo "Applied the blueprint for {c.client_id}"
+        echo "$DONE"
         """))
 
 
@@ -640,6 +696,10 @@ def overview(hub: "Hub") -> dict[str, Any]:
     ids = {p.tool_id for p in providers}
     default = prefs.default if prefs.default in ids else None
     pending_approvals = {a.payload.get("patch_id"): a.id for a in hub.approvals.list("pending") if a.kind == "patch"}
+    sso_patches: dict[str, list[Any]] = {}  # loaded once: the integration map asks this for every tool
+    for patch in hub.patches():
+        if patch.strategy in SSO_STRATEGIES:
+            sso_patches.setdefault(patch.tool_id, []).append(patch)
     rows = []
     for tool in tools:
         m = tool.manifest
@@ -647,7 +707,7 @@ def overview(hub: "Hub") -> dict[str, Any]:
             continue
         selection = select(tool, providers, prefs)
         check = next((c for c in (tool.report.checks if tool.report else []) if c.id == "sso"), None)
-        patches = sorted((p for p in hub.patches(tool.id) if p.strategy in SSO_STRATEGIES), key=lambda p: -p.created_at)
+        patches = sorted(sso_patches.get(tool.id, []), key=lambda p: -p.created_at)
         pending = next((p for p in patches if p.status == "proposed"), None)
         applied = next((p for p in patches if p.status == "applied" and p.sso), None)
         connected = m.auth.provider in ids and m.auth.sso in ("oidc", "saml", "oauth2")
@@ -749,7 +809,7 @@ def atrium_client(hub: "Hub", provider_id: str) -> AtriumClient:
     client = AtriumClient(provider=provider.tool_id, provider_name=provider.name, issuer=provider.client_issuer(provider.slug),
                           client_secret=SecretStr(value), redirect_uri=spec.redirect_uris[0], location=str(root),
                           secret_file=str(root / "atrium-oidc.env"))
-    env_file = FileChange(path="atrium-oidc.env", content=f"# Atrium sign-in through {provider.name}: put these lines in "
+    env_file = FileChange(path="atrium-oidc.env", content=f"# Atrium sign-in through {one_line(provider.name)}: put these lines in "
                           "Atrium's .env and restart it. Keep this file private.\n" + client.env(reveal=True))
     private = {f.path for f in reg.files if has_secret(f)} | {env_file.path}
     write_files(root, fill_secrets(workspace, "atrium", provider.tool_id, reg.files) + [env_file], private)

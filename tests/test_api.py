@@ -13,6 +13,16 @@ def test_unknown_host_header_is_rejected(client):
     assert client.get("/api/health", headers={"Host": "evil.example"}).status_code == 400
 
 
+def test_no_response_may_be_framed(client):
+    """Clickjacking: the UI, the API and refusals all forbid being embedded in another site."""
+    responses = [client.get("/"), client.get("/js/app.js"), client.get("/api/health"),
+                 client.get("/api/health", headers={"Host": "evil.example"}),
+                 client.post("/api/commands", json={"command": "uname"}, headers={"X-Hub-Request": ""})]
+    for response in responses:
+        assert response.headers["x-frame-options"] == "DENY", response.request.url
+        assert response.headers["content-security-policy"] == "frame-ancestors 'none'"
+
+
 def test_core_agents_are_running(client):
     agents = {a["id"]: a for a in client.get("/api/agents").json()}
     assert {"supervisor", "patcher", "operator", "module:assets", "module:grc"} <= set(agents)

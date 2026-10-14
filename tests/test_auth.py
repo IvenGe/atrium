@@ -10,7 +10,6 @@ import sys
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from urllib.parse import unquote
 
 import pytest
 from conftest import ADMIN_PASSWORD, PASSWORD, make_settings
@@ -116,11 +115,7 @@ def test_password_policy(password, message):
     ("PUT", "/api/tools/crm/connection/", "admin"), ("POST", "/api/tools/crm/connection/test", "operator"),
     ("GET", "/api/tools/crm/connection/options/model_id", "operator"), ("GET", "/api/tools/crm/connection/options", "viewer"),
     ("POST", "/api/tools/crm/connection/generate", "operator"), ("PUT", "/api/tools/a/b/connection", "operator"),
-    ("GET", "/api/flows", "viewer"), ("POST", "/api/flows", "operator"), ("PATCH", "/api/flows/fl_1", "operator"),
-    ("POST", "/api/flows/fl_1/run", "operator"),
-    ("GET", "/api/integration/map", "viewer"), ("GET", "/api/integration/map/options", "viewer"),
-    ("GET", "/api/layouts/integration", "viewer"), ("PATCH", "/api/layouts/integration", "operator"),
-    ("DELETE", "/api/layouts/integration", "operator"),
+    ("GET", "/api/flows", "viewer"), ("PATCH", "/api/flows/fl_1", "operator"), ("POST", "/api/flows/fl_1/run", "operator"),
     ("GET", "/api/vulnerabilities/summary", "viewer"), ("PATCH", "/api/vulnerabilities/v_1", "operator"),
     ("POST", "/api/vulnerabilities/scan", "operator"), ("POST", "/api/assets/scan-scope", "operator"),
     ("POST", "/api/agents", "admin"), ("POST", "/api/agents/", "admin"), ("DELETE", "/api/agents/agent:x", "admin"),
@@ -148,17 +143,31 @@ def test_password_policy(password, message):
     ("GET", "/api/self-patches", "viewer"), ("GET", "/api/self-patches/sp_1", "viewer"),
     ("POST", "/api/self-patches", "admin"), ("POST", "/api/self-patches/sp_1/apply", "admin"),
     ("POST", "/api/self-patches/sp_1", "operator"), ("POST", "/api/approvals/ap_1", "operator"),
-    ("GET", "/api/network/devices", "viewer"), ("POST", "/api/network/devices/edge/baseline", "admin"),
-    ("DELETE", "/api/network/devices/edge/baseline", "admin"),
-    ("GET", "/api/network/backups/bk_1/download", "admin"),
-    ("POST", "/api/network/drift/dr_1/ack", "operator"),
-    ("DELETE", "/api/frameworks/cyfun2025/assessments/fa_1", "admin"),
+    ("GET", "/api/network/devices", "viewer"), ("GET", "/api/network/devices/fw1", "viewer"),
+    ("POST", "/api/network/devices/fw1/refresh", "operator"), ("POST", "/api/network/devices/fw1/backups", "operator"),
+    ("POST", "/api/network/devices/fw1/baseline", "admin"), ("DELETE", "/api/network/devices/fw1/baseline", "admin"),
+    ("POST", "/api/network/drift/dr_1/ack", "operator"), ("GET", "/api/network/backups/bk_1/download", "admin"),
+    ("GET", "/api/network/backups", "viewer"), ("PATCH", "/api/network/settings", "admin"),
+    ("GET", "/api/network/settings", "viewer"), ("GET", "/api/segmentation", "viewer"),
+    ("PATCH", "/api/segmentation/zones/z:fw1:lan", "admin"), ("PATCH", "/api/segmentation/zones/z:sw1:Gi1/0/1", "admin"),
+    ("PUT", "/api/segmentation/placements/a_1", "operator"), ("PUT", "/api/segmentation/policy", "admin"),
+    ("GET", "/api/segmentation/policy", "viewer"), ("POST", "/api/segmentation/refresh", "operator"),
+    ("GET", "/api/frameworks", "viewer"), ("GET", "/api/frameworks/cyfun2025", "viewer"),
+    ("POST", "/api/frameworks/cyfun2025/assessments", "operator"),
+    ("PATCH", "/api/frameworks/cyfun2025/assessments/fa_1", "operator"),
+    ("PATCH", "/api/frameworks/cyfun2025/assessments/fa_1/requirements/PR.AA-01.1", "operator"),
     ("GET", "/api/frameworks/cyfun2025/assessments/fa_1/audit-pack", "viewer"),
-    ("PATCH", "/api/segmentation/zones/z:edge:lan", "admin"),
-    ("PUT", "/api/segmentation/policy", "admin"),
-    ("POST", "/api/network/windows", "admin"),
-    ("POST", "/api/segmentation/changes/fw_1/emergency", "admin"),
-    ("POST", "/api/segmentation/changes/preview", "operator"),
+    ("DELETE", "/api/frameworks/cyfun2025/assessments/fa_1", "admin"),
+    ("POST", "/api/segmentation/changes/preview", "operator"), ("POST", "/api/segmentation/changes", "operator"),
+    ("GET", "/api/segmentation/changes", "viewer"), ("GET", "/api/segmentation/changes/chg_1", "viewer"),
+    ("DELETE", "/api/segmentation/changes/chg_1", "operator"), ("POST", "/api/segmentation/changes/chg_1/revert", "operator"),
+    ("POST", "/api/segmentation/changes/chg_1/emergency", "admin"), ("POST", "/api/network/backups/bk_1/restore", "operator"),
+    ("GET", "/api/network/maintenance-windows", "viewer"), ("POST", "/api/network/maintenance-windows", "admin"),
+    ("PATCH", "/api/network/maintenance-windows/mw_1", "admin"),
+    ("DELETE", "/api/network/maintenance-windows/mw_1", "admin"),
+    ("GET", "/api/integration/map", "viewer"), ("GET", "/api/integration/map/options", "viewer"),
+    ("POST", "/api/flows", "operator"), ("GET", "/api/layouts/integration", "viewer"),
+    ("PATCH", "/api/layouts/integration", "operator"), ("DELETE", "/api/layouts/segmentation", "operator"),
 ])
 def test_required_role(method, path, role):
     assert required_role(method, path) == role
@@ -210,18 +219,21 @@ def contract_role(method: str, path: str) -> str | None:
                           ("POST", "/api/tools/{tool_id}/extend"), ("POST", "/api/self-patches"),
                           ("POST", "/api/self-patches/{patch_id}/apply")}:
         return "admin"
-    # a network baseline is the approved configuration; downloading a backup returns the device configuration
+    # compliance frameworks: viewers read (incl. the audit pack), operators start and score assessments, admins delete
+    if (method, path) == ("DELETE", "/api/frameworks/{framework_id}/assessments/{assessment_id}"):
+        return "admin"
+    # network devices: baselines, backup downloads (full configurations) and settings; segmentation zone roles and
+    # the policy (they decide compliance verdicts)
     if (method, path) in {("POST", "/api/network/devices/{tool_id}/baseline"),
                           ("DELETE", "/api/network/devices/{tool_id}/baseline"),
-                          ("GET", "/api/network/backups/{backup_id}/download")}:
+                          ("GET", "/api/network/backups/{backup_id}/download"), ("PATCH", "/api/network/settings"),
+                          ("PATCH", "/api/segmentation/zones/{zone_id:path}"), ("PUT", "/api/segmentation/policy")}:
         return "admin"
-    if method == "DELETE" and path == "/api/frameworks/{framework_id}/assessments/{aid}":
-        return "admin"
-    if (method, path) in {("PATCH", "/api/segmentation/zones/{zone_id}"),
-                          ("PUT", "/api/segmentation/policy"),
-                          ("POST", "/api/network/windows"),
-                          ("DELETE", "/api/network/windows/{window_id}"),
-                          ("POST", "/api/segmentation/changes/{change_id}/emergency")}:
+    # device changes: operators propose, withdraw and revert; an emergency apply and maintenance windows are admin's
+    if (method, path) in {("POST", "/api/segmentation/changes/{change_id}/emergency"),
+                          ("POST", "/api/network/maintenance-windows"),
+                          ("PATCH", "/api/network/maintenance-windows/{window_id}"),
+                          ("DELETE", "/api/network/maintenance-windows/{window_id}")}:
         return "admin"
     return "viewer" if method in ("GET", "HEAD") else "operator"
 
@@ -266,7 +278,8 @@ def test_anonymous_requests(browser):
     assert anon.get("/").status_code == 200  # the UI itself is public; it shows the sign-in screen
     me = anon.get("/api/auth/me").json()
     assert me == {"authenticated": False, "user": None, "setup_required": False,
-                  "oidc": {"enabled": False, "label": "Sign in with SSO"}, "session": {"idle_minutes": 720, "days": 7}}
+                  "oidc": {"enabled": False, "label": "Sign in with SSO"}, "session": {"idle_minutes": 720, "days": 7},
+                  "sso_error": None}
     # the cross-site guard runs before authentication
     blocked = anon.post("/api/auth/login", json={"username": "admin", "password": ADMIN_PASSWORD}, headers={"X-Hub-Request": ""})
     assert blocked.status_code == 403 and "X-Hub-Request" in blocked.json()["detail"]
@@ -608,9 +621,19 @@ def test_self_and_last_admin_guards(client, browser):
 
     second = bot.post("/api/users", json={"username": "second", "password": PASSWORD, "role": "admin"}).json()
     assert bot.patch(url, json={"role": "operator"}).json()["role"] == "operator"
-    # the token was created by "admin", who is now an operator, so it cannot keep acting as an administrator
-    assert bot.patch(f"/api/users/{second['id']}", json={"disabled": True}).status_code == 403
     assert client.get("/api/users").status_code == 403  # "admin" was demoted: the new role applies at once
+    # ... to the token too: it acts for "admin" and never with more than admin's role (F2)
+    assert bot.patch(f"/api/users/{second['id']}", json={"disabled": True}).status_code == 403
+    # a token of the last enabled administrator still cannot disable, demote or delete that administrator
+    browser_second = browser()
+    assert browser_second.post("/api/auth/login", json={"username": "second", "password": PASSWORD}).status_code == 200
+    browser_second.post("/api/auth/password", json={"current_password": PASSWORD, "new_password": NEW_PASSWORD})
+    token2 = browser_second.post("/api/tokens", json={"name": "root2", "role": "admin"}).json()["token"]
+    bot2 = browser(headers={"Authorization": f"Bearer {token2}"})
+    for response in (bot2.patch(f"/api/users/{second['id']}", json={"disabled": True}),
+                     bot2.patch(f"/api/users/{second['id']}", json={"role": "operator"}), bot2.delete(f"/api/users/{second['id']}")):
+        assert response.status_code == 400
+        assert response.json()["detail"] == "At least one enabled administrator must remain."
 
 
 # -- API tokens ------------------------------------------------------------------------------
@@ -653,19 +676,6 @@ def test_api_tokens(client, browser):
     assert ("admin", "Created API token ci (operator)") in texts and ("admin", "Revoked API token ci") in texts
 
 
-def test_token_follows_its_creator(client, browser, sign_in):
-    olga = sign_in("admin", "olga")
-    secret = olga.post("/api/tokens", json={"name": "olga-bot", "role": "admin"}).json()["token"]
-    bot = browser(headers={"Authorization": f"Bearer {secret}"})
-    assert bot.get("/api/users").status_code == 200
-    uid = next(u["id"] for u in client.get("/api/users").json() if u["username"] == "olga")
-    assert client.patch(f"/api/users/{uid}", json={"role": "operator"}).status_code == 200
-    assert bot.get("/api/users").status_code == 403  # the token cannot outrank its creator
-    assert bot.post("/api/grc/evaluate").status_code == 200
-    assert client.patch(f"/api/users/{uid}", json={"disabled": True}).status_code == 200
-    assert bot.get("/api/overview").status_code == 401
-
-
 def test_integration_tokens_only_publish_events(client, browser):
     secret = client.post("/api/tokens", json={"name": "crm", "role": "integration"}).json()["token"]
     bot = browser(headers={"Authorization": f"Bearer {secret}"})
@@ -686,13 +696,9 @@ def test_people_run_commands_but_tokens_are_automation(client, browser, sign_in)
     approval = next(a for a in client.get("/api/approvals").json() if a["id"] == queued["approval_id"])
     assert approval["payload"]["origin"] == "token:ci"
 
-    olga = sign_in("operator", "olga")
-    assert olga.post("/api/commands", json={"command": "uname"}).json()["status"] == "done"
+    olga = sign_in("admin", "olga")  # an operator's commands on the hub machine wait for an admin (test_security_core)
+    assert olga.post("/api/commands", json={"command": command}).json()["status"] == "done"
     assert client.get("/api/commands").json()[-1]["origin"] == "user:olga"
-    held = olga.post("/api/commands", json={"command": command}).json()
-    assert held["status"] == "pending_approval"  # local state-changing commands need an administrator
-    assert olga.post(f"/api/approvals/{held['approval_id']}", json={"approve": True}).status_code == 403
-    assert client.post(f"/api/approvals/{held['approval_id']}", json={"approve": True}).json()["status"] == "approved"
     decided = olga.post(f"/api/approvals/{queued['approval_id']}", json={"approve": False}).json()
     assert decided["decided_by"] == "olga" and decided["status"] == "rejected"
 
@@ -801,9 +807,10 @@ def test_sso_sign_in_provisions_and_syncs_accounts(client, browser):
     assert len(hub.auth.users()) == 2
 
     client.patch(f"/api/users/{user['id']}", json={"disabled": True})
-    refused = browser().get("/api/auth/oidc/callback?code=c3&state=s3", follow_redirects=False)
-    assert refused.headers["location"].startswith("/#/login?error=")
-    assert unquote(refused.headers["location"].split("error=", 1)[1]) == "This account is disabled."
+    stranger = browser()
+    refused = stranger.get("/api/auth/oidc/callback?code=c3&state=s3", follow_redirects=False)
+    assert refused.headers["location"] == "/#/login"  # the reason travels in a sealed cookie, never in the URL
+    assert stranger.get("/api/auth/me").json()["sso_error"] == "This account is disabled."
 
 
 def test_sso_failures_redirect_to_the_login_screen(client, browser):
@@ -811,9 +818,10 @@ def test_sso_failures_redirect_to_the_login_screen(client, browser):
     hub.auth.oidc = FakeOidc(identity(), error="State mismatch")
     anon = browser()
     failed = anon.get("/api/auth/oidc/callback?code=c&state=s", follow_redirects=False)
-    assert failed.status_code == 302 and unquote(failed.headers["location"]) == "/#/login?error=State mismatch"
+    assert failed.status_code == 302 and failed.headers["location"] == "/#/login"
+    assert anon.get("/api/auth/me").json()["sso_error"] == "State mismatch"
     denied = anon.get("/api/auth/oidc/callback?error=access_denied", follow_redirects=False)
-    assert "access_denied" in unquote(denied.headers["location"])
+    assert denied.headers["location"] == "/#/login" and "access_denied" in anon.get("/api/auth/me").json()["sso_error"]
     assert anon.get("/api/auth/me").json()["authenticated"] is False
     assert any(e["actor"] == "auth" and e["text"].startswith("Single sign-on failed") for e in activity(client))
 

@@ -1,166 +1,679 @@
-"""Integration map, layouts, POST /api/flows, the pull/push loop rule, and viewer redaction (F24)."""
+"""The integration map's backend (docs/research/canvas-design.md 7.1-7.4, 13/A2-A3): the map read model, the Connect
+panel's options, data flows a person draws (POST /api/flows), the loop rule (no pull and push of one domain for one
+tool), the shared canvas layouts and what viewers never see (webhook URLs, event payloads) - with the in-memory fake
+connectors of test_fabric."""
 
 from __future__ import annotations
 
-import pytest
+import json
+import math
+from typing import Any
 
-from hub import connectors
-from hub.integration import strategies
-from test_fabric import FakeGrc, FakeInventory, Remote, add_tool, connect
+import pytest
+from test_fabric import TOKEN, Fake, FakeGrc, FakeInventory, FakeScanner, Remote, add_tool, connect, flows_of
+
+from hub import connectors, guardrails
+from hub.integration import canvas, connections, strategies
+from hub.models import Manifest, Patch, SsoPlan, Tool
+
+WEBHOOK = "https://hooks.example.com/in?token=hook-secret-77aa"
+PAYLOAD_SECRET = "payload-data-5c1e"
+
+
+class FakeCmdb(Fake):
+    """Reads and writes assets without being their system of record: the planner pushes Hub Assets to it."""
+
+    kind, title = "fake_cmdb", "Fake CMDB"
+    capabilities = {"assets": {"read", "write"}}
+
+
+class FakeTracker(Fake):
+    """Reads and writes vulnerabilities and does not scan: the planner pulls (loop rule)."""
+
+    kind, title = "fake_tracker", "Fake Tracker"
+    capabilities = {"vulnerabilities": {"read", "write"}}
+
+
+class FakeDirectory(Fake):
+    kind, title = "fake_directory", "Fake Directory"
+    capabilities = {"people": {"read"}, "accounts": {"read"}}
+    system_of_record = {"people"}
 
 
 @pytest.fixture
 def remote(client, monkeypatch) -> Remote:
     state = Remote()
-    for cls in (FakeInventory, FakeGrc):
+    for cls in (FakeInventory, FakeGrc, FakeScanner, FakeCmdb, FakeTracker, FakeDirectory):
         monkeypatch.setattr(cls, "remote", state, raising=False)
         monkeypatch.setitem(connectors.REGISTRY, cls.kind, cls)
     return state
 
 
-def _walk(obj, path="$"):
-    if isinstance(obj, dict):
-        for key, value in obj.items():
-            here = f"{path}.{key}"
-            if key == "webhook" and isinstance(value, str) and value.startswith("http"):
-                raise AssertionError(f"webhook URL at {here}: {value}")
-            if key == "payload" and value not in (None, {}, []):
-                raise AssertionError(f"toolbus payload at {here}")
-            if key == "config" and isinstance(value, dict) and value and "connection" in path:
-                raise AssertionError(f"connection config at {here}")
-            _walk(value, here)
-    elif isinstance(obj, list):
-        for i, value in enumerate(obj):
-            _walk(value, f"{path}[{i}]")
+def walk(value: Any, path: str = "$"):
+    """Every (path, key, value) in a JSON document."""
+    if isinstance(value, dict):
+        for k, v in value.items():
+            yield path, k, v
+            yield from walk(v, f"{path}.{k}")
+    elif isinstance(value, list):
+        for i, v in enumerate(value):
+            yield from walk(v, f"{path}[{i}]")
 
 
-def test_map_nodes_edges_and_options_match_the_planner(client, remote, wait_for):
-    add_tool(client, "inventory", "Inventory", provides=["assets.inventory"])
-    add_tool(client, "wiki", "Wiki")
+def assert_viewer_safe(document: Any) -> None:
+    """F24: no connection config or secrets, no webhook URL, no toolbus payload - by key and by value."""
+    text = json.dumps(document)
+    for secret in (TOKEN, WEBHOOK, "hook-secret-77aa", PAYLOAD_SECRET):
+        assert secret not in text
+    for path, key, value in walk(document):
+        assert key not in ("config", "secrets", "payload", "webhook_url"), f"{path}.{key}"
+        if key == "webhook":
+            assert isinstance(value, bool), path
+
+
+def suite(client) -> None:
+    """inventory (system of record for assets), grc (takes assets, controls, vulnerabilities; reads risks), scanner,
+    an identity provider with one tool signed in through it and one waiting for an SSO patch, and event routes."""
+    hub = client.app.state.hub
+    add_tool(client, "inventory", "Inventory", events={"emits": ["asset.created"], "listens": []})
+    add_tool(client, "grc", "GRC Tool", events={"emits": [], "listens": ["asset.*"], "webhook_url": WEBHOOK})
+    add_tool(client, "scanner", "Scanner")
+    add_tool(client, "keycloak", "Keycloak", provides=["auth.oidc"])
+    add_tool(client, "wiki", "Wiki", auth={"sso": "oidc", "provider": "keycloak"})
+    add_tool(client, "crm", "CRM", auth={"sso": "oidc"})
+    hub.save_patch(Patch(id="pa_sso", tool_id="crm", title="Sign in through Keycloak", rationale="SSO", strategy="sso_connect",
+                         target="adapter", sso=SsoPlan(provider="keycloak", provider_name="Keycloak", protocol="oidc",
+                                                       client_id="crm")))
     connect(client, "inventory", "fake_inventory")
-    client.post("/api/tools/inventory/connection/test")
-    wait_for(lambda: client.get("/api/flows?tool_id=inventory").json())
-
-    payload = client.get("/api/integration/map").json()
-    ids = {n["id"] for n in payload["nodes"]}
-    assert {"tool:inventory", "tool:wiki"} <= ids
-    app_ids = {a["id"] for a in payload["apps"]}
-    assert {"app:assets", "app:vulnerabilities", "app:compliance", "app:people", "app:network"} <= app_ids
-    inv = next(n for n in payload["nodes"] if n["id"] == "tool:inventory")
-    assert inv["connection"]["kind"] == "fake_inventory" and "config" not in inv["connection"]
-    assert inv["lane_default"] == "left"  # system of record: pull
-    wiki = next(n for n in payload["nodes"] if n["id"] == "tool:wiki")
-    assert wiki["connection"] is None and wiki["lane_default"] == "shelf"
-    assert any(f["domain"] == "assets" and f["source"] == "tool:inventory" for f in payload["flows"])
-
-    options = client.get("/api/integration/map/options",
-                         params={"a": "tool:inventory", "b": "app:assets"}).json()
-    planned = {(m.domain, m.source, m.target, m.action, bool(m.blocked))
-               for m in strategies.moves(client.app.state.hub, "inventory") if m.domain == "assets"}
-    shown = {(p["domain"], p["source"], p["target"], p["action"], bool(p["blocked"]))
-             for o in options["options"] for p in o["parts"]}
-    assert shown == planned
-    pull = next(o for o in options["options"] if o["id"] == "pull:assets")
-    push = next(o for o in options["options"] if o["id"] == "push:assets")
-    assert pull["recommended"] and not pull["parts"][0]["blocked"]
-    assert not push["recommended"] and "system of record" in (push["parts"][0]["blocked"] or "")
-
-    missing = client.get("/api/integration/map/options", params={"a": "tool:nope", "b": "app:assets"})
-    assert missing.status_code == 404
+    connect(client, "grc", "fake_grc")
+    connect(client, "scanner", "fake_scanner")
 
 
-def test_layouts_save_load_and_sse(client, sign_in):
-    empty = client.get("/api/layouts/integration").json()
-    assert empty == {"id": "integration", "version": 0, "items": {}}
-    saved = client.patch("/api/layouts/integration",
-                         json={"items": {"tool:inventory": {"order": 1.5, "lane": "right"}}}).json()
-    assert saved["version"] == 1 and saved["items"]["tool:inventory"] == {"order": 1.5, "lane": "right"}
-    assert client.get("/api/layouts/integration").json()["version"] == 1
+# -- the map --------------------------------------------------------------------------------------
+
+
+def test_map_payload_is_complete_and_safe_for_viewers(client, remote, sign_in, wait_for):
+    hub = client.app.state.hub
+    suite(client)
+    client.post("/api/flows/plan")
+    hub.store.append("toolbus", {"source": "inventory", "event": "asset.created", "payload": {"note": PAYLOAD_SECRET},
+                                 "deliveries": [{"to": "grc", "ok": False, "detail": f"POST {WEBHOOK} failed"}]})
     viewer = sign_in("viewer")
-    assert viewer.patch("/api/layouts/integration", json={"items": {}}).status_code == 403
-    assert viewer.get("/api/layouts/integration").status_code == 200
-    bad = client.patch("/api/layouts/integration", json={"items": {"nope": {"order": 1}}})
-    assert bad.status_code == 400
-    assert client.patch("/api/layouts/bogus", json={"items": {}}).status_code == 404
-    bus = client.app.state.hub.bus
-    events = []
-    original = bus.publish
-    bus.publish = lambda t, d, _orig=original: events.append((t, d)) or _orig(t, d)
+    response = viewer.get("/api/integration/map")
+    assert response.status_code == 200, response.text
+    data = response.json()
+    assert_viewer_safe(data)
+
+    apps = {a["id"]: a for a in data["apps"]}
+    assert list(apps)[:5] == ["app:assets", "app:vulnerabilities", "app:compliance", "app:people", "app:network"]
+    assert apps["app:compliance"]["domains"] == ["controls", "risks", "frameworks", "assessments"]
+    assert apps["app:people"]["domains"] == ["people", "accounts"] and apps["app:network"]["domains"] == ["network"]
+
+    nodes = {n["id"]: n for n in data["nodes"]}
+    assert set(nodes) == {f"tool:{t}" for t in ("inventory", "grc", "scanner", "keycloak", "wiki", "crm")}
+    inv = nodes["tool:inventory"]
+    assert inv["connection"] == {"kind": "fake_inventory", "generated": False, "known": True, "tested": None}
+    assert inv["capabilities"] == {"assets": ["read", "write"]} and inv["system_of_record"] == ["assets"]
+    assert inv["lane_default"] == "left" and nodes["tool:grc"]["lane_default"] == "right"
+    assert nodes["tool:scanner"]["lane_default"] == "right" and nodes["tool:scanner"]["actions"] == ["scan", "scan_status"]
+    assert nodes["tool:keycloak"]["is_idp"] and nodes["tool:keycloak"]["lane_default"] == "idp"
+    assert nodes["tool:wiki"]["lane_default"] == "shelf" and nodes["tool:wiki"]["connection"] is None
+
+    # flows exactly as GET /api/flows shows them
+    assert sorted(f["id"] for f in data["flows"]) == sorted(f["id"] for f in viewer.get("/api/flows").json())
+    assert {f["domain"] for f in data["flows"] if f["tool_id"] == "grc"} == {"assets", "controls", "risks", "vulnerabilities"}
+
+    # one SSO edge per connected or pending tool
+    sso = {e["id"]: e for e in data["sso"]}
+    assert sso == {
+        "sso:wiki": {"id": "sso:wiki", "source": "tool:keycloak", "target": "tool:wiki", "state": "connected",
+                     "protocol": "oidc", "approval_id": None},
+        "sso:crm": {"id": "sso:crm", "source": "tool:keycloak", "target": "tool:crm", "state": "pending",
+                    "protocol": "oidc", "approval_id": None}}
+
+    # event edges come from the routes (not suite_matrix's event/identity links), with the last delivery
+    [event] = data["events"]
+    assert event["id"] == "event:inventory:grc:asset.created" and event["source"] == "tool:inventory"
+    assert event["target"] == "tool:grc" and event["pattern"] == "asset.*" and event["has_webhook"] is True
+    assert event["last_delivery"]["ok"] is False
+    assert all(link["id"].startswith("cap:") for link in data["capability_links"])
+    assert data["identity"]["tools"] and data["layout"] == {"id": "integration", "version": 0, "items": {}}
+    assert data["guardrails"] == {"scans_need_approval": True} and data["autonomy"] == "assisted"
+
+
+def test_integration_overview_hides_webhook_urls_and_payloads(client, remote, sign_in):
+    hub = client.app.state.hub
+    suite(client)
+    hub.store.append("toolbus", {"source": "inventory", "event": "asset.created", "payload": {"note": PAYLOAD_SECRET},
+                                 "deliveries": [{"to": "grc", "ok": True, "detail": f"HTTP 200 from {WEBHOOK}"}]})
+    data = sign_in("viewer").get("/api/integration").json()
+    assert_viewer_safe(data)
+    [route] = data["routes"]
+    assert route["webhook"] is True and route["has_webhook"] is True  # the UI badge still works
+    [entry] = data["deliveries"]
+    assert entry["event"] == "asset.created" and entry["deliveries"] == [{"to": "grc", "ok": True, "detail": "HTTP 200 from <url>"}]
+
+
+def test_toolbus_events_on_the_stream_carry_no_payload(client, remote):
+    hub = client.app.state.hub
+    add_tool(client, "grc", "GRC Tool", events={"listens": ["ping"], "webhook_url": "http://127.0.0.1:9/hook?token=hook-secret-77aa"})
+    queue = hub.bus.subscribe()
     try:
-        client.delete("/api/layouts/integration")
+        deliveries = client.portal.call(hub.toolbus.publish, "inventory", "ping", {"note": PAYLOAD_SECRET})
+        assert deliveries[0]["to"] == "grc" and not deliveries[0]["ok"]
+        events = []
+        while not queue.empty():
+            events.append(queue.get_nowait())
     finally:
-        bus.publish = original
-    assert any(t == "canvas_layout" and d["version"] == 0 for t, d in events)
+        hub.bus.unsubscribe(queue)
+    [event] = [e for e in events if e["type"] == "toolbus"]
+    assert event["data"]["event"] == "ping" and "payload" not in event["data"]
+    assert PAYLOAD_SECRET not in json.dumps(events) and "hook-secret-77aa" not in json.dumps(events)
+    assert hub.store.tail("toolbus", 1)[0]["payload"] == {"note": PAYLOAD_SECRET}  # the log itself keeps it
+
+
+def test_tool_reads_events_and_bus_log_carry_no_webhook_url(client, remote, sign_in):
+    """F24 beyond the map: GET /api/tools, GET /api/tools/{id}, the `tool` SSE event and the agent bus log (which
+    viewers read) say whether a webhook is set, never the URL, and name the launch environment's keys only."""
+    hub = client.app.state.hub
+    env_secret = "env-secret-9f3b"
+    queue = hub.bus.subscribe()
+    try:
+        add_tool(client, "grc", "GRC Tool", events={"listens": ["asset.*"], "webhook_url": WEBHOOK},
+                 launch={"command": "run", "env": {"API_KEY": env_secret, "PORT": "4000"}})
+        described = client.portal.call(hub.bus.request, "user:admin", "tool:grc", "describe")
+        events = []
+        while not queue.empty():
+            events.append(queue.get_nowait())
+    finally:
+        hub.bus.unsubscribe(queue)
+    stored = hub.get_tool("grc")
+    assert stored.manifest.events.webhook_url == WEBHOOK and stored.manifest.launch.env["API_KEY"] == env_secret
+
+    viewer = sign_in("viewer")
+    listed = next(t for t in viewer.get("/api/tools").json() if t["id"] == "grc")
+    one = viewer.get("/api/tools/grc").json()
+    [tool_event] = [e["data"] for e in events if e["type"] == "tool"]
+    messages = viewer.get("/api/messages").json()
+    for document in (listed, one, tool_event, described["tool"], events, messages):
+        assert_viewer_safe(document)
+        assert env_secret not in json.dumps(document)
+    for document in (listed, one, tool_event, described["tool"]):
+        assert document["manifest"]["events"] == {"emits": [], "listens": ["asset.*"], "has_webhook": True}
+        assert document["manifest"]["launch"]["env_keys"] == ["API_KEY", "PORT"]
+        assert "env" not in document["manifest"]["launch"]
+    assert stored.manifest.public()["events"]["has_webhook"] is True  # also the analyse reply's form
+    assert Manifest(id="x", name="X").public()["events"]["has_webhook"] is False
+
+
+def test_lane_defaults():
+    tool = Tool(id="t", name="T", source_type="saas", source="https://t.example.com", manifest=Manifest(id="t", name="T"))
+    idp = tool.model_copy(update={"manifest": Manifest(id="t", name="T", provides=["auth.oidc"])})
+    conn = connections.Connection(id="t", kind="x")
+    from hub.models import Flow
+
+    def flow(direction: str, status: str = "enabled") -> Flow:
+        return Flow(id=f"fl_{direction}_{status}", domain="assets", source="tool:t" if direction == "pull" else "hub",
+                    target="hub" if direction == "pull" else "tool:t", status=status)  # type: ignore[arg-type]
+
+    assert canvas.lane_default(tool, None, {}, [], []) == "shelf"
+    assert canvas.lane_default(idp, None, {}, [], []) == "idp"
+    assert canvas.lane_default(idp, conn, {"people": ["read"]}, [], []) == "left"  # an IdP with a data connection
+    assert canvas.lane_default(tool, conn, {"assets": ["read"]}, [], []) == "left"
+    assert canvas.lane_default(tool, conn, {"assets": ["read", "write"]}, [], []) == "right"
+    assert canvas.lane_default(tool, conn, {"vulnerabilities": ["read"]}, ["scan"], []) == "right"
+    assert canvas.lane_default(tool, conn, {}, [], [flow("pull"), flow("pull"), flow("push")]) == "left"
+    assert canvas.lane_default(tool, conn, {}, [], [flow("pull"), flow("push", "proposed")]) == "right"
+    assert canvas.lane_default(tool, conn, {"assets": ["write"]}, [], [flow("pull"), flow("push", "disabled")]) == "left"
+
+
+def test_map_scales_to_200_tools_and_400_flows(client, remote):
+    """canvas-design 7.1 asks to measure the map with 200 tools: it stays one pass over the store."""
+    import time
+
+    hub = client.app.state.hub
+    for i in range(200):
+        hub.save_tool(Tool(id=f"t{i}", name=f"Tool {i}", source_type="saas", source=f"https://t{i}.example.com",
+                           status="ready", manifest=Manifest(id=f"t{i}", name=f"Tool {i}", kind="saas")))
+        hub.store.put("connections", connections.Connection(id=f"t{i}", kind="fake_cmdb").model_dump(mode="json"))
+    from hub.integration import flows as flow_store
+
+    for i in range(200):
+        for source, target in ((f"tool:t{i}", "hub"), ("hub", f"tool:t{i}")):
+            flow_store.save(hub, flow_store.make(hub, "assets", source, target, status="disabled"))
+    started = time.perf_counter()
+    data = client.get("/api/integration/map").json()
+    elapsed = time.perf_counter() - started
+    assert len(data["nodes"]) == 200 and len(data["flows"]) == 400
+    assert elapsed < 15, elapsed  # generous: a CI box; measured locally in the report
+
+
+# -- the Connect panel's options ------------------------------------------------------------------
+
+
+def options(client, a: str, b: str) -> dict:
+    response = client.get(f"/api/integration/map/options?a={a}&b={b}")
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def test_options_between_a_tool_and_a_hub_app(client, remote, sign_in):
+    suite(client)
+    viewer = sign_in("viewer")
+    inv = options(viewer, "tool:inventory", "app:assets")
+    by_id = {o["id"]: o for o in inv["options"]}
+    assert set(by_id) == {"pull:assets", "push:assets"} and inv["options"][0]["id"] == "pull:assets"
+    pull, push = by_id["pull:assets"], by_id["push:assets"]
+    assert pull["recommended"] and "system of record" in pull["reason"] and pull["blocked"] is None
+    assert pull["parts"][0] | {"exists": None} == pull["parts"][0]
+    part = pull["parts"][0]
+    assert (part["source"], part["target"], part["action"], part["direction"]) == ("tool:inventory", "hub", None, "pull")
+    assert part["title"] == "Inventory assets -> Hub Assets" and part["default_schedule"] == 60
+    assert not push["recommended"] and push["blocked"] == \
+        "Inventory is the system of record for assets; the hub never pushes assets to it."
+
+    scan = options(viewer, "app:vulnerabilities", "tool:scanner")  # whichever way the arrow was drawn
+    by_id = {o["id"]: o for o in scan["options"]}
+    assert set(by_id) == {"scan:vulnerabilities", "pull:vulnerabilities"}
+    assert by_id["scan:vulnerabilities"]["recommended"] and by_id["scan:vulnerabilities"]["parts"][0]["default_schedule"] == 7 * 24 * 60
+    assert not by_id["pull:vulnerabilities"]["recommended"]
+    assert by_id["pull:vulnerabilities"]["reason"] == "Findings already arrive through the scan flow."
+
+    grc = {o["id"]: o for o in options(viewer, "tool:grc", "app:compliance")["options"]}
+    assert set(grc) == {"push:controls", "pull:risks"} and all(o["recommended"] for o in grc.values())
+    none = options(viewer, "tool:scanner", "app:people")
+    assert none["options"] == [] and none["notes"] == ["Scanner cannot exchange people, accounts with People."]
+    unconnected = options(viewer, "tool:wiki", "app:assets")
+    assert unconnected["options"] == [] and unconnected["needs_connection"] == ["wiki"]
+    assert unconnected["notes"][0].startswith("Set up the connection first")
+    assert options(viewer, "app:assets", "app:people")["notes"] == ["Hub apps share data internally."]
+    assert options(viewer, "tool:grc", "tool:grc")["notes"] == ["Choose two different items."]
+    assert viewer.get("/api/integration/map/options?a=tool:nope&b=app:assets").status_code == 404
+    assert viewer.get("/api/integration/map/options?a=tool:grc&b=app:nope").status_code == 404
+    assert viewer.get("/api/integration/map/options?a=tool:grc").status_code == 404
+
+
+def test_options_between_two_tools_are_chains_through_the_hub(client, remote):
+    suite(client)
+    data = options(client, "tool:inventory", "tool:grc")
+    assert [o["id"] for o in data["options"]] == ["chain:inventory>grc:assets"]
+    [chain] = data["options"]
+    assert chain["title"] == "Inventory -> Hub Assets -> GRC Tool" and chain["recommended"]
+    assert [(p["source"], p["target"]) for p in chain["parts"]] == [("tool:inventory", "hub"), ("hub", "tool:grc")]
+    assert "system of record" in chain["reason"] and "canonical list" in chain["reason"]
+    assert data["events"] == [{"id": "event:inventory:grc:asset.created", "source": "tool:inventory", "target": "tool:grc",
+                               "from": "inventory", "to": "grc", "event": "asset.created", "pattern": "asset.*",
+                               "has_webhook": True}]
+    assert_viewer_safe(data)
+    scans = options(client, "tool:grc", "tool:scanner")
+    [chain] = scans["options"]
+    assert chain["id"] == "chain:scanner>grc:vulnerabilities"
+    assert [p["direction"] for p in chain["parts"]] == ["scan", "push"] and chain["recommended"]
+    assert options(client, "tool:scanner", "tool:inventory")["notes"] == ["No data these two can exchange through the hub."]
+
+    # existing parts are shown, not re-created: approve the planned flows and ask again
+    client.post("/api/flows/plan")
+    again = options(client, "tool:inventory", "tool:grc")["options"][0]
+    assert all(p["exists"] and p["exists"]["status"] == "proposed" for p in again["parts"])
+
+
+def test_options_for_single_sign_on(client, remote):
+    suite(client)
+    data = options(client, "tool:keycloak", "tool:wiki")
+    assert data["sso"] == {"tool_id": "wiki", "provider": "keycloak", "status": "connected", "connected_to": "keycloak",
+                           "pending_provider": None}
+    pending = options(client, "tool:crm", "tool:keycloak")["sso"]
+    assert pending["status"] == "pending" and pending["pending_provider"] == "keycloak"
+    add_tool(client, "authentik", "authentik", provides=["auth.oidc"])
+    both = options(client, "tool:keycloak", "tool:authentik")
+    assert both["sso"] is None and "Identity providers do not sign in through each other." in both["notes"]
+
+
+def test_recommended_options_are_exactly_the_planners_proposals(client, remote):
+    """The Connect panel and the planner share tool_rules: for every connected tool and hub app, the recommended
+    options are the flows the planner proposes, with the same reasons."""
+    for tool_id, kind in (("inventory", "fake_inventory"), ("grc", "fake_grc"), ("scanner", "fake_scanner"),
+                          ("cmdb", "fake_cmdb"), ("tracker", "fake_tracker"), ("directory", "fake_directory")):
+        add_tool(client, tool_id, tool_id.title())
+        connect(client, tool_id, kind)
+    hub = client.app.state.hub
+    planned = {(f.domain, f.source, f.target, f.action): f.reason for f in strategies.proposals(hub)}
+    recommended = {}
+    for tool_id in ("inventory", "grc", "scanner", "cmdb", "tracker", "directory"):
+        for app in strategies.hub_apps(hub):
+            for option in options(client, f"tool:{tool_id}", app["id"])["options"]:
+                if option["recommended"]:
+                    [part] = option["parts"]
+                    recommended[(part["domain"], part["source"], part["target"], part["action"])] = option["reason"]
+    assert recommended == planned
+
+
+# -- the planner and the loop rule ----------------------------------------------------------------
+
+
+def planned(client, kind: str) -> set[tuple]:
+    hub = client.app.state.hub
+    add_tool(client, "t", "T")
+    connect(client, "t", kind)
+    return {(f.domain, f.source, f.target, f.action) for f in strategies.proposals(hub)}
+
+
+@pytest.mark.parametrize("kind,expected", [
+    ("fake_inventory", {("assets", "tool:t", "hub", None)}),
+    ("fake_grc", {("assets", "hub", "tool:t", None), ("controls", "hub", "tool:t", None), ("risks", "tool:t", "hub", None),
+                  ("vulnerabilities", "hub", "tool:t", None)}),
+    ("fake_scanner", {("vulnerabilities", "hub", "tool:t", "scan")}),
+    ("fake_cmdb", {("assets", "hub", "tool:t", None)}),
+    ("fake_directory", {("people", "tool:t", "hub", None), ("accounts", "tool:t", "hub", None)}),
+    # a tool that reads and writes vulnerabilities without scanning: the pull only (it never got both)
+    ("fake_tracker", {("vulnerabilities", "tool:t", "hub", None)}),
+])
+def test_planner_proposals_are_unchanged_for_the_fixtures(client, remote, kind, expected):
+    assert planned(client, kind) == expected
+
+
+def test_planner_never_proposes_a_loop_next_to_a_flow_drawn_by_hand(client, remote):
+    hub = client.app.state.hub
+    add_tool(client, "cmdb", "CMDB")
+    connect(client, "cmdb", "fake_cmdb")
+    pull = client.post("/api/flows", json={"domain": "assets", "source": "tool:cmdb", "target": "hub"})
+    assert pull.status_code == 201, pull.text
+    assert strategies.proposals(hub) == []  # the push the rules call for would loop with the proposed pull
+    assert client.post("/api/flows/plan").json()["proposed"] == []
+
+
+# -- POST /api/flows ------------------------------------------------------------------------------
+
+
+def test_drawn_flow_is_proposed_by_the_supervisor_and_enabled_on_approval(client, remote, sign_in, wait_for):
+    hub = client.app.state.hub
+    suite(client)
+    operator = sign_in("operator", "alice")
+    response = operator.post("/api/flows", json={"domain": "assets", "source": "tool:inventory", "target": "hub",
+                                                 "schedule_minutes": 30, "options": {"retire_missing": False}})
+    assert response.status_code == 201, response.text
+    flow, approval_id = response.json()["flow"], response.json()["approval_id"]
+    assert flow["status"] == "proposed" and flow["created_by"] == "alice" and flow["approval_id"] == approval_id
+    assert flow["schedule_minutes"] == 30 and flow["options"] == {"retire_missing": False}
+    assert flow["title"] == "Inventory assets -> Hub Assets" and "system of record" in flow["reason"]
+    approval = hub.approvals.get(approval_id)
+    assert approval.kind == "flow" and approval.requested_by == "supervisor"
+    assert approval.payload["proposed_by"] == "alice" and approval.payload["flow_id"] == flow["id"]
+    assert any(e["actor"] == "alice" and e["text"].startswith("Proposed data flow: Inventory assets")
+               for e in hub.store.tail("activity", 50))
+    # the proposer may approve while approvals_need_second_person is off (the default) ...
+    decided = operator.post(f"/api/approvals/{approval_id}", json={"approve": True})
+    assert decided.status_code == 200, decided.text
+    wait_for(lambda: next(f for f in flows_of(client, "inventory") if f["id"] == flow["id"])["status"] == "enabled")
+    wait_for(lambda: hub.approvals.get(approval_id).status == "done")
+
+    # ... and not while it is on (the second-person rule)
+    assert client.patch("/api/settings/guardrails", json={"approvals_need_second_person": True}).status_code == 200
+    assert guardrails.value(hub, "approvals_need_second_person") is True
+    second = operator.post("/api/flows", json={"domain": "controls", "source": "hub", "target": "tool:grc"}).json()
+    refused = operator.post(f"/api/approvals/{second['approval_id']}", json={"approve": True})
+    assert refused.status_code == 403 and refused.json()["detail"]["code"] == "same_person"
+    # nor by enabling it in the flow list or from the map's inspector (PATCH): refused before anything changes
+    flow_id = second["flow"]["id"]
+    enabled = operator.patch(f"/api/flows/{flow_id}", json={"status": "enabled", "schedule_minutes": 5})
+    assert enabled.status_code == 403 and enabled.json()["detail"]["code"] == "same_person"
+    stored = next(f for f in flows_of(client, "grc") if f["id"] == flow_id)
+    assert stored["status"] == "proposed" and stored["approval_id"] == second["approval_id"]
+    assert stored["schedule_minutes"] == second["flow"]["schedule_minutes"]
+    assert hub.approvals.get(second["approval_id"]).status == "pending"
+    assert client.post(f"/api/approvals/{second['approval_id']}", json={"approve": True}).status_code == 200
+
+
+def test_a_turned_down_flow_proposal_is_never_enabled_without_a_new_approval(client, remote, sign_in, wait_for):
+    """Review finding: with the second-person rule on, the proposer rejected her own proposal (allowed) and then
+    switched the now disabled flow on - no second person. An administrator's rejection could be undone the same way."""
+    hub = client.app.state.hub
+    suite(client)
+    assert client.patch("/api/settings/guardrails", json={"approvals_need_second_person": True}).status_code == 200
+    alice, bob = sign_in("operator", "alice"), sign_in("admin", "bob")
+
+    def stored(flow_id: str) -> dict:
+        return next(f for f in flows_of(client, "inventory") if f["id"] == flow_id)
+
+    drawn = alice.post("/api/flows", json={"domain": "assets", "source": "tool:inventory", "target": "hub"}).json()
+    flow_id, first = drawn["flow"]["id"], drawn["approval_id"]
+    dismissed = alice.patch(f"/api/flows/{flow_id}", json={"status": "disabled"})  # rejecting her own: allowed
+    assert dismissed.status_code == 200 and dismissed.json()["status"] == "disabled"
+    assert dismissed.json()["rejected"] == first and hub.approvals.get(first).status == "rejected"
+    run = alice.post(f"/api/flows/{flow_id}/run")
+    assert run.status_code == 400 and "turned down" in run.json()["detail"]  # a turned-down proposal never runs
+
+    # switching it on proposes it again - it is not enabled, and her new proposal still needs someone else
+    again = alice.patch(f"/api/flows/{flow_id}", json={"status": "enabled"})
+    assert again.status_code == 200, again.text
+    second = again.json()["approval_id"]
+    assert again.json()["status"] == "proposed" and again.json()["rejected"] is None and second not in (None, first)
+    assert hub.approvals.get(second).payload["proposed_by"] == "alice" and hub.approvals.get(second).requested_by == "supervisor"
+    refused = alice.patch(f"/api/flows/{flow_id}", json={"status": "enabled"})
+    assert refused.status_code == 403 and refused.json()["detail"]["code"] == "same_person"
+    assert stored(flow_id)["status"] == "proposed"
+
+    # an administrator's rejection is just as binding
+    assert bob.post(f"/api/approvals/{second}", json={"approve": False}).status_code == 200
+    wait_for(lambda: stored(flow_id)["status"] == "disabled" and stored(flow_id)["rejected"] == second)
+    third = alice.patch(f"/api/flows/{flow_id}", json={"status": "enabled"}).json()
+    assert third["status"] == "proposed" and third["approval_id"] not in (first, second)
+
+    # approved by a second person: enabled; from then on it may be switched off and on again freely
+    assert bob.post(f"/api/approvals/{third['approval_id']}", json={"approve": True}).status_code == 200
+    wait_for(lambda: stored(flow_id)["status"] == "enabled")
+    assert alice.patch(f"/api/flows/{flow_id}", json={"status": "disabled"}).json()["rejected"] is None
+    assert alice.patch(f"/api/flows/{flow_id}", json={"status": "enabled"}).json()["status"] == "enabled"
+
+
+@pytest.mark.parametrize("autonomy", ["manual", "autonomous"])
+def test_autonomy_decides_whether_a_drawn_flow_waits(client, remote, autonomy):
+    hub = client.app.state.hub
+    suite(client)
+    client.patch("/api/settings", json={"autonomy": autonomy})
+    body = client.post("/api/flows", json={"domain": "vulnerabilities", "source": "hub", "target": "tool:scanner",
+                                           "action": "scan"}).json()
+    if autonomy == "autonomous":
+        assert body["flow"]["status"] == "enabled" and body["approval_id"] is None
+    else:  # manual behaves like assisted
+        assert body["flow"]["status"] == "proposed" and hub.approvals.get(body["approval_id"]).requested_by == "supervisor"
+    assert body["flow"]["direction"] == "scan" and body["flow"]["schedule_minutes"] == 7 * 24 * 60
+
+
+def test_drawn_flows_are_refused_with_codes(client, remote, sign_in):
+    suite(client)
+
+    def create(**body) -> tuple[int, dict]:
+        response = client.post("/api/flows", json=body)
+        return response.status_code, response.json()
+
+    status, body = create(domain="controls", source="tool:grc", target="hub")
+    assert status == 400 and body["detail"]["code"] == "no_capability"
+    status, body = create(domain="assets", source="hub", target="tool:inventory")
+    assert status == 400 and body["detail"] == {
+        "code": "system_of_record", "message": "Inventory is the system of record for assets; the hub never pushes assets to it."}
+    status, body = create(domain="assets", source="tool:wiki", target="hub")
+    assert status == 400 and body["detail"]["code"] == "no_connection"
+    status, body = create(domain="assets", source="tool:nope", target="hub")
+    assert status == 404 and body["detail"]["code"] == "not_found"
+    for bad in ({"domain": "assets", "source": "hub", "target": "hub"},
+                {"domain": "assets", "source": "tool:inventory", "target": "tool:grc"},
+                {"domain": "assets", "source": "tool:../x", "target": "hub"},
+                {"domain": "spaceships", "source": "tool:inventory", "target": "hub"},
+                {"domain": "assets", "source": "hub", "target": "tool:scanner", "action": "scan"},
+                {"domain": "vulnerabilities", "source": "tool:scanner", "target": "hub", "action": "scan"},
+                {"domain": "assets", "source": "tool:inventory", "target": "hub", "options": {"min_severity": "high"}}):
+        status, body = create(**bad)
+        assert status == 400 and body["detail"]["code"] == "invalid", bad
+    assert create(domain="assets", source="tool:inventory", target="hub", actor="bob")[0] == 422  # never from the body
+    assert create(domain="assets", source="tool:inventory", target="hub", schedule_minutes=-1)[0] == 422
+
+    first = create(domain="assets", source="tool:inventory", target="hub")
+    assert first[0] == 201
+    status, body = create(domain="assets", source="tool:inventory", target="hub")
+    assert status == 409 and body["detail"]["code"] == "flow_exists" and body["detail"]["flow_id"] == first[1]["flow"]["id"]
+    assert sign_in("viewer").post("/api/flows", json={"domain": "assets", "source": "tool:inventory",
+                                                      "target": "hub"}).status_code == 403
+
+
+def test_the_loop_rule_on_create_enable_and_approval(client, remote, wait_for):
+    hub = client.app.state.hub
+    add_tool(client, "cmdb", "CMDB")
+    connect(client, "cmdb", "fake_cmdb")
+    push = client.post("/api/flows", json={"domain": "assets", "source": "hub", "target": "tool:cmdb"}).json()["flow"]
+    refused = client.post("/api/flows", json={"domain": "assets", "source": "tool:cmdb", "target": "hub"})
+    assert refused.status_code == 409 and refused.json()["detail"] == {
+        "code": "flow_conflict", "flow_id": push["id"],
+        "message": "Hub Assets already sends assets to CMDB; pulling them back would loop records."}
+    blocked = {o["id"]: o for o in options(client, "tool:cmdb", "app:assets")["options"]}["pull:assets"]
+    assert blocked["blocked"].startswith("Hub Assets already sends assets to CMDB") and blocked["parts"][0]["code"] == "flow_conflict"
+
+    # once the push is disabled the pull may be drawn; enabling the push again is refused while the pull is live
+    assert client.patch(f"/api/flows/{push['id']}", json={"status": "disabled"}).status_code == 200
+    pull = client.post("/api/flows", json={"domain": "assets", "source": "tool:cmdb", "target": "hub"})
+    assert pull.status_code == 201, pull.text
+    enable = client.patch(f"/api/flows/{push['id']}", json={"status": "enabled", "schedule_minutes": 5})
+    assert enable.status_code == 409 and enable.json()["detail"]["code"] == "flow_conflict"
+    assert enable.json()["detail"]["message"] == "CMDB's assets already come into Hub Assets; sending them back would loop records."
+    assert next(f for f in flows_of(client, "cmdb") if f["id"] == push["id"])["schedule_minutes"] == 60  # nothing changed
+    assert client.patch(f"/api/flows/{pull.json()['flow']['id']}", json={"status": "enabled"}).status_code == 200
+
+    # an approval cannot enable a loop either (e.g. two proposals left from before this rule)
+    from hub.integration import flows as flow_store
+
+    legacy = flow_store.make(hub, "assets", "hub", "tool:cmdb", status="proposed")
+    hub.store.delete("flows", push["id"])
+    approval = hub.approvals.create("flow", "legacy", "", {"flow_id": legacy.id}, "supervisor")
+    legacy.approval_id = approval.id
+    flow_store.save(hub, legacy)
+    assert client.post(f"/api/approvals/{approval.id}", json={"approve": True}).status_code == 200
+    wait_for(lambda: hub.approvals.get(approval.id).status == "failed")
+    assert flow_store.get(hub, legacy.id).status == "disabled"
+    assert hub.approvals.get(approval.id).result == {"status": "disabled", "error": "flow_conflict",
+                                                      "flow_id": pull.json()["flow"]["id"]}
+
+
+def test_flows_create_takes_the_proposer_from_the_sender(client, remote):
+    hub = client.app.state.hub
+    suite(client)
+    reply = client.portal.call(hub.bus.request, "user:carol", "supervisor", "flows.create",
+                               {"domain": "risks", "source": "tool:grc", "target": "hub", "actor": "mallory"})
+    assert reply["flow"]["created_by"] == "carol" and hub.approvals.get(reply["approval_id"]).payload["proposed_by"] == "carol"
+    refused = client.portal.call(hub.bus.request, "user:carol", "supervisor", "flows.create",
+                                 {"domain": "risks", "source": "tool:grc", "target": "hub", "schedule_minutes": "often"})
+    assert refused["refused"]["code"] == "invalid"
+
+
+# -- layouts --------------------------------------------------------------------------------------
+
+
+def test_layouts_merge_per_id_and_publish(client, sign_in):
+    hub = client.app.state.hub
+    operator, viewer = sign_in("operator", "olga"), sign_in("viewer")
+    assert viewer.get("/api/layouts/integration").json() == {"id": "integration", "version": 0, "items": {}}
+    queue = hub.bus.subscribe()
+    try:
+        first = operator.patch("/api/layouts/integration", json={"items": {
+            "tool:snipe-it": {"order": 1.5, "lane": "left"}, "app:assets": {"order": 2}}})
+        assert first.status_code == 200, first.text
+        assert first.json()["version"] == 1 and first.json()["updated_by"] == "olga"
+        second = operator.patch("/api/layouts/integration", json={"items": {"tool:snipe-it": {"order": 0.25}},
+                                                                   "remove": ["app:assets"]}).json()
+        assert second["version"] == 2 and second["items"] == {"tool:snipe-it": {"order": 0.25, "lane": "left"}}
+        third = operator.patch("/api/layouts/integration", json={"items": {"tool:snipe-it": {"order": 3, "lane": None}}}).json()
+        assert third["items"] == {"tool:snipe-it": {"order": 3.0}}
+        events = [queue.get_nowait() for _ in range(queue.qsize())]
+    finally:
+        hub.bus.unsubscribe(queue)
+    published = [e["data"] for e in events if e["type"] == "canvas_layout"]
+    assert published[0] == {"view": "integration", "version": 1, "ids": ["tool:snipe-it", "app:assets"],
+                            "updated_by": "olga", "reset": False}
+    assert [p["version"] for p in published] == [1, 2, 3]
+    assert viewer.get("/api/layouts/integration").json()["version"] == 3
+
+    # segmentation zones may carry device ids with "/" and spaces; the segmentation map shows the same document
+    zone = operator.patch("/api/layouts/segmentation", json={"items": {"z:sw1:Gi1/0/1": {"order": 1},
+                                                                       "z:fw:LAN zone": {"order": 2}}})
+    assert zone.status_code == 200, zone.text
+    assert viewer.get("/api/segmentation").json()["layout"]["items"] == zone.json()["items"]
+
+    reset = operator.delete("/api/layouts/integration").json()
+    assert reset["version"] == 4 and reset["items"] == {}
+    assert any(e["text"] == "Reset the arrangement of the integration map" for e in hub.store.tail("activity", 20))
+    assert viewer.patch("/api/layouts/integration", json={"items": {}}).status_code == 403
+    assert viewer.delete("/api/layouts/integration").status_code == 403
+
+
+@pytest.mark.parametrize("body", [
+    {"items": {"snipe-it": {"order": 1}}},                         # no prefix
+    {"items": {"tool:<script>": {"order": 1}}},                    # not a slug
+    {"items": {"z:bad‮id": {"order": 1}}},                    # bidi control in a zone id
+    {"items": {"tool:a": {"order": 1e10}}},                        # out of range
+    {"items": {"tool:a": {"order": "first"}}},
+    {"items": {"tool:a": {"order": 1, "lane": "middle"}}},
+    {"items": {"app:assets": {"order": 1, "lane": "left"}}},       # lanes only for tools
+    {"items": {"tool:a": {"order": 1, "hidden": True}}},           # no shared hiding (F18)
+    {"hidden": ["tool:a"]},
+    {"remove": ["nope"]},
+])
+def test_layout_validation(client, body):
+    response = client.patch("/api/layouts/integration", json=body)
+    assert response.status_code == 422, (body, response.text)
     assert client.get("/api/layouts/integration").json()["version"] == 0
 
 
-def test_post_flows_and_loop_conflict(client, remote, wait_for, sign_in):
-    add_tool(client, "grc", "GRC Tool")
-    connect(client, "grc", "fake_grc")
-    created = client.post("/api/flows", json={"domain": "risks", "source": "tool:grc", "target": "hub"})
-    assert created.status_code == 201, created.text
-    body = created.json()
-    assert body["flow"]["status"] == "proposed" and body["approval_id"]
-    again = client.post("/api/flows", json={"domain": "risks", "source": "tool:grc", "target": "hub"})
-    assert again.status_code == 409 and again.json()["detail"]["code"] == "flow_exists"
-
-    # enable the pull, then a push of the same domain is a loop
-    client.post(f"/api/approvals/{body['approval_id']}", json={"approve": True})
-    wait_for(lambda: client.get("/api/flows").json() and
-             any(f["id"] == body["flow"]["id"] and f["status"] == "enabled" for f in client.get("/api/flows").json()))
-    loop = client.post("/api/flows", json={"domain": "risks", "source": "hub", "target": "tool:grc"})
-    # GRC fake cannot write risks, so this is no_capability rather than a loop unless writes(risks).
-    # Assets: GRC writes assets (push) - plan a pull of assets (it cannot read them) -> no_capability.
-    # Loop: enable the assets push, try to enable a pull of assets... GRC doesn't read assets.
-    # Use inventory instead: SoR pull exists; we still test PATCH enable of a conflicting pair via a tool that
-    # both reads and writes a domain that is not SoR — fake_grc writes vulnerabilities and does not read them.
-    # Create a pull of controls? GRC writes controls only.
-    # Directly insert a pull+push pair through the store and PATCH enable.
+def test_layout_rejects_non_finite_orders_bad_views_and_too_many_items(client):
     hub = client.app.state.hub
-    from hub.integration import flows
-    pull = flows.make(hub, "controls", "tool:grc", "hub", None, created_by="test")
-    pull.status = "enabled"
-    flows.save(hub, pull)
-    push = flows.make(hub, "controls", "hub", "tool:grc", None, created_by="test")
-    push.status = "disabled"
-    flows.save(hub, push)
-    conflict = client.patch(f"/api/flows/{push.id}", json={"status": "enabled"})
-    assert conflict.status_code == 409 and conflict.json()["detail"]["code"] == "flow_conflict"
-    assert conflict.json()["detail"]["flow_id"] == pull.id
+    nan = client.patch("/api/layouts/integration", content='{"items": {"tool:a": {"order": NaN}}}',
+                       headers={"Content-Type": "application/json"})
+    assert nan.status_code == 422
+    assert client.patch("/api/layouts/segmentation", json={"items": {"tool:a": {"order": 1, "lane": "left"}}}).status_code == 422
+    assert client.get("/api/layouts/canvas").status_code == 422
+    assert client.patch("/api/layouts/other", json={"items": {}}).status_code == 422
+    many = {f"tool:t{i}": {"order": i} for i in range(canvas.MAX_ITEMS)}
+    assert client.patch("/api/layouts/integration", json={"items": many}).status_code == 200
+    over = client.patch("/api/layouts/integration", json={"items": {"tool:one-more": {"order": 1}}})
+    assert over.status_code == 422 and "at most 5000" in over.json()["detail"]["message"]
+    assert len(hub.store.get("canvas_layouts", "integration")["items"]) == canvas.MAX_ITEMS
+    assert client.patch("/api/layouts/integration", json={"items": {"tool:one-more": {"order": 1}},
+                                                          "remove": ["tool:t0"]}).status_code == 200
+    assert not math.isnan(client.get("/api/layouts/integration").json()["items"]["tool:one-more"]["order"])
 
-    viewer = sign_in("viewer")
-    assert viewer.post("/api/flows", json={"domain": "risks", "source": "tool:grc", "target": "hub"}).status_code == 403
+
+class FakeRouter(Fake):
+    kind, title = "fake_router", "Fake Router"
+    capabilities = {"network": {"read"}}
 
 
-def test_viewer_payloads_never_carry_webhooks_config_or_payloads(client, remote, sign_in):
-    add_tool(client, "gitea", "Gitea",
-             provides=["git.hosting", "webhooks"],
-             events={"emits": ["push"], "listens": [], "webhook_url": "https://gitea.example.com/hooks/hub?token=abc"})
-    add_tool(client, "ci", "CI",
-             provides=["ci"], consumes=["webhooks"],
-             events={"emits": [], "listens": ["push*"], "webhook_url": "https://ci.example.com/webhook?secret=xyz"})
+def test_network_devices_connect_to_the_network_app_but_never_through_a_generated_connection(client, remote, monkeypatch):
     hub = client.app.state.hub
-    hub.store.append("toolbus", {"source": "gitea", "event": "push", "payload": {"secret": "should-not-leak"},
-                                 "deliveries": [{"to": "ci", "ok": True, "detail": "HTTP 204"}]})
+    monkeypatch.setattr(FakeRouter, "remote", remote, raising=False)
+    monkeypatch.setitem(connectors.REGISTRY, "fake_router", FakeRouter)
+    add_tool(client, "fw", "Edge FW")
+    add_tool(client, "gen", "Generated FW")
+    hub.store.put("connections", connections.Connection(id="fw", kind="fake_router").model_dump(mode="json"))
+    hub.store.put("connections", connections.Connection(id="gen", kind="fake_router", generated=True).model_dump(mode="json"))
+    [option] = options(client, "tool:fw", "app:network")["options"]
+    assert option["id"] == "pull:network" and option["recommended"] and option["parts"][0]["default_schedule"] == 10
+    generated = options(client, "tool:gen", "app:network")
+    assert generated["options"] == [] and generated["notes"] == ["Generated FW cannot exchange network with Network."]
+    refused = client.post("/api/flows", json={"domain": "network", "source": "tool:gen", "target": "hub"})
+    assert refused.status_code == 400 and refused.json()["detail"]["code"] == "no_capability"
+    assert "generated from its OpenAPI spec" in refused.json()["detail"]["message"]
+    created = client.post("/api/flows", json={"domain": "network", "source": "tool:fw", "target": "hub"})
+    assert created.status_code == 201 and created.json()["flow"]["owner"] == "module:network"
+    nodes = {n["id"]: n for n in client.get("/api/integration/map").json()["nodes"]}
+    assert nodes["tool:fw"]["lane_default"] == "left"
 
-    viewer = sign_in("viewer")
-    integration = viewer.get("/api/integration").json()
-    _walk(integration)
-    assert integration["routes"] and all(r["webhook"] in (True, False) for r in integration["routes"])
-    assert all("payload" not in d for d in integration["deliveries"])
 
-    mapped = viewer.get("/api/integration/map").json()
-    _walk(mapped)
-    assert mapped["events"] and all("webhook" not in e for e in mapped["events"])
-    assert all(e.get("has_webhook") in (True, False) for e in mapped["events"])
+def test_flows_of_a_disabled_extension_keep_an_inactive_app(client):
+    hub = client.app.state.hub
+    from hub.integration import flows as flow_store
 
-    operator = sign_in("operator")
-    op = operator.get("/api/integration").json()
-    assert any(isinstance(r.get("webhook"), str) and r["webhook"].startswith("http") for r in op["routes"])
-
-
-def test_map_permissions(client, sign_in):
-    viewer, operator = sign_in("viewer"), sign_in("operator")
-    assert viewer.get("/api/integration/map").status_code == 200
-    assert operator.get("/api/integration/map").status_code == 200
-    assert viewer.post("/api/flows", json={"domain": "assets", "source": "hub", "target": "tool:x"}).status_code == 403
+    flow_store.save(hub, flow_store.make(hub, "x:alerts", "tool:siem", "hub", status="disabled"))
+    apps = {a["id"]: a for a in client.get("/api/integration/map").json()["apps"]}
+    assert apps["app:x:alerts"] == {"id": "app:x:alerts", "label": "alerts", "domains": ["x:alerts"], "href": "#/x/alerts",
+                                    "icon": "box", "extension": True, "active": False}
+    assert client.get("/api/integration/map/options?a=tool:siem&b=app:x:alerts").status_code == 404
+    refused = client.post("/api/flows", json={"domain": "x:alerts", "source": "tool:siem", "target": "hub"})
+    assert refused.status_code == 400 and refused.json()["detail"]["code"] == "invalid"

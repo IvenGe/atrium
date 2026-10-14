@@ -10,38 +10,20 @@ from urllib.parse import urlparse
 
 import httpx
 
+from ..approvals import sender_person
 from ..bus import Message
 from ..connectors.base import ConnectorError, check, normalize, redact
-from ..connectors.netmodel import RESERVED_ACTIONS
-from ..integration import connections, network
-from ..integration.analyzer import analyze_repo, analyze_saas, list_files, readme_summary
+from ..connectors.netmodel import RESERVED_ACTIONS, ChangeError, parse_ops
+from ..integration import changes, connections, network
+from ..integration.analyzer import analyze_repo, analyze_saas, list_files, read_repo_file, readme_summary
 from ..models import AGENT_PERMISSIONS, Manifest, Tool
 from . import teams
 from .base import BaseAgent
 
 PUSH_ACTIONS = ("created", "updated", "skipped", "failed")
-
-
-def _side_effect_allowed(sender: str, name: str) -> bool:
-    """A person may start a side-effecting action. A scan is started only by the Vulnerability Supervisor,
-    which is the scan approval path. Every other agent is refused."""
-    if sender.startswith("user:"):
-        return True
-    return name == "scan" and sender == "module:vulns"
-
-
-def guardrails_on(hub) -> bool:
-    return bool(hub.prefs["guardrails"].get("device_changes", False))
-
-
-def _change_visible(change: dict[str, Any], record: dict[str, Any]) -> bool:
-    rules = record.get("rules") or []
-    if change.get("op") == "allow":
-        mark = f"atrium:{change['id']}"
-        return any(mark in str(r.get("description") or "") for r in rules)
-    wanted = {ref.get("id") for op in change.get("ops") or [] for ref in op.get("rules") or []}
-    found = [r for r in rules if r.get("id") in wanted]
-    return bool(found) and all(r.get("enabled", True) is False for r in found)
+# approval kind of a side-effecting connector action -> the only agent that may ask for it (it applies that kind's
+# approval policy), so team agents and other modules cannot bypass it; people may run them directly
+ACTION_ROUTES = {"scan": "module:vulns"}
 
 ENRICH_SCHEMA = {
     "type": "object",
@@ -111,11 +93,11 @@ class ToolSupervisor(BaseAgent):
         self.hub.save_tool(tool)
         self.log("info", f"Analysed {tool.name}: {manifest.kind}, stack {', '.join(manifest.stack) or 'unknown'}, "
                          f"SSO {manifest.auth.sso}, provides {', '.join(manifest.provides) or 'nothing detected'}")
-        return {"manifest": manifest.model_dump(mode="json"), "notes": notes}
+        return {"manifest": manifest.public(), "notes": notes}  # the bus log is readable by viewers (F24)
 
     async def on_describe(self, body: dict[str, Any], msg: Message) -> dict[str, Any]:
         tool = self._tool()
-        return {"tool": tool.model_dump(mode="json"), "process": self.hub.processes.status(tool.id)}
+        return {"tool": tool.public(), "process": self.hub.processes.status(tool.id)}
 
     async def on_health(self, body: dict[str, Any], msg: Message) -> dict[str, Any]:
         tool = self._tool()
@@ -132,7 +114,9 @@ class ToolSupervisor(BaseAgent):
         return tool.health
 
     async def on_start(self, body: dict[str, Any], msg: Message) -> dict[str, Any]:
-        return await self.ask("operator", "launch", {"tool_id": self.tool_id})
+        # whoever asked: a person directly, or the person an agent relays (chat) - the Operator Agent judges by them (F1)
+        person = msg.sender if sender_person(msg.sender) else body.get("requested_by")
+        return await self.ask("operator", "launch", {"tool_id": self.tool_id, "requested_by": person})
 
     async def on_stop(self, body: dict[str, Any], msg: Message) -> dict[str, Any]:
         return await self.ask("operator", "stop_tool", {"tool_id": self.tool_id})
@@ -240,6 +224,8 @@ class ToolSupervisor(BaseAgent):
         async def run(connector):
             if "read" not in connector.domains().get(domain, []):
                 raise ConnectorError(f"{connector.title} cannot read {domain}")
+            if domain == "network" and msg.sender != "module:network":  # untrusted device text: never to other agents
+                raise ConnectorError("Device configuration is read by the Network Supervisor only")
             records, errors = normalize(domain, await connector.pull(domain, since))
             return {"records": records, "errors": [redact(e, connector.secrets) for e in errors[:50]],
                     "dropped": len(errors)}
@@ -263,6 +249,22 @@ class ToolSupervisor(BaseAgent):
 
         return await self._connector("push", run)
 
+    def _action_refusal(self, name: str, kind: str, body: dict[str, Any], msg: Message) -> str | None:
+        """Why a side-effecting action may not run for this sender (None: it may)."""
+        if msg.sender.startswith(("user:", "token:")):
+            return None
+        route = ACTION_ROUTES.get(kind)
+        if msg.sender != route:
+            return (f"'{name}' changes something, so it only runs through the {kind} approval path "
+                    f"({route or 'none'}), not for {msg.sender}")
+        approval_id = body.get("approval_id")
+        if approval_id:
+            approval = self.hub.approvals.get(str(approval_id))
+            if (approval is None or approval.kind != kind or approval.status not in ("approved", "done")
+                    or approval.payload.get("tool_id") not in (None, self.tool_id)):
+                return f"the approval given for '{name}' does not cover it"
+        return None
+
     async def on_connector_action(self, body: dict[str, Any], msg: Message) -> dict[str, Any]:
         name, params = str(body.get("name")), dict(body.get("params") or {})
 
@@ -271,9 +273,10 @@ class ToolSupervisor(BaseAgent):
                 raise ConnectorError(f"'{name}' is not a connector action: device changes need an approved change")
             if name not in connector.actions:
                 raise ConnectorError(f"{connector.title} has no action '{name}'")
-            if name in connector.side_effects and not _side_effect_allowed(msg.sender, name):
-                raise ConnectorError(f"'{name}' changes the tool. A person starts it, or it goes through its "
-                                     "approval (scans are started by the Vulnerability Supervisor).")
+            kind = connector.side_effect_actions.get(name)
+            refusal = self._action_refusal(name, kind, body, msg) if kind else None
+            if refusal:
+                raise ConnectorError(f"Refused: {refusal}")
             result = await connector.action(name, params)
             return {"result": result if isinstance(result, dict) else {"value": result}}
 
@@ -291,91 +294,162 @@ class ToolSupervisor(BaseAgent):
             if not connector.implements("backup"):
                 raise ConnectorError(f"{connector.title} cannot take configuration backups")
             taken = await connector.backup()
-            meta = network.store_backup(self.hub, self.tool_id, taken, reason=str(body.get("reason") or "manual"),
-                                        actor=str(body.get("actor") or msg.sender), change_id=body.get("change_id"))
+            try:
+                meta = network.store_backup(self.hub, self.tool_id, taken, reason=str(body.get("reason") or "manual"),
+                                            actor=str(body.get("actor") or msg.sender), change_id=body.get("change_id"))
+            except ValueError as exc:  # empty, too large or a checksum mismatch: the message never quotes content
+                raise ConnectorError(f"The backup of {connector.title} was not stored: {exc}") from exc
             return {"backup": meta}
 
         return await self._connector("backup", run)
 
-    def _only_network(self, msg: Message) -> None:
+    # -- network devices: guarded changes (only for the Network Supervisor; see hub/integration/changes.py) ------
+    # Each call builds a new connector instance (a new connection), re-loads the change and its approval from the
+    # store and checks them again (S8) before touching the device. Replies carry no token, backup or secret.
+
+    @staticmethod
+    def _from_network(msg: Message) -> None:
         if msg.sender != "module:network":
-            raise ValueError("Device changes are applied by the Network Supervisor")
+            raise ValueError("Device changes are made only by the Network Supervisor, for approved changes")
 
-    def _bound_change(self, body: dict[str, Any]):
-        from ..integration import changes
+    async def _change_call(self, op: str, call) -> dict[str, Any]:
+        async def run(connector):
+            try:
+                return await call(connector)
+            except ChangeError as exc:  # what the device holds now travels with the failure
+                return {"failure": {"message": connector.redact(exc.message), "status": exc.status, "excerpt": None,
+                                    "code": exc.code, "state": exc.state}}
 
+        return await self._connector(op, run)
+
+    def _load_backup(self, backup_id: str | None):
+        if not backup_id:
+            return None
+        try:
+            return network.load_backup(self.hub, backup_id)
+        except (KeyError, ValueError) as exc:
+            raise ChangeError(f"The Atrium backup {backup_id} cannot be used: {exc}", code="invalid",
+                              state="unchanged") from exc
+
+    def _change(self, body: dict[str, Any], stage: str, backup_id: str | None = None) -> dict[str, Any]:
         change = changes.get(self.hub, str(body.get("change_id") or ""))
-        if change is None or change.get("firewall") != self.tool_id:
-            raise ValueError("Unknown network change for this device")
-        approval = self.hub.approvals.get(change.get("approval_id") or "")
-        if approval is None or changes.binding_ok(change, approval):
-            raise ValueError("This change is not bound to an approved revision")
-        if changes.approval_expired(self.hub, approval):
-            raise ValueError("This change's approval has expired")
-        if not guardrails_on(self.hub):
-            raise ValueError("Device changes are off")
+        problem = changes.authorize(self.hub, change, stage, backup_id)
+        if problem or change is None or change["firewall"] != self.tool_id:
+            raise ValueError(f"Refused: {problem or 'the change is for another device'}")
         return change
 
+    @staticmethod
+    def _refused(exc: ValueError) -> dict[str, Any]:
+        """A refused apply / restore: nothing was sent to the device."""
+        return {"failure": {"message": str(exc), "status": None, "excerpt": None, "code": "failed",
+                            "state": "unchanged"}}
+
     async def on_network_preview(self, body: dict[str, Any], msg: Message) -> dict[str, Any]:
-        self._only_network(msg)
-        ops = body.get("ops") or []
+        """{ops} -> {steps, notes, problems}: the connector checks a proposed change against the device (no side
+        effects); the snapshot is the hub's current one (the Network Supervisor just re-read the device)."""
+        self._from_network(msg)
+        ops = parse_ops(body.get("ops"))
+        snap = network.snapshot(self.hub, self.tool_id)
+        if snap is None:
+            raise ValueError("The device has no snapshot")
 
-        async def run(connector):
-            if not connector.implements("preview_change"):
-                return {"steps": [], "notes": ["this connector cannot preview a change"], "problems": []}
-            snap = network.snapshot(self.hub, self.tool_id) or {}
-            return await connector.preview_change(ops, snap.get("record") or {})
+        async def call(connector):
+            result = await connector.preview_change(ops, snap["record"])
+            return {"steps": texts(connector, result.get("steps"), 100), "notes": texts(connector, result.get("notes")),
+                    "problems": texts(connector, result.get("problems"))}
 
-        return await self._connector("preview", run)
+        return await self._change_call("preview", call)
 
     async def on_network_apply(self, body: dict[str, Any], msg: Message) -> dict[str, Any]:
-        self._only_network(msg)
-        change = self._bound_change(body)
+        """{change_id} -> {applied: {rollback_until, revision, created, disabled, enabled, notes}}; the token is kept
+        in the store for confirm / rollback."""
+        self._from_network(msg)
+        try:
+            change = self._change(body, "apply")
+        except ValueError as exc:
+            return self._refused(exc)
+        kinds = changes.needed_kinds(change["op"], change["ops"])
 
-        async def run(connector):
-            backup = network.load_backup(self.hub, body["backup_id"]) if body.get("backup_id") else None
-            result = await connector.apply_change(change.get("ops") or [], str(change.get("base_revision") or ""), backup)
-            return {"result": result}
+        async def call(connector):
+            spec = network.write_capability(self.hub, self.tool_id)
+            if spec is None or spec["rollback"] == "none" or any(k not in spec["ops"] for k in kinds):
+                raise ChangeError(f"{connector.title} cannot make this change on this connection", code="unsupported",
+                                  state="unchanged")
+            backup = self._load_backup(change.get("backup_id"))
+            result = await connector.apply_change(change["ops"], change["base_revision"], backup)
+            if not isinstance(result, dict):
+                raise ChangeError("apply_change answered no result", code="failed", state="unknown")
+            if result.get("token"):
+                changes.store_token(self.hub, change["id"], str(result["token"])[:4096])
+            applied = changes.applied_summary(result)
+            applied["notes"] = [connector.redact(n) for n in applied["notes"]]
+            return {"applied": applied}
 
-        return await self._connector("apply", run)
-
-    async def on_network_verify(self, body: dict[str, Any], msg: Message) -> dict[str, Any]:
-        """A new connection: the hub can still authenticate, and the change is visible on a fresh read."""
-        self._only_network(msg)
-        change = self._bound_change(body)
-
-        async def run(connector):
-            tested = await connector.test()
-            if not tested.get("ok"):
-                return {"ok": False, "reason": "the hub can no longer reach the device"}
-            records = await connector.pull("network")
-            record = records[0] if isinstance(records, list) and records else {}
-            if not _change_visible(change, record):
-                return {"ok": False, "reason": "a fresh read does not show the change"}
-            network.ingest(self.hub, self.tool_id, record, cause=change["id"])
-            return {"ok": True}
-
-        return await self._connector("verify", run)
+        return await self._change_call("apply", call)
 
     async def on_network_confirm(self, body: dict[str, Any], msg: Message) -> dict[str, Any]:
-        self._only_network(msg)
-        self._bound_change(body)
+        self._from_network(msg)
+        change = self._change(body, "confirm")
+        token = changes.token(self.hub, change["id"])
 
-        async def run(connector):
-            result = await connector.confirm_change(str(body.get("token") or ""))
-            return {"result": result}
+        async def call(connector):
+            if not token:
+                raise ChangeError("There is no token to confirm", code="failed", state="unknown")
+            result = await connector.confirm_change(token)
+            return {"confirmed": bool((result or {}).get("confirmed")), "notes": texts(connector, (result or {}).get("notes"))}
 
-        return await self._connector("confirm", run)
+        return await self._change_call("confirm", call)
 
     async def on_network_rollback(self, body: dict[str, Any], msg: Message) -> dict[str, Any]:
-        self._only_network(msg)
+        self._from_network(msg)
+        change = self._change(body, "rollback")
+        token = changes.token(self.hub, change["id"])
 
-        async def run(connector):
-            backup = network.load_backup(self.hub, body["backup_id"]) if body.get("backup_id") else None
-            result = await connector.rollback_change(str(body.get("token") or ""), backup)
-            return {"result": result}
+        async def call(connector):
+            if not token:
+                raise ChangeError("The device never acknowledged the change: there is nothing to roll back with",
+                                  code="failed", state="unknown")
+            try:
+                backup = self._load_backup(change.get("backup_id"))
+            except ChangeError:
+                backup = None
+            result = await connector.rollback_change(token, backup)
+            return {"rolled_back": bool((result or {}).get("rolled_back")),
+                    "method": texts(connector, [(result or {}).get("method") or ""])[0] or None,
+                    "notes": texts(connector, (result or {}).get("notes"))}
 
-        return await self._connector("rollback", run)
+        return await self._change_call("rollback", call)
+
+    async def on_network_restore(self, body: dict[str, Any], msg: Message) -> dict[str, Any]:
+        """{change_id, recover?: bool}: an approved restore change puts its backup back; with `recover`, the change's
+        own pre-change backup is restored after its rollback did not revert the device."""
+        self._from_network(msg)
+        recover = bool(body.get("recover"))
+        if recover:
+            current = changes.get(self.hub, str(body.get("change_id") or "")) or {}
+            backup_id = current.get("backup_id")
+            change = self._change(body, "recover", backup_id)
+        else:
+            try:
+                change = self._change(body, "restore")
+            except ValueError as exc:
+                return self._refused(exc)
+            backup_id = (change.get("request") or {}).get("backup_id")
+
+        async def call(connector):
+            # a restore change is a write: never on a connection that is read only, has no rollback mechanism or whose
+            # test narrowed the capability away (S2). Recovering a change's own pre-change backup stays possible.
+            if not recover and (network.write_capability(self.hub, self.tool_id) is None
+                                or connector.write_capability() is None):
+                raise ChangeError(f"{connector.title} cannot restore a configuration on this connection (it is read "
+                                  "only or cannot make changes safely)", code="unsupported", state="unchanged")
+            backup = self._load_backup(backup_id)
+            if backup is None:
+                raise ChangeError("No backup to restore", code="invalid", state="unchanged")
+            result = await connector.restore_backup(backup)
+            return {"restored": bool((result or {}).get("restored")), "notes": texts(connector, (result or {}).get("notes"))}
+
+        return await self._change_call("restore", call)
 
     # -- internals -------------------------------------------------------------------
 
@@ -396,8 +470,9 @@ class ToolSupervisor(BaseAgent):
         files = "\n".join(f.as_posix() for f in list_files(root, 300))
         readme = ""
         for name in ("README.md", "readme.md", "README.rst", "README"):
-            if (root / name).is_file():
-                readme = (root / name).read_text(encoding="utf-8", errors="replace")[:8000]
+            text = read_repo_file(root, name, 32_000)  # never through a symbolic link out of the repository
+            if text is not None:
+                readme = text[:8000]
                 break
         prompt = (
             f"<inferred_manifest>\n{manifest.model_dump_json(include={'name', 'stack', 'provides', 'consumes', 'auth'})}\n"
@@ -409,6 +484,11 @@ class ToolSupervisor(BaseAgent):
         manifest.provides = sorted(set(manifest.provides) | {c for c in result["provides"] if c and len(c) < 40})
         manifest.consumes = sorted(set(manifest.consumes) | {c for c in result["consumes"] if c and len(c) < 40})
         return manifest
+
+
+def texts(connector: Any, values: Any, limit: int = 20) -> list[str]:
+    """Connector-provided strings for a change's record: made safe as text (``changes.device_text``), secrets masked."""
+    return [connector.redact(t) for t in changes.device_text(values, limit)]
 
 
 async def probe(url: str, expect_status: int = 200) -> tuple[bool, str]:

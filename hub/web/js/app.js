@@ -2,14 +2,17 @@
 import { connectEvents, disconnectEvents, get, onEvent, post } from "./api.js";
 import { avatar, openChangePassword, openSessions, roleBadge, session, showAuth, showUnreachable } from "./auth.js";
 import { xColor, xDomains, xHref } from "./extensions.js";
-import { actions, appIcon, builtinIcon, can, debounce, emptyState, html, icon, modal, setHTML, timeAgo, toggleTheme } from "./ui.js";
+import {
+  actions, addLayer, appIcon, builtinIcon, can, closeDialogs, debounce, dialogKeys, dropLayer, emptyState, focusOrigin, html, icon, modal,
+  restoreFocus, setHTML, timeAgo, toggleTheme,
+} from "./ui.js";
 import * as home from "./views/home.js";
 import * as tools from "./views/tools.js";
 import * as integration from "./views/integration.js";
-import * as network from "./views/network.js";
 import * as agents from "./views/agents.js";
 import * as approvals from "./views/approvals.js";
 import * as operator from "./views/operator.js";
+import * as network from "./views/network.js";
 import * as assets from "./views/assets.js";
 import * as people from "./views/people.js";
 import * as vulnerabilities from "./views/vulnerabilities.js";
@@ -25,10 +28,10 @@ export const APPS = [
   { route: "", name: "Home", icon: "home", color: "#4f46e5", view: home },
   { route: "tools", name: "Apps", icon: "grid", color: "#7c3aed", view: tools },
   { route: "integration", name: "Integration hub", short: "Integration", icon: "plug", color: "#0ea5e9", view: integration },
-  { route: "network", name: "Network", icon: "radar", color: "#0284c7", view: network },
   { route: "agents", name: "Agents", icon: "bot", color: "#9333ea", view: agents },
   { route: "approvals", name: "Approvals", icon: "checkCircle", color: "#ca8a04", view: approvals },
   { route: "operator", name: "Operator", icon: "terminal", color: "#334155", view: operator },
+  { route: "network", name: "Network", icon: "network", color: "#ea580c", view: network },
   { route: "assets", name: "Assets", icon: "box", color: "#0d9488", view: assets },
   { route: "people", name: "People", icon: "contact", color: "#e11d48", view: people },
   { route: "vulnerabilities", name: "Vulnerabilities", icon: "bug", color: "#dc2626", view: vulnerabilities },
@@ -90,12 +93,13 @@ const xApp = (d) => ({ route: `x/${d.key}`, name: d.title, icon: d.icon, color: 
 
 /** The sidebar: built-in apps, then one app per enabled extension domain (group "Extensions"). */
 function renderNav() {
+  const at = (route) => APPS.findIndex((a) => a.route === route); // groups by route, so adding an app keeps them right
   const nav = [
-    ...APPS.slice(0, 2),
-    { section: "Run the suite" }, ...APPS.slice(2, 7),
-    { section: "Govern" }, ...APPS.slice(7, 11),
+    ...APPS.slice(0, at("integration")),
+    { section: "Run the suite" }, ...APPS.slice(at("integration"), at("assets")),
+    { section: "Govern" }, ...APPS.slice(at("assets"), at("extensions")),
     ...(xDomains.length ? [{ section: "Extensions" }, ...xDomains.map(xApp)] : []),
-    { section: "" }, ...APPS.slice(11),
+    { section: "" }, ...APPS.slice(at("extensions")),
   ];
   setHTML($("nav"), nav.map((a) => a.section !== undefined
     ? html`<div class="section">${a.section}</div>`
@@ -210,6 +214,8 @@ async function signOut() {
 }
 
 // ---------- command palette ----------
+let paletteOpen = false;
+
 async function openPalette() {
   if (!signedIn) return;
   closePopovers();
@@ -225,7 +231,13 @@ async function openPalette() {
   const entries = [
     ...APPS.filter((a) => can(a.minRole)).map((a) => ({ label: a.name, kind: "Page", icon: a.icon, go: `#/${a.route}` })),
     { label: "Data flows", kind: "Page", icon: "flow", go: "#/integration", sub: "Integration hub" },
+    { label: "Integration map", kind: "Page", icon: "plug", go: "#/integration/map", sub: "Integration hub" },
+    { label: "Network segmentation", kind: "Page", icon: "network", go: "#/integration/segmentation", sub: "Integration hub" },
     { label: "Scan scope", kind: "Page", icon: "radar", go: "#/vulnerabilities/scope", sub: "Vulnerabilities" },
+    { label: "Configuration drift", kind: "Page", icon: "activity", go: "#/network/drift", sub: "Network" },
+    { label: "Device changes", kind: "Page", icon: "flow", go: "#/network/changes", sub: "Network" },
+    { label: "Network changes (guardrails, maintenance windows)", kind: "Page", icon: "sliders", go: "#/settings/network", sub: "Settings" },
+    { label: "Frameworks (CyFun self-assessment)", kind: "Page", icon: "shield", go: "#/compliance/frameworks", sub: "Compliance hub" },
     { label: "Leavers", kind: "Page", icon: "alert", go: "#/people/leavers", sub: "People" },
     { label: "Accounts in tools", kind: "Page", icon: "key", go: "#/people/accounts", sub: "People" },
     ...(can("admin") ? [{ label: "Sign-in & SSO", kind: "Page", icon: "shield", go: "#/settings/sso", sub: "Settings" }] : []),
@@ -243,17 +255,30 @@ async function openPalette() {
     ...peopleList.map((p) => ({ label: p.display_name, kind: "Person", icon: "user", go: `#/people/${encodeURIComponent(p.id)}`,
       sub: [p.title, p.email, p.status !== "active" ? p.status : ""].filter(Boolean).join(" - ") })),
   ];
-  if (!signedIn) return; // signed out while loading
+  if (!signedIn || paletteOpen) return; // signed out while loading, or Ctrl+K pressed twice
+  const opener = focusOrigin(); // focus goes back there when the palette closes (review F33)
   const backdrop = document.createElement("div");
   backdrop.className = "backdrop";
-  setHTML(backdrop, html`<div class="palette" role="dialog" aria-label="Search">
+  setHTML(backdrop, html`<div class="palette" role="dialog" aria-modal="true" aria-label="Search">
     <div class="search">${icon("search")}<input placeholder="Search tools, agents, assets, pages..." aria-label="Search"><kbd>Esc</kbd></div>
     <ul role="listbox"></ul></div>`);
   document.body.append(backdrop);
+  const box = backdrop.querySelector(".palette");
   const input = backdrop.querySelector("input");
   const list = backdrop.querySelector("ul");
   let sel = 0, shown = [];
-  const close = () => backdrop.remove();
+  const onKey = (e) => { if (dialogKeys(e, backdrop, box) && e.key === "Escape") close(); };
+  const close = () => {
+    if (!paletteOpen) return;
+    paletteOpen = false;
+    backdrop.remove();
+    dropLayer(backdrop);
+    document.removeEventListener("keydown", onKey);
+    restoreFocus(opener);
+  };
+  paletteOpen = true;
+  addLayer(backdrop, close);
+  document.addEventListener("keydown", onKey);
   const choose = (entry) => { close(); if (entry.run) entry.run(); else location.hash = entry.go; };
   const draw = () => {
     const q = input.value.trim().toLowerCase();
@@ -267,7 +292,6 @@ async function openPalette() {
     if (e.key === "ArrowDown") { sel = Math.min(sel + 1, shown.length - 1); draw(); e.preventDefault(); }
     if (e.key === "ArrowUp") { sel = Math.max(sel - 1, 0); draw(); e.preventDefault(); }
     if (e.key === "Enter" && shown[sel]) choose(shown[sel]);
-    if (e.key === "Escape") close();
   });
   list.addEventListener("click", (e) => { const li = e.target.closest("li[data-i]"); if (li) choose(shown[+li.dataset.i]); });
   backdrop.addEventListener("mousedown", (e) => { if (e.target === backdrop) close(); });
@@ -355,6 +379,7 @@ async function route() {
   markActive();
   $("sidebar").classList.remove("open");
   closePopovers();
+  closeDialogs(); // a link inside a dialog leaves the dialog too, not only the page under it (review F34)
   renderSubbar(app);
   // A fresh <main> per page drops the previous view's delegated listeners and any late async renders.
   const old = $("main");
@@ -366,9 +391,10 @@ async function route() {
     params,
     state,
     live(types, fn, wait = 350) { disposers.push(onEvent(types, debounce(fn, wait))); },
+    onLeave(fn) { disposers.push(fn); }, // runs when the next page replaces this one
     crumb(text) { currentCrumb = text; renderSubbar(app, text); document.title = `${text} - Atrium`; },
   };
-  cleanup = () => { disposers.forEach((off) => off()); main._cleanup?.(); };
+  cleanup = () => disposers.forEach((off) => off());
   document.title = `${app.name} - Atrium`;
   try {
     await app.view.render(main, ctx);
@@ -379,9 +405,17 @@ async function route() {
 }
 
 // ---------- session ----------
+// Views that keep live state (the maps) re-fetch on "atrium:events-reconnected": events sent while the stream was down
+// are lost (the stream has no event ids). "atrium:events-status" {detail: {ok}} drives their "Live updates paused" chip
+// (api.js eventsOk() gives the current state).
+let streamDown = false;
+
 function startEvents() {
   connectEvents((ok, closed) => {
     $("brand-mark").style.opacity = ok ? "1" : ".45";
+    if (ok && streamDown) window.dispatchEvent(new CustomEvent("atrium:events-reconnected"));
+    if (streamDown !== !ok) window.dispatchEvent(new CustomEvent("atrium:events-status", { detail: { ok } }));
+    streamDown = !ok;
     if (!ok) checkSession(closed);
   });
 }
@@ -416,7 +450,7 @@ function leaveApp() {
   cleanup?.();
   currentApp = null;
   closePopovers();
-  document.querySelectorAll(".backdrop").forEach((b) => b.remove());
+  closeDialogs({ all: true }); // every dialog, and the page behind them is no longer inert
   document.body.classList.remove("signed-in");
   delete document.body.dataset.role;
   Object.assign(state, { overview: null, tools: [], activity: [], restart: null });

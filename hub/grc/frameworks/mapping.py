@@ -2,7 +2,7 @@
 
 CyFun 2025 rows come from docs/research/cyfun-cra-ciso.md section 2 (and 2.1 for network controls). The requirement
 ids and their level tags were checked against the CISO Assistant library copy of CyFun 2025; the choice of
-requirements per control and the fit are ANALYST JUDGEMENT (unverified, not CCB guidance):
+requirements per control and the fit are ANALYST JUDGEMENT (UNVERIFIED: not CCB guidance):
 
 - ``P`` primary evidence, ``S`` supporting / partial, ``W`` weak (the control touches only part of the requirement).
 

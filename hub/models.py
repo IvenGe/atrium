@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import re
 import time
+import unicodedata
 from typing import Any, Literal
+from urllib.parse import parse_qsl, urlsplit, urlunsplit
 
 from pydantic import BaseModel, Field, computed_field, field_validator
 
@@ -13,6 +15,32 @@ from .store import new_id
 
 def now() -> float:
     return time.time()
+
+
+# A query parameter named like one of these carries a credential (?api_key=, ?access_token=, ?sig=...).
+CREDENTIAL_PARAM = re.compile(r"(?i)(token|key|secret|passw|pwd|auth|sig|credential|session)")
+
+
+def url_credentials(url: str | None) -> list[str]:
+    """What in a URL looks like a credential: user info (https://user:token@host) and query parameters named like
+    one. git SSH addresses (git@host:path) carry no secret."""
+    try:
+        parts = urlsplit(str(url or "").strip())
+    except ValueError:
+        return []
+    found = ["user info"] if parts.username or parts.password else []
+    found += [f"query parameter '{k}'" for k, _ in parse_qsl(parts.query, keep_blank_values=True) if CREDENTIAL_PARAM.search(k)]
+    return found
+
+
+def strip_url_credentials(url: str | None) -> str | None:
+    """`url` without user info and with credential-looking query values replaced by "***" (review F3) - for showing a
+    URL that may have been stored with a token in it."""
+    if not url or not url_credentials(url):
+        return url
+    parts = urlsplit(url.strip())
+    query = "&".join(f"{k}={'***' if CREDENTIAL_PARAM.search(k) else v}" for k, v in parse_qsl(parts.query, keep_blank_values=True))
+    return urlunsplit(parts._replace(netloc=parts.netloc.rsplit("@", 1)[-1], query=query))
 
 
 # --------------------------------------------------------------------------------------
@@ -56,11 +84,57 @@ class Events(BaseModel):
     webhook_url: str | None = None  # where the hub delivers events this tool listens to
 
 
+# A tool's tile colour, from its own manifest: a hex colour and nothing else. The UI puts it in a style attribute, where
+# "#7c3aed;position:fixed;inset:0" would add declarations (a full-screen layer over the page) and url(...) would beacon.
+HEX_COLOR = re.compile(r"#(?:[0-9a-fA-F]{3,4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})")
+ICON_GLYPHS = 2  # a letter, two letters or an emoji - never a sentence posing as a message
+
+
+def icon_glyphs(text: str) -> int | None:
+    """How many characters a tile icon shows, or None when it holds whitespace or control characters. Joiners,
+    variation selectors, skin tones, tags and combining marks belong to the character before them, the character after
+    a zero-width joiner is part of the same emoji, and two regional indicators make one flag."""
+    count, joined, flag_half = 0, False, False
+    for ch in text:
+        cp = ord(ch)
+        if ch == "‍":
+            joined = True
+            continue
+        if 0xFE00 <= cp <= 0xFE0F or 0x1F3FB <= cp <= 0x1F3FF or 0xE0020 <= cp <= 0xE007F or unicodedata.combining(ch):
+            continue
+        if ch.isspace() or unicodedata.category(ch) in ("Cc", "Cf", "Cs", "Zs", "Zl", "Zp"):
+            return None
+        if 0x1F1E6 <= cp <= 0x1F1FF:
+            flag_half = not flag_half
+            if not flag_half:  # the second indicator of a flag
+                continue
+        else:
+            flag_half = False
+        if not joined:
+            count += 1
+        joined = False
+    return count
+
+
 class PortalUi(BaseModel):
     url: str | None = None
     icon: str | None = None
     color: str | None = None
     embed: bool = False
+
+    # Both come from a repository's hub.manifest.yaml: anything else is dropped (the UI then uses its own colour and
+    # the tool's first letter) rather than refusing the whole manifest.
+    @field_validator("color", mode="before")
+    @classmethod
+    def _color(cls, value: Any) -> str | None:
+        return value.strip() if isinstance(value, str) and HEX_COLOR.fullmatch(value.strip()) else None
+
+    @field_validator("icon", mode="before")
+    @classmethod
+    def _icon(cls, value: Any) -> str | None:
+        if not isinstance(value, str) or len(text := value.strip()) > 16:
+            return None
+        return text if 1 <= (icon_glyphs(text) or 0) <= ICON_GLYPHS else None
 
 
 class Manifest(BaseModel):
@@ -81,6 +155,15 @@ class Manifest(BaseModel):
     events: Events = Field(default_factory=Events)
     ui: PortalUi = Field(default_factory=PortalUi)
     native: bool = False  # True when the tool ships (or adopted) its own hub manifest
+
+    def public(self) -> dict[str, Any]:
+        """The manifest as the API, the bus log and SSE show it (every viewer sees it): whether a webhook URL is set
+        (``events.has_webhook``), never the URL - it may carry a token - and the launch environment's key names
+        (``launch.env_keys``), not their values. The stored manifest keeps both."""
+        data = self.model_dump(mode="json")
+        data["events"]["has_webhook"] = bool(data["events"].pop("webhook_url", None))
+        data["launch"]["env_keys"] = sorted(data["launch"].pop("env", None) or {})
+        return data
 
 
 class Check(BaseModel):
@@ -114,6 +197,13 @@ class Tool(BaseModel):
     running: bool = False
     health: dict[str, Any] | None = None
     created_at: float = Field(default_factory=now)
+
+    def public(self) -> dict[str, Any]:
+        """The tool for API reads and the ``tool`` SSE event, with ``Manifest.public`` (no webhook URL or env values)
+        and no credentials in its source or OpenAPI URL (review F3: refused at import, stripped for older tools)."""
+        return {**self.model_dump(mode="json", exclude={"manifest"}),
+                "source": strip_url_credentials(self.source), "openapi_url": strip_url_credentials(self.openapi_url),
+                "manifest": self.manifest.public() if self.manifest else None}
 
 
 # --------------------------------------------------------------------------------------
@@ -276,6 +366,9 @@ class Flow(BaseModel):
     created_at: float = Field(default_factory=now)
     updated_at: float = Field(default_factory=now)
     approval_id: str | None = None  # the pending proposal
+    # Set when its proposal was turned down (the approval id, or "dismissed"): the flow stays as a disabled record that
+    # never runs, and enabling it proposes it again - a rejection is never undone by flipping the status.
+    rejected: str | None = None
     running: float | None = None  # set while a run is under way
     last_run: float | None = None
     last_result: dict[str, Any] | None = None  # {ok, counts, error, at, duration, trigger}
@@ -532,6 +625,9 @@ class User(BaseModel):
     password_hash: str | None = None  # None for accounts that only sign in through SSO
     auth_source: Literal["local", "oidc"] = "local"
     oidc_subject: str | None = None  # "<issuer>|<sub>"
+    # Emails single sign-on replaced on this account (review F17): it stays linked to the people who had them, so a
+    # change at the identity provider never unlinks it from its owner's leaver checks.
+    previous_emails: list[str] = []
     must_change_password: bool = False
     created_at: float = Field(default_factory=now)
     last_login: float | None = None
@@ -550,6 +646,13 @@ class ApiToken(BaseModel):
     token_hash: str  # sha256 hex of the full "atr_..." secret
     prefix: str  # first characters of the secret, for recognising a token
     created_by: str
+    # The account the token acts for (F2): the id of the person who created it, or of the person behind the token
+    # that created it. Never changes; the token works only while that account exists and is enabled, and never with
+    # more than that account's role. None only on tokens stored before it existed (bound at their next use).
+    owner_id: str | None = None
+    # Integration tokens: the tool whose events the token publishes - /api/bus/publish refuses any other source
+    # (review F31). Tokens from before are bound to the first source they publish as.
+    tool_id: str | None = None
     created_at: float = Field(default_factory=now)
     last_used: float | None = None
     expires_at: float | None = None
@@ -561,4 +664,4 @@ def public_user(user: User) -> dict[str, Any]:
 
 
 def public_token(token: ApiToken) -> dict[str, Any]:
-    return token.model_dump(mode="json", exclude={"token_hash"})
+    return token.model_dump(mode="json", exclude={"token_hash", "owner_id"} | ({"tool_id"} if token.tool_id is None else set()))

@@ -11,6 +11,7 @@ dist/
 # Hub runtime data (database, cloned tools, adapters, patch worktrees)
 .hub/
 .hub-*/
+*.pid
 
 # Secrets
 .env

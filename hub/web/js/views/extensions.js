@@ -197,12 +197,12 @@ async function openSelfPatch(id, availability, names, done) {
   const m = modal({
     title: sp.title,
     wide: true,
-    footer: html`${sp.status === "approved" ? html`<button type="button" class="btn primary" data-act="apply" data-min-role="admin" style="margin-right:auto">${icon("merge")}Apply again</button>` : ""}
+    footer: html`${sp.status === "approved" && sp.error ? html`<button type="button" class="btn primary" data-act="apply" data-min-role="admin" style="margin-right:auto">${icon("merge")}Apply again</button>` : ""}
       ${sp.status === "proposed" && sp.approval_id ? html`<a class="btn" href="#/approvals">${icon("checkCircle")}Decide in Approvals</a>` : ""}
       <button type="button" class="btn" data-close>Close</button>`,
     body: html`<div class="row" style="gap:6px;margin-bottom:10px">${badge(sp.status)}${sp.tests ? badge(sp.tests_passed ? "tests passed" : "tests failed", sp.tests_passed ? "ok" : "bad") : ""}</div>
       ${sp.error ? html`<div class="notice bad" style="margin-bottom:12px">${icon("alert")}<div style="min-width:0;overflow-wrap:anywhere"><b>Not applied.</b> ${sp.error}
-        ${sp.status === "approved" ? html`<div class="muted" style="font-size:12.5px">Fix the cause, then apply it again.</div>` : ""}</div></div>` : ""}
+        ${sp.status === "approved" && sp.error ? html`<div class="muted" style="font-size:12.5px">Fix the cause, then apply it again.</div>` : ""}</div></div>` : ""}
       ${sp.rationale ? html`<p class="muted" style="margin-bottom:10px;white-space:pre-line;overflow-wrap:anywhere">${sp.rationale}</p>` : ""}
       <dl class="kv" style="margin-bottom:12px">
         ${sp.goal ? html`<dt>Asked for</dt><dd style="white-space:pre-line">${sp.goal}</dd>` : ""}
@@ -348,7 +348,7 @@ function selfPatchesView(data, patches) {
         <td>${safeUrl(sp.pr_url) ? html`<a href="${sp.pr_url}" target="_blank" rel="noopener noreferrer" data-act="nav">${icon("external")}pull request</a>`
           : sp.merge_commit ? html`<span class="mono" style="font-size:12px">${sp.merge_commit.slice(0, 10)}</span>` : sp.mode ? html`<span class="faint">${sp.mode === "pull_request" ? "pull request" : "local merge"}</span>` : ""}</td>
         <td class="faint" title="${dateTime(sp.created_at)}">${sp.requested_by} - ${timeAgo(sp.created_at)}</td>
-        <td style="text-align:right">${sp.status === "approved" ? html`<button type="button" class="btn sm" data-act="apply" data-id="${sp.id}" data-min-role="admin">${icon("merge")}Apply again</button>` : ""}</td></tr>`)}
+        <td style="text-align:right">${sp.status === "approved" && sp.error ? html`<button type="button" class="btn sm" data-act="apply" data-id="${sp.id}" data-min-role="admin">${icon("merge")}Apply again</button>` : ""}</td></tr>`)}
       </tbody></table></div>`
       : emptyState("branch", "No self-patches yet", "The Patch Agent proposes one when only a change to Atrium's code can close a gap - or ask for one.")}</section>`;
 }

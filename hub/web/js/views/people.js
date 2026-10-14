@@ -38,13 +38,16 @@ function holdings(f) {
 const actionButtons = (personId, list) => list.map((a) => html`<button type="button" class="btn sm ${a.id === "disable_atrium_account" ? "danger" : ""}"
   data-act="person-action" data-id="${personId}" data-action="${a.id}" data-min-role="${a.role}" title="${a.description}">${icon(ACTION_ICON[a.id] || "check")}${a.title}</button>`);
 
-/** Confirm and run a one-click leaver action; true when it ran. */
-async function runAction(personId, actionId, name, list, btn) {
+/** Confirm and run a one-click leaver action; true when it ran. `users`: the Atrium accounts the leaver finding names -
+ * disabling names them in the confirmation and sends exactly those (the server refuses others). */
+async function runAction(personId, actionId, name, list, btn, users = []) {
   const a = list.find((x) => x.id === actionId) || { title: actionId.replace(/_/g, " "), description: "" };
-  if (!(await confirmDialog(`${a.title}: ${name}?`, a.description, a.title))) return false;
+  const disabling = actionId === "disable_atrium_account";
+  const detail = disabling && users.length ? `${a.description} Account${users.length > 1 ? "s" : ""}: ${users.map((u) => `@${u.username} (${u.role})`).join(", ")}.` : a.description;
+  if (!(await confirmDialog(`${a.title}: ${name}?`, detail, a.title))) return false;
   if (btn) btn.disabled = true;
   try {
-    const r = await post(`/people/${enc(personId)}/actions/${enc(actionId)}`);
+    const r = await post(`/people/${enc(personId)}/actions/${enc(actionId)}`, disabling && users.length ? { user_ids: users.map((u) => u.id) } : undefined);
     toast(r.detail, "ok");
     return true;
   } catch (err) {
@@ -331,7 +334,7 @@ async function renderList(el, ctx, initialTab) {
     open: (d) => { location.hash = `#/people/${enc(d.id)}`; },
     async "person-action"(d, btn) {
       const f = leaverData?.leavers.find((x) => x.person_id === d.id);
-      if (await runAction(d.id, d.action, f?.display_name || "this person", leaverData?.actions || [], btn)) refresh();
+      if (await runAction(d.id, d.action, f?.display_name || "this person", leaverData?.actions || [], btn, f?.atrium_accounts || [])) refresh();
     },
     "link-account"(d) {
       const a = accounts?.find((x) => x.id === d.id);
@@ -551,7 +554,7 @@ async function renderPerson(el, ctx, id) {
       }
     },
     async "person-action"(d, btn) {
-      if (await runAction(p.id, d.action, p.display_name, p.actions, btn)) refresh();
+      if (await runAction(p.id, d.action, p.display_name, p.actions, btn, p.leaver?.atrium_accounts || (p.atrium && !p.atrium.disabled ? [p.atrium] : []))) refresh();
     },
     async unassign(d) {
       const a = p.assets.find((x) => x.id === d.id);

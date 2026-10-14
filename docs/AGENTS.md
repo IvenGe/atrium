@@ -14,9 +14,10 @@ that bound them, and how Atrium extends and patches itself when a new tool needs
 | Operator Agent | `operator` | `read`, `commands` | commands on this machine or over SSH, under the command policy |
 | Asset Supervisor | `module:assets` | `read`, `tool_api`, `flows`, `assets_write`, `agents` | the asset register and asset flows |
 | Vulnerability Supervisor | `module:vulns` | `read`, `tool_api`, `flows`, `assets_write`, `grc_write`, `agents` | scans, findings, deadlines, vulnerability flows |
-| GRC Supervisor | `module:grc` | `read`, `tool_api`, `flows`, `grc_write`, `agents` | controls, evidence, risks, GRC flows |
+| GRC Supervisor | `module:grc` | `read`, `tool_api`, `flows`, `grc_write`, `agents` | controls, evidence, risks, GRC flows, frameworks read from GRC tools and the self-assessment push ([COMPLIANCE.md](COMPLIANCE.md)) |
 | People Supervisor | `module:people` | `read`, `tool_api`, `flows`, `assets_write`, `agents` | the People app, people and accounts flows, leavers ([PEOPLE.md](PEOPLE.md)) |
 | Extensions Supervisor | `module:extensions` | `read`, `tool_api`, `flows`, `agents` | the apps extension packs add and their flows ([below](#extensions)) |
+| Network Supervisor | `module:network` | `read`, `tool_api`, `flows`, `grc_write` | the Network app: device reads, snapshots, drift, backups, the segmentation map's data; the only agent that applies approved device changes ([NETWORK.md](NETWORK.md)) |
 
 On the **Agents** page admins pause and resume core agents and give them another model or extra instructions
 (collection `agents`). Core agents cannot be removed. Operators chat with the Hub Supervisor (`POST /api/chat`).
@@ -76,13 +77,20 @@ a local model (`local`) or rules (`rules`).
 
 Agents that run on a model act through a shared toolkit (`hub/agents/toolkit.py`). Every tool is tagged with the
 permission it needs; a team agent only gets the tools its effective permissions allow, and an agent of a tool's team
-can only act on that tool. Tools never bypass the hub: commands go through the Operator Agent, patches through the
+can only act on that tool. That covers the hub's records too. Such an agent may change, with `update_risk`,
+`update_asset`, `set_scan_scope` and `update_vulnerability`, only the records its tool supplied (`source`
+`sync:<tool>`, `tool:<tool>` or the tool id) and the risks an agent of its own team recorded. Anything else is
+refused with a permission error, including people's entries, automatic risks and other teams' records. A scan-scope
+change touching one such asset changes nothing at all. Agents of the hub's or a module's team keep hub-wide reach.
+Tools never bypass the hub: commands go through the Operator Agent, patches through the
 Patch Agent's approval flow and scans through the Vulnerability Supervisor, always with the team agent as the sender
-(`agent:<slug>`), so the command policy, the approval queue and the guardrails apply.
+(`agent:<slug>`), so the command policy, the approval queue and the guardrails apply. When an agent acts on a person's
+chat message or manual run, its commands on the hub machine and tool starts are judged by that person's role: an
+operator's wait for an administrator even in autonomous mode ([AUTH.md](AUTH.md#commands-on-the-hub-machine)).
 
 | Permission | Tools |
 | --- | --- |
-| `read` | `list_tools`, `get_tool`, `integration_overview`, `identity_overview`, `list_hosts`, `tool_health`, `asset_summary`, `people_summary`, `compliance_summary`, `data_flows`, `vulnerability_summary`, `list_vulnerabilities`, `list_risks`, `extension_records`, `list_approvals`, `agent_teams` |
+| `read` | `list_tools`, `get_tool`, `integration_overview`, `identity_overview`, `list_hosts`, `tool_health`, `asset_summary`, `people_summary`, `network_summary`, `compliance_summary`, `data_flows`, `vulnerability_summary`, `list_vulnerabilities`, `list_risks`, `extension_records`, `list_approvals`, `agent_teams` |
 | `tool_api` | `test_tool_connection`, `read_tool_records` |
 | `commands` | `run_command`, `start_tool`, `stop_tool` (starting and stopping a tool wait for approval like a state-changing command) |
 | `patches` | `import_tool`, `reanalyze_tool`, `propose_patches`, `request_code_patch` |
@@ -90,6 +98,17 @@ Patch Agent's approval flow and scans through the Vulnerability Supervisor, alwa
 | `assets_write` | `update_asset`, `set_scan_scope`, `sync_assets` |
 | `grc_write` | `create_risk`, `update_risk`, `update_vulnerability`, `evaluate_controls` |
 | `agents` | `propose_team`, `create_team_member` |
+
+Every tool call is checked against the tool's schema by the hub before it runs (types and allowed values; unknown
+keys are dropped), not only by the model provider: local models get no strict schemas. `read_tool_records` reads
+only assets, vulnerabilities, risks, controls, people and accounts.
+
+`network_summary` returns counts only: devices, devices without a current snapshot, unexplained drift, and devices
+that accept changes now. Text read from devices (rule descriptions, interface and zone names) never reaches an agent
+or a model: `read_tool_records` cannot read the `network` domain and a tool's supervisor answers a `network` pull only
+to the Network Supervisor. No agent tool changes a network device: device changes are proposed by people only and approved by an
+administrator ([NETWORK.md](NETWORK.md#device-changes)). Likewise, team agents and other modules cannot start a scan
+through a tool's connector; scans go through the Vulnerability Supervisor (`request_scan`) and its approval policy.
 
 The Hub Supervisor's chat gets every tool. The Claude loop goes through `hub.llm.create`, so the default model
 (`claude-opus-5-5`) and the hub's request options apply.
@@ -116,7 +135,7 @@ A team belongs to:
 | --- | --- | --- |
 | a tool | the tool id | its Tool Supervisor |
 | the hub | `hub` | the Hub Supervisor |
-| a built-in app | `module:assets`, `module:vulns`, `module:grc`, `module:people`, `module:extensions` | that app's supervisor |
+| a built-in app | `module:assets`, `module:vulns`, `module:grc`, `module:people`, `module:extensions`, `module:network` | that app's supervisor |
 
 Every team agent has a **parent**: the agent that created it or, for an agent a person creates, the team's lead (or
 another agent of the same team the person picks). **Depth** counts levels below the core agents: a lead's members
@@ -210,9 +229,15 @@ relaxing as a warning - and the GRC Supervisor re-evaluates the controls.
 | `self_patch_requires_tests` | on | a self-patch can only be approved when the test suite passed on its branch | HB-CM-2 fails |
 | `self_patch_requires_approval` | on | self-patches wait for an administrator's approval | HB-CM-2 fails |
 | `self_patch_via_pull_request` | on | an approved self-patch is opened as a pull request instead of merged locally | |
+| `approvals_need_second_person` | off | an approval that records who proposed it (a self-patch a person asked for, a data flow drawn on the integration map) must be approved by someone else; the proposer can still reject it (403 `same_person`) | (on is the safe side) |
+
+The network guardrails - `device_changes` (off by default), `device_changes_need_second_person`,
+`device_changes_need_maintenance_window`, `device_changes_need_backup` and `approval_expiry_hours` - are in
+**Settings > Network changes** and described in [NETWORK.md](NETWORK.md#guardrails). `approval_expiry_hours` (default
+24, 1-72) also limits how long a self-patch approval can be decided.
 
 For `allow_extensions` and `allow_self_patching` off is the protective position, so switching them back on is logged
-as relaxing (a warning). When `max_team_size` is lowered below a team's size, the team's oldest members keep acting and
+as relaxing (a warning); for `approvals_need_second_person` on is the protective position, so switching it off is. When `max_team_size` is lowered below a team's size, the team's oldest members keep acting and
 the newest ones may not act (chat, runs and the scheduler refuse them) until the team shrinks or the limit is raised;
 the agent's `outside_guardrails` says why.
 
@@ -232,6 +257,7 @@ validation, logging and the compliance check pick it up.
 | HB-AC-2 Privileged agent actions are approved | the hub runs in autonomous mode | `scans_need_approval` or `team_requires_approval` is off |
 | HB-AC-6 AI agent guardrails are enforced | `block_catastrophic_commands`, `team_actions_need_approval` or `limit_to_parent_permissions` is off | team size is unlimited or nested teams are allowed |
 | HB-CM-2 Changes to tools are reviewed | `self_patch_requires_approval` or `self_patch_requires_tests` is off | `extensions_need_approval` is off, or the hub runs in autonomous mode |
+| HB-CM-3 Network device changes are controlled | `device_changes_need_second_person` or `device_changes_need_backup` is off, or a change left a device in an unknown state | `device_changes_need_maintenance_window` is off, or in the last 90 days there were emergency changes, changes approved by their own proposer or changes applied without a backup (even if the guardrails are on again now) |
 
 HB-AC-6 maps to ISO 27001 A.8.2 / A.8.32, SOC 2 CC6.1 / CC8.1, NIS2 21(2)(i), with the risk "AI agents operate
 without guardrails" (3 x 5). HB-CM-2 maps to ISO 27001 A.8.32, SOC 2 CC8.1, NIS2 21(2)(e).
@@ -398,7 +424,10 @@ How it works (`hub/extensions/selfpatch.py`):
    secret-looking variables removed; `HUB_LLM=off`). The diff and the tail of the test output are attached.
 5. An approval of kind `self_patch` shows the diff, the files, the test result and how it will be applied. Only
    administrators decide it, and while `self_patch_requires_tests` is on a patch whose tests failed cannot be approved
-   (409). Rejecting removes the branch and the worktree.
+   (409). The approval is bound to the branch's commit and expires after `approval_expiry_hours` (default 24): it is
+   refused once expired or when the commit moved, and the worktree's commit is checked again before merging or
+   pushing. While `approvals_need_second_person` is on, the admin who asked for the patch cannot
+   approve it. Rejecting removes the branch and the worktree.
 6. On approval:
    - **Pull request**, when `self_patch_via_pull_request` is on, the repository has an `origin` remote and the GitHub
      CLI is signed in (`gh auth status`): the branch is pushed and `gh pr create` opens a pull request. This outward

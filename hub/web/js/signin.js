@@ -3,14 +3,17 @@
 import { del, get, post, put } from "./api.js";
 import { actions, badge, confirmDialog, copyText, dateTime, field, html, icon, options, setHTML, timeAgo, toast } from "./ui.js";
 
-const ROLES = [["viewer", "Viewer"], ["operator", "Operator"], ["admin", "Admin"]];
+const ROLES = [["none", "Nobody - refuse sign-in"], ["viewer", "Viewer"], ["operator", "Operator"], ["admin", "Admin"]];
 const list = (text) => [...new Set(String(text || "").split(",").map((v) => v.trim()).filter(Boolean))];
 
 /** The form values shown for the saved (effective) settings; the secret field always starts empty. */
 const fromView = (v) => ({
   provider_name: v.stored?.provider_name || "", issuer: v.values.issuer || "", client_id: v.values.client_id || "",
   scopes: v.values.scopes || "", role_claim: v.values.role_claim || "", admin_values: (v.values.admin_values || []).join(", "),
-  operator_values: (v.values.operator_values || []).join(", "), default_role: v.values.default_role || "viewer",
+  operator_values: (v.values.operator_values || []).join(", "), viewer_values: (v.values.viewer_values || []).join(", "),
+  allowed_domains: (v.values.allowed_domains || []).join(", "),
+  // new settings refuse people outside the Atrium groups unless an admin picks a default role
+  default_role: v.source?.default_role === "default" && !v.stored ? "none" : v.values.default_role || "viewer",
   allow_http: Boolean(v.values.allow_http), client_secret: "", clear_client_secret: false, use_generated: false,
 });
 
@@ -50,7 +53,7 @@ function cardView(v, choice, d, test) {
   const secretEnv = env.has("client_secret");
   return html`<header><h2>Sign-in &amp; SSO</h2>${v.enabled ? badge("on", "ok") : badge("off")}</header>
     <p class="muted" style="margin-bottom:12px">Let people sign in to Atrium with your identity provider over OpenID Connect. Their role comes from a claim:
-      admin values make admins, operator values operators, everyone else gets the default role. Local accounts keep working.</p>
+      admin values make admins, operator values operators, viewer values viewers, everyone else gets the default role - or is refused. Local accounts keep working.</p>
     ${v.enabled ? html`<div class="notice ok" style="margin-bottom:10px">${icon("shield")}<div>Single sign-on is on: the sign-in screen shows <b>${v.label}</b>.</div></div>`
       : html`<div class="notice" style="margin-bottom:10px">${icon("shield")}<div class="muted">Single sign-on is off. Pick your provider, fill in the issuer, client ID and secret, test, then save.</div></div>`}
     ${v.secret_error ? html`<div class="notice warn" style="margin-bottom:10px">${icon("alert")}<div>${v.secret_error}</div></div>` : ""}
@@ -88,10 +91,12 @@ function cardView(v, choice, d, test) {
       <div class="form-grid">
         ${text("role_claim", "Role claim", "A claim name or a dotted path such as realm_access.roles.", "groups", true)}
         ${field("Default role", html`<select name="default_role" ${env.has("default_role") ? "disabled" : ""}>${options(ROLES, d.default_role)}</select>`,
-          env.has("default_role") ? envHint("default_role") : "For people with neither an admin nor an operator value.")}
+          env.has("default_role") ? envHint("default_role") : "For people with no admin, operator or viewer value. Nobody: only members of those groups sign in.")}
         ${text("admin_values", "Admin values", "Comma separated, e.g. a group name.", "atrium-admins")}
         ${text("operator_values", "Operator values", "Comma separated.", "atrium-operators")}
+        ${text("viewer_values", "Viewer values", "Comma separated (with the default role Nobody).", "atrium-viewers")}
       </div>
+      ${text("allowed_domains", "Allowed domains", "Comma separated: only accounts of these domains sign in (Google: the hosted domain, else a verified email). Empty: any.", "example.com")}
       ${text("scopes", "Scopes", "Separated by spaces; openid is always included.", "openid profile email", true)}
       <label class="check scope-check" style="margin-bottom:12px"><input type="checkbox" name="allow_http" ${d.allow_http ? "checked" : ""} ${env.has("allow_http") ? "disabled" : ""}>
         <span><b>Allow a plain-http issuer</b><span class="faint" style="display:block;font-size:12px">${env.has("allow_http") ? envHint("allow_http")
@@ -132,7 +137,7 @@ export async function mountSso(card) {
     const out = { provider_name: draft.provider_name.trim() };
     if (p) out.preset = p.preset || p.id;
     for (const k of ["issuer", "client_id", "scopes", "role_claim", "default_role"]) if (!env.has(k)) out[k] = String(draft[k]).trim();
-    for (const k of ["admin_values", "operator_values"]) if (!env.has(k)) out[k] = list(draft[k]);
+    for (const k of ["admin_values", "operator_values", "viewer_values", "allowed_domains"]) if (!env.has(k)) out[k] = list(draft[k]);
     if (!env.has("allow_http")) out.allow_http = Boolean(draft.allow_http);
     return out;
   };

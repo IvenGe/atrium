@@ -25,14 +25,14 @@ REGISTRY: dict[str, str | type[Connector]] = {
     "keycloak": "hub.connectors.keycloak:KeycloakConnector",
     "scim": "hub.connectors.scim:ScimConnector",
     "generic_rest": "hub.connectors.generic_rest:GenericRestConnector",
-    "opnsense": "hub.connectors.opnsense:OpnSenseConnector",
-    "pfsense": "hub.connectors.pfsense:PfSenseConnector",
-    "mikrotik": "hub.connectors.mikrotik:MikroTikConnector",
-    "fortigate": "hub.connectors.fortigate:FortiGateConnector",
-    "panos": "hub.connectors.panos:PanOsConnector",
-    "cisco_iosxe": "hub.connectors.cisco_iosxe:CiscoIosXeConnector",
+    "opnsense": "hub.connectors.opnsense:OpnsenseConnector",
+    "pfsense": "hub.connectors.pfsense:PfsenseConnector",
+    "mikrotik": "hub.connectors.mikrotik:MikrotikConnector",
+    "fortigate": "hub.connectors.fortigate:FortigateConnector",
+    "panos": "hub.connectors.panos:PanosConnector",
     "hostfw": "hub.connectors.hostfw:HostFirewallConnector",
     "windows_firewall": "hub.connectors.windows_firewall:WindowsFirewallConnector",
+    "cisco_iosxe": "hub.connectors.cisco_iosxe:CiscoIosXeConnector",
 }
 if os.environ.get("HUB_DEV_FAKE_DEVICES") == "1":  # an in-memory firewall to try the Network app (never in production)
     REGISTRY["fake_firewall"] = "hub.connectors.fake_firewall:FakeFirewallConnector"

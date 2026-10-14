@@ -45,15 +45,22 @@ library/views.py, main branch, read 2026-10-09):
   non_compliant | compliant | not_applicable, score, documentation_score) and global_score/ their scores;
   requirement-mapping-sets/ the mapping sets; loaded-libraries/ which libraries are loaded (test() reports CyFun 2025,
   CyFun 2023 and the CRA; importing a library needs CISO Assistant rights and is never done by Atrium);
-- CyFun requirement ids carry level prefixes in CyFun 2023 (BASIC_ID.AM-1.1): the hub strips them.
+- CyFun requirement ids carry level prefixes in CyFun 2023 (BASIC_ID.AM-1.1): the hub strips them (and corrects the
+  library's R.AC-3.4 / R.AC-3.5 typos as its catalog does). The CCB's requirement text of the CyFun frameworks is not
+  read into the hub (Atrium ships its own id-only catalogs); other frameworks keep CISO Assistant's names;
+- the EU Cyber Resilience Act is available only this way (library cra-regulation-annexes, URN
+  urn:intuitem:risk:library:cra-resolution-annexes, version 3 of 2024-06-25). Its name and date suggest it was built
+  from the European Parliament's text, not the text published in the Official Journal (Regulation (EU) 2024/2847):
+  UNVERIFIED against the OJ text, so the Compliance hub shows it read-only with that caveat.
 
 Self-assessments (domain ``assessments``, write - only when an administrator switches on "Send CyFun
 self-assessments" in the connection): each hub assessment becomes a compliance assessment of the loaded CyFun
 framework (selected_implementation_groups = [the target level]); every requirement the hub scored is written with
 PATCH requirement-assessments/<id>/ (result, status, score, documentation_score, is_scored, observation), and
-requirements the hub did not score are left alone. UNVERIFIED: the fields CISO Assistant requires to create a
-compliance assessment (name, framework and folder are sent) and the format of selected_implementation_groups (a list
-of group ref_ids, inferred) - the first push shows a clear error if either differs.
+requirements the hub did not score are left alone. selected_implementation_groups is a list of group ref_ids (read in
+core/cel_service.py: an audit's scope is the requirements whose implementation_groups intersect it). UNVERIFIED: the
+fields CISO Assistant requires to create a compliance assessment (name, framework, version, status and folder are
+sent; the folder default when none is sent was not read) - the first push shows a clear error if they differ.
 """
 
 from __future__ import annotations
@@ -67,7 +74,7 @@ from urllib.parse import urlsplit
 import httpx
 from pydantic import ValidationError
 
-from ..grc.frameworks import LIBRARY_NAMES, LIBRARY_URNS
+from ..grc.frameworks import CATALOG_IDS, LIBRARY_NAMES, LIBRARY_URNS, load
 from .base import ASSET_TYPES, Connector, ConnectorError, ConnectorField, check, to_timestamp
 from .grcmodel import AssessmentPush
 
@@ -110,6 +117,8 @@ PROBES = (("Assets", "assets/", "assets", ("read", "write")),
 # CyFun frameworks Atrium ships its own catalog of: their requirement text is not read into the hub
 CYFUN_FRAMEWORKS = {"urn:intuitem:risk:framework:ccb-cyfun2025", "urn:intuitem:risk:framework:ccb-cff-2023-03-01"}
 LEVEL_PREFIX = re.compile(r"^(BASIC|IMPORTANT|ESSENTIAL)_", re.I)
+# typos in the library's ref_ids that Atrium's catalogs correct (CyFun 2023: R.AC-3.4 -> PR.AC-3.4)
+CYFUN_ALIASES = {c["library_ref_id"]: c["ref_id"] for key in CATALOG_IDS for c in load(key).data.get("corrections", [])}
 RESULT_NAMES = ("not_assessed", "partially_compliant", "non_compliant", "compliant", "not_applicable")
 
 
@@ -274,7 +283,8 @@ def hub_ref(ref_id: Any, aliases: dict[str, str] | None = None) -> str:
     return (aliases or {}).get(ref, ref)
 
 
-def _node_records(nodes: list[dict[str, Any]], own_text: bool) -> list[dict[str, Any]]:
+def _node_records(nodes: list[dict[str, Any]], own_text: bool,
+                  aliases: dict[str, str] | None = None) -> list[dict[str, Any]]:
     """Requirement nodes with their depth (from the parent links); names and descriptions only when `own_text`."""
     parents = {str(n.get("urn") or ""): str(n.get("parent_urn") or "") for n in nodes if n.get("urn")}
     depths: dict[str, int] = {}
@@ -294,7 +304,7 @@ def _node_records(nodes: list[dict[str, Any]], own_text: bool) -> list[dict[str,
         urn = str(node.get("urn") or "").strip()
         if not urn:
             continue
-        out.append({"id": _uuid(node.get("id")) or "", "urn": urn, "ref_id": hub_ref(node.get("ref_id")),
+        out.append({"id": _uuid(node.get("id")) or "", "urn": urn, "ref_id": hub_ref(node.get("ref_id"), aliases),
                     "name": node.get("name") if own_text else "", "description": node.get("description") if own_text else "",
                     "parent_urn": node.get("parent_urn") or None, "depth": min(depth(urn), 20),
                     "assessable": bool(node.get("assessable")),
@@ -727,7 +737,7 @@ class CisoAssistantConnector(Connector):
             nodes = await self._list(client, "requirement-nodes/", {"framework": framework_id}, what="requirement nodes")
             nodes = [n for n in nodes if _id(n.get("framework")) in (None, framework_id)]
             own_text = urn.lower() not in CYFUN_FRAMEWORKS  # never keep the CCB's requirement text
-            requirements = _node_records(nodes, own_text)
+            requirements = _node_records(nodes, own_text, None if own_text else CYFUN_ALIASES)
             by_node = {n["id"]: n for n in requirements if n["id"]}
             states = []
             for assessment in assessments:

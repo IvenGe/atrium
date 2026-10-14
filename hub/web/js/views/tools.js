@@ -142,8 +142,8 @@ function patchesPanel(tool) {
         <span class="faint" style="font-size:12px">${timeAgo(p.created_at)}</span></div>
       <p class="muted" style="margin:6px 0;white-space:pre-line">${p.rationale}</p>
       ${ssoPlan(p.sso)}
-      ${p.branch ? html`<p style="font-size:12.5px">Branch <code>${p.branch}</code> in worktree <code>${p.location}</code></p>`
-        : p.location ? html`<p style="font-size:12.5px">Written to <code>${p.location}</code></p>` : ""}
+      ${p.branch ? html`<p style="font-size:12.5px;overflow-wrap:anywhere">Branch <code>${p.branch}</code> in worktree <code>${p.location}</code></p>`
+        : p.location ? html`<p style="font-size:12.5px;overflow-wrap:anywhere">Written to <code>${p.location}</code></p>` : ""}
       ${p.error ? html`<p style="color:var(--bad)">${p.error}</p>` : ""}
       <details><summary class="muted" style="cursor:pointer;font-size:12.5px">Show diff</summary><div style="margin-top:8px">${diffView(p.diff)}</div></details>
     </div>`)}`;

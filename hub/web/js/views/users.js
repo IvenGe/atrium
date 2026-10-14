@@ -78,19 +78,26 @@ export function openNewToken(done) {
       <div class="form-grid">
         ${field("Role", html`<select name="role">${options(TOKEN_ROLES, "integration")}</select>`)}
         ${field("Expires after (days)", html`<input name="expires_days" type="number" min="1" max="3650" step="1" value="90">`, "Empty: never expires.")}</div>
-      <p class="faint" style="font-size:12.5px" data-role-help>${ROLE_HELP.integration}</p>`,
+      <p class="faint" style="font-size:12.5px" data-role-help>${ROLE_HELP.integration}</p>
+      <div data-tool-field>${field("Publishes events as tool", html`<input name="tool_id" autocomplete="off" spellcheck="false" placeholder="the token's name, e.g. grafana">`,
+        "The tool id this token speaks for: events with any other source are refused.")}</div>`,
     async onSubmit(data) {
       const name = String(data.get("name") || "").trim();
       if (!name) throw new Error("Give the token a name");
       const days = String(data.get("expires_days") || "").trim();
       const expires_days = days ? Number(days) : null;
       if (days && (!Number.isInteger(expires_days) || expires_days < 1)) throw new Error("Expiry must be a whole number of days");
-      const token = await post("/tokens", { name, role: data.get("role"), expires_days });
+      const role = data.get("role");
+      const toolId = String(data.get("tool_id") || "").trim();
+      const token = await post("/tokens", { name, role, expires_days, ...(role === "integration" && toolId ? { tool_id: toolId } : {}) });
       showSecret(token);
       done?.();
     },
   });
   wireRoleHelp(m.el);
+  const role = m.el.querySelector("[name=role]");
+  const toolField = m.el.querySelector("[data-tool-field]");
+  role.addEventListener("change", () => { toolField.hidden = role.value !== "integration"; });
 }
 
 /** The only time a token secret is visible; the dialog closes only through its buttons. */
@@ -149,7 +156,7 @@ function expiry(ts) {
 function tokenRow(t) {
   return html`<tr>
     <td><b>${t.name}</b></td>
-    <td>${roleBadge(t.role)}</td>
+    <td>${roleBadge(t.role)}${t.tool_id ? html` <span class="faint" style="font-size:12px">as ${t.tool_id}</span>` : ""}</td>
     <td class="mono faint" style="font-size:12.5px">atr_${t.prefix}...</td>
     <td class="faint" title="${fullDate(t.created_at)}">${timeAgo(t.created_at)}${t.created_by ? ` by ${t.created_by}` : ""}</td>
     <td class="faint" title="${fullDate(t.last_used)}">${t.last_used ? timeAgo(t.last_used) : "never"}</td>

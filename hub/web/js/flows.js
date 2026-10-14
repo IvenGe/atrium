@@ -25,7 +25,7 @@ export function domainInfo(domain) {
 }
 const ASSET_TYPES = ["server", "workstation", "network", "software", "saas", "cloud", "data", "other"];
 const SEVERITIES = ["critical", "high", "medium", "low", "info"];
-const SCHEDULES = [[0, "Only when run by hand"], [15, "Every 15 minutes"], [30, "Every 30 minutes"], [60, "Every hour"],
+export const SCHEDULES = [[0, "Only when run by hand"], [15, "Every 15 minutes"], [30, "Every 30 minutes"], [60, "Every hour"],
   [180, "Every 3 hours"], [360, "Every 6 hours"], [720, "Every 12 hours"], [1440, "Every day"], [10080, "Every week"],
   [43200, "Every 30 days"]];
 const RETIRE_LABEL = {
@@ -65,9 +65,11 @@ function statusCell(f) {
       <button class="btn sm" data-act="flow-dismiss" data-id="${f.id}" title="Reject the proposal; the flow stays disabled">Dismiss</button></div>`;
   }
   const on = f.status === "enabled";
+  // a turned-down proposal: switching it on proposes it again (it waits for approval)
+  const label = on ? `Disable ${f.title}` : f.rejected ? `Propose ${f.title} again` : `Enable ${f.title}`;
   return html`<div class="row" style="gap:8px;flex-wrap:nowrap">
-    <button type="button" class="toggle" role="switch" aria-checked="${on ? "true" : "false"}" aria-label="${on ? "Disable" : "Enable"} ${f.title}"
-      data-act="flow-toggle" data-id="${f.id}" data-min-role="operator"></button>${badge(f.status)}</div>`;
+    <button type="button" class="toggle" role="switch" aria-checked="${on ? "true" : "false"}" aria-label="${label}" title="${label}"
+      data-act="flow-toggle" data-id="${f.id}" data-min-role="operator"></button>${f.rejected ? badge("rejected", "warn") : badge(f.status)}</div>`;
 }
 
 function runCell(f) {
@@ -95,7 +97,7 @@ function repairControl(f) {
 
 function flowRow(f, showTool, names) {
   const d = domainInfo(f.domain);
-  const runnable = f.status !== "proposed" || f.job;
+  const runnable = (f.status !== "proposed" && !f.rejected) || f.job;
   return html`<tr class="${failing(f) && f.status === "enabled" ? "flow-failing" : ""}">
     <td style="min-width:240px"><div class="row" style="gap:8px;flex-wrap:nowrap;align-items:flex-start">${icon(f.direction === "scan" ? "radar" : d.icon)}
       <div style="min-width:0"><b class="flow-title">${f.title}</b>
@@ -122,7 +124,8 @@ export function flowsTable(flows, { showTool = true, names = {}, empty = "No dat
     <tbody>${flows.map((f) => flowRow(f, showTool, names))}</tbody></table></div>`;
 }
 
-function optionsForm(f) {
+/** The option fields of a flow (or a pseudo-flow {domain, direction, options}); read back with readOptions. */
+export function optionsForm(f) {
   const o = f.options || {};
   const parts = [];
   if (f.domain === "assets" && f.direction === "push") {
@@ -148,7 +151,7 @@ function optionsForm(f) {
   return parts;
 }
 
-function readOptions(f, form) {
+export function readOptions(f, form) {
   const out = {};
   if (f.domain === "assets" && f.direction === "push") out.asset_types = [...form.querySelectorAll("[name=asset_types]:checked")].map((c) => c.value);
   if (f.direction === "pull") out.retire_missing = form.querySelector("[name=retire_missing]").checked;
@@ -230,8 +233,9 @@ function runToast(r) {
 export function wireFlows(root, { find, refresh, names = () => ({}) }) {
   const setStatus = async (id, status) => {
     try {
-      await patch(`/flows/${encodeURIComponent(id)}`, { status });
-      toast(status === "enabled" ? "Flow enabled" : "Flow disabled", status === "enabled" ? "ok" : "info");
+      const updated = await patch(`/flows/${encodeURIComponent(id)}`, { status });
+      if (status === "enabled" && updated?.status === "proposed") toast("Proposed again - the flow waits for approval", "info");
+      else toast(status === "enabled" ? "Flow enabled" : "Flow disabled", status === "enabled" ? "ok" : "info");
     } catch (err) {
       toast(err.message, "bad");
     }

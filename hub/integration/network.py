@@ -23,11 +23,17 @@ Collections (all keyed by the device's tool id, one connection = one device):
 
 Drift attribution: a change Atrium made itself is attributed to its change id, not reported as unexplained. The
 change path (collection ``firewall_changes``, R3-NETCHANGE) keeps on every change at least {id, firewall (tool id),
-status, op ("allow" | "disable_rules" | "revert" | "restore"), ops (the canonical ops it applies), applied_at}; an
-item is attributed when (1) the snapshot was stored by the change path itself (``ingest(..., cause=change id)`` after
-applying, verifying, rolling back or restoring), (2) the rule carries the marker "atrium:<change id>" of a change
-that was applied (or is being applied / was rolled back), (3) a disable_rules change of that device names the rule,
-or (4) a restore change of that device was applied since the previous snapshot.
+status, op ("allow" | "disable_rules" | "revert" | "restore"), ops (the canonical ops it applies, ``netmodel.parse_ops``
+form), updated_at (set on every status change), applied_at}. Only changes that are applying / verifying, or whose
+status changed since the previous snapshot was stored, can explain an item (an old change never hides a new edit) -
+not a change that ended with nothing changed on the device (result state "unchanged"), and not a finished change
+whose own re-read is the previous snapshot (its effects are stored already; review F10): (1) an added rule carrying
+the marker "atrium:<change id>" that is exactly what one of the change's allow ops asked for
+(``netmodel.rule_matches_allow``; a copied marker on another rule stays unexplained); a removed rule carrying the
+marker (a rollback); (2) a rule enabled / disabled that a disable_rules / enable_rules op of the change names; (3)
+anything, but only in the re-read the change path stores itself with ``cause_scope="all"`` (after a rollback or a
+backup restore, which may put back any part of the configuration) - a later read, or a restore that failed, never
+explains an edit it did not make. ``ingest(..., cause=change id)`` checks that change first.
 
 SSE events: ``network_snapshot`` {tool_id, rev, revision, read_at, changed}, ``network_drift`` {tool_id, ids, count,
 critical}, ``network_baseline`` {tool_id, rev}, ``device_backup`` (backup metadata), ``network_settings``,
@@ -45,7 +51,8 @@ from typing import TYPE_CHECKING, Any
 from .. import connectors
 from ..connectors.base import Connector, ConnectorError
 from ..connectors.netmodel import (CRITICAL_DRIFT, Backup, backup_content, diff_records, display_id, exposes_management,
-                                   is_any_any, record_hash, record_lines, rule_ref, validate_write_spec)
+                                   is_any_any, parse_ops, record_hash, record_lines, rule_matches_allow, rule_ref,
+                                   validate_write_spec)
 from ..store import new_id
 from . import connections, flows
 
@@ -121,9 +128,10 @@ def _history_id(tool_id: str, rev: int) -> str:
 
 
 def history(hub: "Hub", tool_id: str) -> list[dict[str, Any]]:
-    """The device's snapshot revisions, newest first, without their records."""
-    entries = [d for d in hub.store.list(HISTORY) if d.get("tool_id") == tool_id]
-    return [{k: v for k, v in d.items() if k != "record"} for d in sorted(entries, key=lambda d: -d["rev"])]
+    """The device's snapshot revisions, newest first, without their records (read by id range, records left in the
+    database: review F26 - not every device's full rule bases on every device page)."""
+    entries = hub.store.list_prefix(HISTORY, f"{tool_id}|", without="record")
+    return sorted((d for d in entries if d.get("tool_id") == tool_id), key=lambda d: -d["rev"])
 
 
 def history_entry(hub: "Hub", tool_id: str, rev: int) -> dict[str, Any] | None:
@@ -149,34 +157,74 @@ def _op_list(change: dict[str, Any]) -> list[dict[str, Any]]:
     return [o for o in ops if isinstance(o, dict)]
 
 
-def attribute(item: dict[str, Any], changes: list[dict[str, Any]], since: float, cause: str | None = None) -> str | None:
-    """The id of the Atrium change that explains a drift item (see the module docstring), else None."""
-    if cause:
+def _touched(change: dict[str, Any]) -> float:
+    return max(float(change.get(k) or 0) for k in ("updated_at", "applied_at", "decided_at", "created_at"))
+
+
+def _explains(change: dict[str, Any], item: dict[str, Any], rule: dict[str, Any] | None,
+              record: dict[str, Any] | None) -> bool:
+    kind = item["kind"]
+    if kind in ("rule_added", "management_exposed", "any_any_introduced"):
+        if rule is None or rule.get("marker") != change.get("id"):
+            return False
+        for op in _op_list(change):
+            if op.get("op") != "allow":
+                continue
+            try:
+                if rule_matches_allow(rule, parse_ops([op])[0], record):
+                    return True
+            except ValueError:
+                continue
+        return False
+    if kind == "rule_removed":
+        return rule is not None and rule.get("marker") == change.get("id")
+    if kind in ("rule_enabled", "rule_disabled"):
+        refs = {item["subject"], *(filter(None, [(rule or {}).get("vendor_ref")]))}
+        return any(op.get("op") in ("disable_rules", "enable_rules")
+                   and any(refs & {r.get("id"), r.get("vendor_ref")} for r in op.get("rules") or [])
+                   for op in _op_list(change))
+    return False
+
+
+def attribute(item: dict[str, Any], changes: list[dict[str, Any]], since: float, cause: str | None = None,
+              rule: dict[str, Any] | None = None, cause_scope: str = "ops",
+              record: dict[str, Any] | None = None, captured_by: str | None = None) -> str | None:
+    """The id of the Atrium change that explains a drift item (see the module docstring), else None. `since`: when
+    the previous snapshot was stored; `rule`: the item's rule (the new one, or the removed one); `record`: the new
+    snapshot (to resolve the address objects a rule uses); `captured_by`: the change whose own re-read the previous
+    snapshot is. Only the change path's own re-read with `cause_scope` "all" explains everything (review F10: a
+    restore - applied, or failed with nothing changed - never explains a later out-of-band edit)."""
+    by_id = {c.get("id"): c for c in changes}
+    if cause and cause_scope == "all" and cause in by_id:
         return cause
-    done = [c for c in changes if c.get("status") in ATTRIBUTABLE]
-    if item.get("marker") and any(c.get("id") == item["marker"] for c in done):
-        return item["marker"]
-    if item["kind"] in ("rule_disabled", "rule_enabled", "rule_changed"):
-        for change in sorted(done, key=lambda c: -(c.get("applied_at") or c.get("created_at") or 0)):
-            for op in _op_list(change):
-                if op.get("op") == "disable_rules" and any(item["subject"] in (r.get("id"), r.get("vendor_ref"))
-                                                           for r in op.get("rules") or []):
-                    return change["id"]
-    for change in done:
-        if change.get("op") == "restore" and (change.get("applied_at") or 0) >= since:
+    recent = [c for c in changes if c.get("status") in ("applying", "verifying")
+              or (c.get("status") in ATTRIBUTABLE and _touched(c) >= since
+                  and (c.get("result") or {}).get("state") != "unchanged" and c.get("id") != captured_by)]
+    if cause:
+        if cause in by_id and by_id[cause] not in recent:
+            recent.insert(0, by_id[cause])
+        recent.sort(key=lambda c: c.get("id") != cause)
+    for change in recent:
+        if _explains(change, item, rule, record):
             return change["id"]
     return None
 
 
-def ingest(hub: "Hub", tool_id: str, record: dict[str, Any], *, cause: str | None = None) -> dict[str, Any]:
+def ingest(hub: "Hub", tool_id: str, record: dict[str, Any], *, cause: str | None = None,
+           cause_scope: str = "ops") -> dict[str, Any]:
     """Store a normalised record read from the device as its current snapshot; on a content change add a history
     entry and drift items (attributed to Atrium changes where they explain it). `cause`: the change id when the
-    change path stores the re-read it made after applying / rolling back / restoring that change. Returns
-    {"changed", "rev", "drift": [new items], "unexplained": n, "critical": n}."""
+    change path stores the re-read it made after applying / rolling back / restoring that change; `cause_scope`
+    "all" when everything that changed is that change's doing (after a rollback or a backup restore), else "ops"
+    (only what its ops explain). Returns {"changed", "rev", "drift": [new items], "unexplained": n, "critical": n}."""
     now = time.time()
     prev = snapshot(hub, tool_id)
     digest = record_hash(record)
     read_at = record.get("read_at") or now
+    if prev is not None and record.get("read_at") and read_at < (prev.get("read_at") or 0):
+        # a read that started before the stored snapshot's (a slow pull overtaken by a change's verification read):
+        # storing it would show an older device and report Atrium's own change as drift later (review F23)
+        return {"changed": False, "rev": prev["rev"], "drift": [], "unexplained": 0, "critical": 0, "stale": True}
     base = {"id": tool_id, "tool_id": tool_id, "revision": record.get("revision"), "hash": digest, "read_at": read_at,
             "stored_at": now, "record": record, "counts": counts(record)}
     if prev is not None and prev.get("hash") == digest:
@@ -189,8 +237,12 @@ def ingest(hub: "Hub", tool_id: str, record: dict[str, Any], *, cause: str | Non
     items: list[dict[str, Any]] = []
     if prev is not None:
         changes = _changes(hub, tool_id)
+        old_rules = {r["id"]: r for r in prev["record"].get("rules") or []}
+        new_rules = {r["id"]: r for r in record.get("rules") or []}
         for item in diff_records(prev["record"], record):
-            change_id = attribute(item, changes, prev.get("read_at") or 0, cause)
+            rule = (old_rules if item["kind"] == "rule_removed" else new_rules).get(item["subject"])
+            change_id = attribute(item, changes, prev.get("stored_at") or prev.get("read_at") or 0, cause, rule,
+                                  cause_scope, record, captured_by=prev.get("cause"))
             items.append({"id": new_id("dr_"), "tool_id": tool_id, "detected_at": now, "rev": rev,
                           "from_rev": prev["rev"], "revision": record.get("revision"), "kind": item["kind"],
                           "severity": item["severity"], "subject": item["subject"], "before": item["before"],
@@ -228,13 +280,13 @@ def ingest(hub: "Hub", tool_id: str, record: dict[str, Any], *, cause: str | Non
 
 def _prune_history(hub: "Hub", tool_id: str) -> None:
     keep = settings(hub)["history_limit"]
-    entries = sorted((d for d in hub.store.list(HISTORY) if d.get("tool_id") == tool_id), key=lambda d: -d["rev"])
-    for old in entries[keep:]:
-        hub.store.delete(HISTORY, old["id"])
+    ids = hub.store.ids_prefix(HISTORY, f"{tool_id}|")  # "<tool id>|<rev, 8 digits>": oldest first, nothing parsed
+    if len(ids) > keep:
+        hub.store.delete_many(HISTORY, ids[:len(ids) - keep])
 
 
 def _prune_drift(hub: "Hub", tool_id: str) -> None:
-    items = [d for d in hub.store.list(DRIFT) if d.get("tool_id") == tool_id]
+    items = hub.store.list_where(DRIFT, "tool_id", tool_id)
     excess = len(items) - MAX_DRIFT_PER_DEVICE
     if excess <= 0:
         return
@@ -245,7 +297,8 @@ def _prune_drift(hub: "Hub", tool_id: str) -> None:
 
 def drift(hub: "Hub", tool_id: str | None = None, status: str | None = None) -> list[dict[str, Any]]:
     """Drift items, newest first; `status`: open | attributed | acknowledged (None: all)."""
-    items = [d for d in hub.store.list(DRIFT) if (tool_id is None or d.get("tool_id") == tool_id)
+    candidates = hub.store.list(DRIFT) if tool_id is None else hub.store.list_where(DRIFT, "tool_id", tool_id)
+    items = [d for d in candidates if (tool_id is None or d.get("tool_id") == tool_id)
              and (status is None or d.get("status") == status)]
     return sorted(items, key=lambda d: (-d["detected_at"], d["id"]))
 
@@ -363,7 +416,7 @@ def store_backup(hub: "Hub", tool_id: str, taken: dict[str, Any], *, reason: str
            "content": hub.secrets.encrypt(base64.b64encode(content).decode("ascii"))}
     hub.store.put(BACKUPS, doc)
     meta = public_backup(doc)
-    prune_backups(hub, tool_id)
+    prune_backups(hub, tool_id, reason)
     hub.activity(actor, "info", f"Backed up the configuration of {_name(hub, tool_id)} ({reason}, "
                                 f"{len(content)} bytes, sha256 {digest[:12]})", tool_id=tool_id, backup_id=doc["id"])
     hub.bus.publish("device_backup", meta)
@@ -405,17 +458,37 @@ def load_backup(hub: "Hub", backup_id: str) -> Backup:
                   format=meta["format"], device_backup_id=meta.get("device_backup_id"), revision=meta.get("revision"))
 
 
-def prune_backups(hub: "Hub", tool_id: str) -> list[str]:
-    """Keep the newest `backup_retention` backups of a device; a backup an open change names is always kept."""
+def protected_backups(hub: "Hub") -> set[str]:
+    """Backups retention never deletes: the ones an open change names (its pre-change backup, the backup a restore
+    puts back), and the pre-change backup of an applied restore that was not reverted - reverting it restores that
+    backup (R3-NETCHANGE S10)."""
+    out: set[str] = set()
+    for change in hub.store.list(CHANGES):
+        status = change.get("status")
+        if status in OPEN_CHANGES:
+            out |= {change.get("backup_id"), (change.get("request") or {}).get("backup_id")}
+        elif status == "applied" and change.get("op") == "restore" and not change.get("reverted_by"):
+            out.add(change.get("backup_id"))
+    return {b for b in out if b}
+
+
+def prune_backups(hub: "Hub", tool_id: str, reason: str | None = None) -> list[str]:
+    """Keep the newest `backup_retention` backups of a device, never the protected ones (``protected_backups``) and
+    never the newest. `reason`: what was just taken - a manual backup only pushes out older manual backups, so
+    taking backups by hand again and again cannot rotate out the scheduled and pre-change recovery points."""
     keep = settings(hub)["backup_retention"]
-    named = {c.get("backup_id") for c in hub.store.list(CHANGES) if c.get("status") in OPEN_CHANGES}
-    named |= {(c.get("request") or {}).get("backup_id") for c in hub.store.list(CHANGES) if c.get("status") in OPEN_CHANGES}
+    named = protected_backups(hub)
     items = sorted((d for d in hub.store.list(BACKUPS) if d.get("tool_id") == tool_id), key=lambda d: -d["taken_at"])
+    excess = len(items) - keep
     removed = []
-    for old in items[keep:]:
-        if old["id"] not in named:
-            hub.store.delete(BACKUPS, old["id"])
-            removed.append(old["id"])
+    for old in reversed(items[1:]):  # oldest first; the newest always stays
+        if excess <= 0:
+            break
+        if old["id"] in named or (reason == "manual" and old.get("reason") != "manual"):
+            continue
+        hub.store.delete(BACKUPS, old["id"])
+        removed.append(old["id"])
+        excess -= 1
     return removed
 
 
@@ -456,6 +529,8 @@ def narrow_write(connector: Connector, reported: Any = ...) -> dict[str, Any] | 
     """What a connection may change: the connector's own write_capability(), narrowed by what its test() reported
     (`...` = nothing reported). Reports can only take away: fewer ops, None, never a capability not declared."""
     base = connector.write_capability()
+    if base is not None and base["rollback"] == "none":  # no rollback mechanism: never writable (F27)
+        return None
     if base is None or reported is ...:
         return base
     try:
@@ -578,6 +653,9 @@ def device_summary(hub: "Hub", tool_id: str, now: float | None = None) -> dict[s
         "drift": {"open": len(open_drift), "critical": sum(1 for d in open_drift if d["severity"] == "critical"),
                   "last_at": open_drift[0]["detected_at"] if open_drift else None},
         "backup": {"supported": can_backup(hub, tool_id), "count": len(backups(hub, tool_id)),
+                   # its connector can put a backup back (a restore also needs the device writable: status["capable"])
+                   "restore": bool(can_backup(hub, tool_id) and (_connector_class(hub, tool_id) or Connector)
+                                   .implements("restore_backup")),
                    "last_at": last["taken_at"] if last else None,
                    "age_s": round(now - last["taken_at"]) if last else None},
         "write": status,
@@ -629,7 +707,7 @@ def diff_text(hub: "Hub", tool_id: str, from_rev: int, to_rev: int | None = None
 
 
 def compliance_facts(hub: "Hub", now: float | None = None) -> dict[str, Any]:
-    from . import segmentation
+    from . import changes, segmentation
 
     now = now or time.time()
     out_devices = []
@@ -639,23 +717,24 @@ def compliance_facts(hub: "Hub", now: float | None = None) -> dict[str, Any]:
             continue
         record = snap["record"]
         rules = record.get("rules") or []
-        passing = [r for r in rules if r.get("enabled", True) and r.get("action") == "pass"]
+        # "pos" (the rule's place in evaluation order) is what control details name - they reach agents; "name" (the
+        # device's own rule id, reduced to safe characters) only goes into the evidence lines people read
+        refs = [{"pos": f"rule #{n}", "name": rule_ref(r)} for n, r in enumerate(rules, 1)]
+        passing = [i for i, r in enumerate(rules) if r.get("enabled", True) and r.get("action") == "pass"]
         last = last_backup(hub, tool_id)
         out_devices.append({
             "tool_id": tool_id, "ref": display_id(tool_id), "kind": record.get("kind"), "read_at": snap["read_at"],
             "stale": stale(hub, snap, now),
-            "management_exposed": [rule_ref(r) for r in rules if exposes_management(record, r)],
-            "any_any": [rule_ref(r) for r in rules if is_any_any(r)],
+            "management_exposed": [refs[i] for i, r in enumerate(rules) if exposes_management(record, r)],
+            "any_any": [refs[i] for i, r in enumerate(rules) if is_any_any(r)],
             "pass_rules": len(passing),
-            "undocumented_pass": [rule_ref(r) for r in passing if not (r.get("description") or "").strip()],
-            "unlogged_pass": sum(1 for r in passing if not r.get("log")),
+            "undocumented_pass": [refs[i] for i in passing if not (rules[i].get("description") or "").strip()],
+            "unlogged_pass": sum(1 for i in passing if not rules[i].get("log")),
             "backup_supported": can_backup(hub, tool_id), "last_backup_at": last["taken_at"] if last else None,
         })
     items = drift(hub)
     recent = [d for d in items if d["detected_at"] >= now - 30 * DAY]
     open_items = [d for d in items if d["status"] == "open"]
-    from .changes import change_facts
-
     return {
         "devices": out_devices,
         "drift": {"open": len(open_items),
@@ -665,5 +744,5 @@ def compliance_facts(hub: "Hub", now: float | None = None) -> dict[str, Any]:
                   "detected_30d": len(recent), "attributed_30d": sum(1 for d in recent if d["status"] == "attributed"),
                   "acknowledged_30d": sum(1 for d in recent if d["status"] == "acknowledged")},
         "segmentation": segmentation.compliance(hub),
-        "change_management": change_facts(hub),
+        "changes": changes.compliance_facts(hub, now),
     }

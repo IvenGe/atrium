@@ -2,19 +2,18 @@ import { get, post } from "../api.js";
 import { session } from "../auth.js";
 import { DESIGNER_LABEL, jsonView, modeView, packHref, packItems, safeUrl, summaryChips, testsView } from "../extensions.js";
 import { domainInfo, endName, scheduleLabel } from "../flows.js";
+import { OP_LABEL, changeHref, countdown, rollbackLabel, startTicker, statusBadge, stepsView, violationsBanner } from "../netchanges.js";
 import { loadIdentity, openProviderPicker } from "../sso.js";
-import { actions, badge, can, diffView, emptyState, html, icon, setHTML, timeAgo, toast } from "../ui.js";
+import { actions, badge, can, dateTime, diffView, emptyState, html, icon, setHTML, timeAgo, timeIn, toast } from "../ui.js";
 import { proposedMember } from "./agents.js";
 import { ssoPlan } from "./tools.js";
 
 const KIND_ICON = { command: "terminal", patch: "wrench", process: "play", flow: "flow", scan: "radar", repair: "wrench", agent_team: "users",
-  firewall: "shield",
-  extension: "puzzle", self_patch: "branch" };
-const KIND_LABEL = { flow: "data flow", agent_team: "agent team", self_patch: "change to Atrium", firewall: "network change" };
-const APPROVE_LABEL = { flow: "Enable flow", scan: "Start scan", agent_team: "Create team", extension: "Enable extension",
-  firewall: "Approve change" };
-// changes to Atrium itself and new agents: only administrators decide them (the server enforces it)
-const ADMIN_KINDS = new Set(["extension", "self_patch", "agent_team"]);
+  extension: "puzzle", self_patch: "branch", firewall: "firewall" };
+const KIND_LABEL = { flow: "data flow", agent_team: "agent team", self_patch: "change to Atrium", firewall: "device change" };
+const APPROVE_LABEL = { flow: "Enable flow", scan: "Start scan", agent_team: "Create team", extension: "Enable extension", firewall: "Approve change" };
+// changes to Atrium itself, new agents and network device changes: only administrators decide them (the server enforces it)
+const ADMIN_KINDS = new Set(["extension", "self_patch", "agent_team", "firewall"]);
 const DESIGNER = { templates: "templates", claude: "designed by Claude", auto: "automatic" };
 const DIAGNOSIS = {
   credentials: "credentials refused", base_path: "API path", validation: "rejected data", unreachable: "unreachable", unknown: "unknown error",
@@ -35,7 +34,9 @@ function flowDetails(p, names) {
     <dt>Data</dt><dd>${domainInfo(p.domain).label}${p.action === "scan" ? " (scan in-scope assets)" : ""}</dd>
     <dt>From</dt><dd>${endName(p.source, p.domain, names)}</dd><dt>To</dt><dd>${endName(p.target, p.domain, names)}</dd>
     <dt>Schedule</dt><dd>${scheduleLabel(p.schedule_minutes)} <span class="faint">(changeable later in the Integration hub)</span></dd>
-    <dt>Tool</dt><dd>${toolLink(p.tool_id, names)}</dd></dl>`;
+    <dt>Tool</dt><dd>${toolLink(p.tool_id, names)}</dd>
+    ${p.proposed_by ? html`<dt>Proposed by</dt><dd>${p.proposed_by}</dd>` : ""}</dl>
+    ${p.flow_id ? html`<p style="margin:-4px 0 10px"><a href="#/integration/map/flow/${encodeURIComponent(p.flow_id)}">${icon("plug")} Open on map</a></p>` : ""}`;
 }
 
 function scanDetails(p, names) {
@@ -107,26 +108,88 @@ function selfPatchDetails(a, names) {
       : html`<p class="warn-text" style="font-size:12.5px">The self-patch no longer exists - reject this request.</p>`}`;
 }
 
-// Local model provider names for team proposals and the self-patch guardrails (loaded only while one is waiting).
+/** A network device change (kind firewall): what it does, the policy violations, who proposed it and why, when it would be
+ *  applied, and when the approval expires. The diff and steps carry device text: rendered as text only. */
+function firewallDetails(a, names) {
+  const p = a.payload;
+  const c = a.firewall_change;
+  const mine = proposedByMe(p);
+  const mw = c?.maintenance || p.maintenance || {}; // as of now (windows added since the proposal count), else the proposal-time copy
+  const when = c?.status === "scheduled" ? html`scheduled${c.scheduled_for ? html` for ${dateTime(c.scheduled_for)}` : " - waits for a maintenance window"}`
+    : !mw.required ? "at once after approval (no maintenance window required)"
+      : mw.open ? html`now: the window "${mw.open.name}" is open` : mw.next ? html`in the next maintenance window, ${dateTime(mw.next.start)} (${timeIn(mw.next.start)})`
+        : html`<span class="warn-text">when a maintenance window that covers the device exists - none yet</span>`;
+  const expired = p.expires_at && p.expires_at <= Date.now() / 1000;
+  // the next window opens only after this approval expires: it can only be applied as an emergency
+  const late = c?.status === "scheduled" ? c.expires_before_window : !c || c.status === "proposed" ? mw.expires_before_window : false;
+  return html`${violationsBanner(p.violations)}
+    ${p.policy_unknown ? html`<div class="notice warn">${icon("alert")}<div style="min-width:0"><b>The segmentation policy could not be checked</b>
+      <div class="muted" style="font-size:12.5px">No stored snapshot has this backup's revision, so Atrium cannot compare its rules with the current ones: the restore may re-open
+        traffic the policy forbids. Only an administrator could propose it, with a justification.</div></div></div>` : ""}
+    ${late ? html`<div class="notice warn">${icon("calendar")}<div style="min-width:0"><b>The approval expires before the next maintenance window opens</b>
+      <div class="muted" style="font-size:12.5px">Approved, the change waits for that window and expires first - unless an administrator applies it as an emergency.
+        Propose it again closer to the window, or add an earlier window in Settings > Network changes.</div></div></div>` : ""}
+    <div class="nc-card-meta">
+      <div><b>Device</b><a href="#/network/${encodeURIComponent(p.firewall)}">${names[p.firewall] || p.firewall}</a></div>
+      <div><b>Operation</b>${OP_LABEL[p.op] || p.op}${c && c.status !== "proposed" ? html` ${statusBadge(c.status)}` : ""}</div>
+      <div><b>Proposed by</b>${p.proposed_by}${mine ? " (you)" : ""}</div>
+      <div><b>Applied</b>${when}</div>
+      <div><b>Rollback</b>${rollbackLabel(p.rollback)}</div>
+      <div><b>Expires</b>${expired ? html`<span class="warn-text">expired ${timeAgo(p.expires_at)}</span>` : html`${dateTime(p.expires_at)} (${countdown(p.expires_at)})`}</div>
+      ${p.impact ? html`<div><b>Impact</b>${p.impact.assets} asset${p.impact.assets === 1 ? "" : "s"} in ${(p.impact.zones || []).length} zone${(p.impact.zones || []).length === 1 ? "" : "s"}</div>` : ""}
+      <div><b>Bound to</b><span class="mono" title="Applying re-reads the device: another revision, or other operations, and nothing is applied">revision ${p.base_revision || "-"}, ${String(p.ops_hash || "").slice(0, 19)}</span></div>
+      ${p.revert_of ? html`<div><b>Reverts</b><a href="${changeHref(p.firewall, p.revert_of)}">${p.revert_of}</a></div>` : ""}
+      ${p.op === "restore" && p.backup_id ? html`<div><b>Backup</b><a class="mono" href="#/network/${encodeURIComponent(p.firewall)}/backups">${p.backup_id}</a></div>` : ""}</div>
+    ${p.justification ? html`<div style="margin-bottom:10px"><b style="font-size:12.5px">Justification</b><div class="nc-just">${p.justification}</div></div>` : ""}
+    ${p.steps?.length ? html`<div style="margin-bottom:10px">${stepsView(p.steps)}</div>` : ""}
+    ${collapsibleDiff(p.diff, "the diff")}
+    <p class="faint" style="font-size:12px;margin-top:6px">Rule text in the diff comes from the device. A backup is taken before applying (unless that guardrail is off); the change is verified and
+      rolled back automatically when the checks fail. <a href="${changeHref(p.firewall, p.change_id)}">Open the change</a>
+      ${p.edge ? html` · <a href="#/integration/segmentation/change/${encodeURIComponent(p.change_id)}">${icon("network")} Open on map</a>` : ""}</p>`;
+}
+
+/** Whether the signed-in person proposed it - themselves, or with an API token they created (``proposer_ids``). */
+function proposedByMe(p) {
+  const me = session.user?.username;
+  return !!me && [p.proposed_by, ...(p.proposer_ids || [])].includes(me);
+}
+
+/** Why this person may not approve (the server refuses it too): the second-person rule, or an expired approval. */
+function approveBlock(a) {
+  const p = a.payload || {};
+  if (p.expires_at && p.expires_at <= Date.now() / 1000) return "This approval has expired: the change must be proposed again.";
+  if (!proposedByMe(p)) return null;
+  const rule = a.kind === "firewall" ? "device_changes_need_second_person" : "approvals_need_second_person";
+  if (!secondPerson[rule]) return null; // switched off (or unknown): the server decides
+  return "You proposed this, so another administrator approves it (second-person rule). You can still reject it.";
+}
+
+// Local model provider names for team proposals, the self-patch guardrails and the second-person switches (loaded only
+// while such an approval is waiting).
 let providerNames = {};
 let selfPatching = {};
+let secondPerson = {};
 
-function firewallDetails(a) {
-  const p = a.payload || {};
-  const violations = p.violations || [];
-  return html`<p class="faint" style="font-size:12.5px">Proposed by <b>${p.proposed_by || "unknown"}</b>
-    ${p.justification ? html` · ${p.justification}` : ""}</p>
-    ${violations.length ? html`<div class="notice bad">${icon("alert")}<div><b>Violates ${violations.map((v) => v.control || "policy").join(", ")}</b></div></div>` : ""}
-    ${p.diff ? diffView(p.diff) : ""}`;
+/** A command on the hub machine or starting a tool runs with Atrium's own privileges: only administrators approve it,
+ * operators may reject it (the server enforces it). */
+function runsOnHub(a) {
+  if (a.kind === "command") return (a.payload.target || "local") === "local";
+  return a.kind === "process" && a.payload.action !== "stop";
+}
+
+/** A repair of a network device's connection: only administrators approve it (the server enforces it). */
+function deviceRepair(a) {
+  return a.kind === "repair" && !!a.payload.device;
 }
 
 function pendingCard(a, names) {
   const p = a.patch;
   const admin = ADMIN_KINDS.has(a.kind);
-  const firewallOwn = a.kind === "firewall" && session.user && a.payload?.proposed_by === session.user.username;
-  const firewallBlocked = a.kind === "firewall" && (!can("admin") || firewallOwn);
+  const hostRun = runsOnHub(a);
+  const adminApproves = hostRun || deviceRepair(a);
   const tests = a.self_patch?.tests || a.payload.tests;
   const blocked = a.kind === "self_patch" && selfPatching.requires_tests && !tests?.ok;
+  const refused = approveBlock(a);
   const approveLabel = a.kind === "repair" ? (a.payload.change ? "Apply" : "Approve & retry")
     : a.kind === "self_patch" ? ((a.self_patch?.mode || a.payload.mode) === "pull_request" ? "Approve & open pull request" : "Approve & merge")
       : APPROVE_LABEL[a.kind] || "Approve";
@@ -135,7 +198,8 @@ function pendingCard(a, names) {
       <div class="row" style="flex-wrap:nowrap;align-items:flex-start;gap:12px;min-width:0">
         <div class="stat-icon">${icon(a.kind === "process" && a.payload.action === "stop" ? "stop" : KIND_ICON[a.kind] || "checkCircle")}</div>
         <div style="min-width:0"><h3 style="overflow-wrap:anywhere">${a.title}</h3>
-          <div class="faint" style="font-size:12px">requested by <b>${a.requested_by}</b> - ${timeAgo(a.created_at)}</div></div></div>
+          <div class="faint" style="font-size:12px">${a.kind === "firewall" ? html`proposed by <b>${a.payload.proposed_by}</b> through the Network Supervisor`
+            : html`requested by <b>${a.requested_by}</b>`} - ${timeAgo(a.created_at)}</div></div></div>
       ${badge(KIND_LABEL[a.kind] || a.kind, "accent")}</div>
     ${a.detail && a.kind !== "agent_team" ? html`<p class="muted" style="margin:10px 0;white-space:pre-line;overflow-wrap:anywhere">${a.kind === "self_patch" ? a.self_patch?.rationale || a.detail : a.detail}</p>` : ""}
     ${a.kind === "command" ? html`<dl class="kv" style="margin:10px 0"><dt>Target</dt><dd>${a.payload.target}</dd>
@@ -146,7 +210,7 @@ function pendingCard(a, names) {
     ${a.kind === "agent_team" ? teamDetails(a.payload, names) : ""}
     ${a.kind === "extension" ? extensionDetails(a, names) : ""}
     ${a.kind === "self_patch" ? selfPatchDetails(a, names) : ""}
-    ${a.kind === "firewall" ? firewallDetails(a) : ""}
+    ${a.kind === "firewall" ? firewallDetails(a, names) : ""}
     ${p ? html`<div class="row" style="margin:6px 0 10px;gap:6px"><span class="badge">${p.target}</span><span class="badge">${p.strategy.replace(/_/g, " ")}</span>
         ${p.target === "repo" ? html`<span class="faint" style="font-size:12px">applied on a new git branch in a separate worktree - your checkout is not touched</span>` : ""}
         ${p.sso ? html`<span class="spacer"></span><button class="btn sm" data-act="sso-change" data-tool="${a.payload.tool_id}" data-provider="${p.sso.provider}"
@@ -156,19 +220,27 @@ function pendingCard(a, names) {
     <div class="row" style="margin-top:12px" data-min-role="${admin ? "admin" : "operator"}">
       <input placeholder="Note (optional)" data-note="${a.id}" style="flex:1;min-width:180px" aria-label="Note">
       <button class="btn" data-act="reject" data-id="${a.id}">${icon("x")}Reject</button>
-      ${firewallBlocked ? "" : html`<button class="btn ok" data-act="approve" data-id="${a.id}" ${blocked ? "disabled" : ""}
+      ${refused ? "" : html`<button class="btn ok" data-act="approve" data-id="${a.id}" ${blocked ? "disabled" : ""} ${adminApproves ? html`data-min-role="admin"` : ""}
         title="${blocked ? "The tests failed: it cannot be approved while the guardrail \"Self-patches must pass the tests\" is on" : ""}">${icon("check")}${approveLabel}</button>`}
     </div>
-    ${a.kind === "firewall" && !can("admin") ? html`<p class="faint" style="margin-top:8px;font-size:12.5px">Only an administrator can approve a network change.</p>` : ""}
-    ${firewallOwn ? html`<p class="faint" style="margin-top:8px;font-size:12.5px">You proposed this change. Someone else has to approve it.</p>` : ""}
+    ${refused ? html`<p class="faint" style="margin-top:8px;font-size:12.5px" data-min-role="${admin ? "admin" : "operator"}">${refused}</p>` : ""}
     ${admin && !can("admin") ? html`<p class="faint" style="margin-top:12px;font-size:12.5px">${a.kind === "agent_team"
       ? "Only administrators decide new agent teams (they create agent definitions)."
-      : "Only administrators decide changes to Atrium itself (extensions and self-patches)."}</p>` : ""}</section>`;
+      : a.kind === "firewall" ? "Only an administrator who did not propose it approves a network device change."
+        : "Only administrators decide changes to Atrium itself (extensions and self-patches)."}</p>` : ""}
+    ${hostRun && !can("admin") ? html`<p class="faint" style="margin-top:12px;font-size:12.5px">Only administrators approve this: it runs on the
+      hub machine with Atrium's own privileges. You can still reject it.</p>` : ""}
+    ${deviceRepair(a) && !can("admin") ? html`<p class="faint" style="margin-top:12px;font-size:12.5px">Only administrators approve a repair of a
+      network device's connection. You can still reject it.</p>` : ""}</section>`;
 }
 
 /** The history's result column: links for pull requests, "Apply again" for a self-patch that could not be applied. */
 function resultCell(a) {
   const r = a.result;
+  if (a.kind === "firewall" && a.firewall_change) {
+    const c = a.firewall_change;
+    return html`${statusBadge(c.status)} <a href="${changeHref(c.firewall, c.id)}">${c.id}</a>${r?.error ? html`<div>${r.error}</div>` : ""}`;
+  }
   if (!r || r.error) return resultText(a);
   if (a.kind === "extension" && r.enabled !== undefined) return `${r.enabled ? "enabled" : "not enabled"}${r.notes?.length ? ` - ${r.notes.join("; ")}` : ""}`;
   if (a.kind !== "self_patch") return resultText(a);
@@ -210,9 +282,13 @@ export async function render(el, ctx) {
     if (pending.some((a) => a.kind === "self_patch")) {
       selfPatching = await get("/self-patches").then((r) => r.availability).catch(() => ({}));
     }
+    if (pending.some((a) => a.payload?.proposed_by)) {
+      secondPerson = await get("/settings").then((r) => r.guardrails || {}).catch(() => ({}));
+    }
     setHTML(el, html`
       <div class="page-head"><div><h1>Approvals</h1><p class="muted">Agents ask before they change anything: commands, patches, data flows, scans, repairs, new agent teams,
-        extensions and changes to Atrium's own code. Commands typed by a person in the Operator run directly.</p></div></div>
+        extensions, changes to Atrium's own code and network device changes. Commands an administrator types in the Operator run directly; an operator's commands
+        on the hub machine (other than read-only ones) and tool starts wait here for an administrator.</p></div></div>
       <div class="tabs"><button class="${tab === "pending" ? "active" : ""}" data-act="tab" data-tab="pending">Waiting (${pending.length})</button>
         <button class="${tab === "history" ? "active" : ""}" data-act="tab" data-tab="history">History (${history.length})</button></div>
       ${tab === "pending" ? (pending.length ? html`<div class="stack">${pending.map((a) => pendingCard(a, names))}</div>`
@@ -259,5 +335,6 @@ export async function render(el, ctx) {
     },
   });
   await draw();
-  ctx.live(["approval"], draw, 400);
+  startTicker(el);
+  ctx.live(["approval", "firewall_change"], draw, 400);
 }

@@ -7,13 +7,14 @@ import re
 from pathlib import Path
 from typing import Any
 
+from ..approvals import sender_person
 from ..bus import Message
 from ..extensions import gaps as extension_gaps
 from ..extensions import registry as extension_registry
 from ..integration import connections, flows, identity, importer, strategies
 from ..integration.compatibility import evaluate_suite, suite_matrix
 from ..integration.identity import SSO_STRATEGIES
-from ..models import AGENT_PERMISSIONS
+from ..models import AGENT_PERMISSIONS, strip_url_credentials
 from . import teams, toolkit
 from .base import BaseAgent
 
@@ -71,7 +72,7 @@ class HubSupervisor(BaseAgent):
         tool = self.hub.get_tool(body["tool_id"])
         if tool is None:
             raise ValueError("Unknown tool")
-        self.log("info", f"Importing {tool.name} from {tool.source_type}: {tool.source}")
+        self.log("info", f"Importing {tool.name} from {tool.source_type}: {strip_url_credentials(tool.source)}")
         tool = await importer.materialize(self.hub, tool, body.get("branch"))
         if tool.status == "error":
             self.log("error", f"Import of {tool.name} failed: {tool.error}")
@@ -166,19 +167,6 @@ class HubSupervisor(BaseAgent):
 
     # -- data flows --------------------------------------------------------------------
 
-    async def on_flows_create(self, body: dict[str, Any], msg: Message) -> dict[str, Any]:
-        """A person asked for one data flow (the integration map). requested_by stays this supervisor so
-        on_approval_decided still applies it."""
-        try:
-            result = flows.create_explicit(
-                self.hub, domain=str(body.get("domain") or ""), source=str(body.get("source") or ""),
-                target=str(body.get("target") or ""), action=body.get("action"),
-                actor=str(body.get("actor") or msg.sender),
-                schedule_minutes=body.get("schedule_minutes"), options=body.get("options"))
-        except flows.FlowError as exc:
-            return {"ok": False, "http_status": exc.status, **exc.body()}
-        return {"ok": True, "flow": flows.public(self.hub, result["flow"]), "approval_id": result["approval_id"]}
-
     async def on_flows_plan(self, body: dict[str, Any], msg: Message) -> dict[str, Any]:
         """Propose the data flows the connections make possible (see integration/strategies.py)."""
         created = strategies.propose(self.hub, self.id)
@@ -187,6 +175,20 @@ class HubSupervisor(BaseAgent):
             self.log("info", f"{verb} {len(created)} data flow(s): " + "; ".join(f.title for f in created))
         await self.propose_teams()
         return {"proposed": [flows.public(self.hub, f) for f in created]}
+
+    async def on_flows_create(self, body: dict[str, Any], msg: Message) -> dict[str, Any]:
+        """A data flow a person drew on the integration map (POST /api/flows): the planner's rules decide whether it
+        may exist (strategies.create_flow); a proposal is requested by this agent, so approving it enables the flow
+        here. The proposer is the sender when a person sent it - never a name in the body."""
+        actor = sender_person(msg.sender) or msg.sender
+        try:
+            flow, approval = strategies.create_flow(
+                self.hub, domain=str(body.get("domain") or ""), source=str(body.get("source") or ""),
+                target=str(body.get("target") or ""), action=body.get("action"),
+                schedule_minutes=body.get("schedule_minutes"), options=body.get("options") or {}, actor=actor)
+        except strategies.FlowRefused as exc:
+            return {"refused": exc.as_dict()}
+        return {"flow": flows.public(self.hub, flow), "approval_id": approval.id if approval else None}
 
     async def propose_teams(self) -> list[str]:
         """Tools with a connection get an agent team proposal - once (see ToolSupervisor.on_team_propose)."""
@@ -205,13 +207,26 @@ class HubSupervisor(BaseAgent):
         if approval is None or approval.kind != "flow":
             return
         flow = flows.get(self.hub, approval.payload.get("flow_id", ""))
+        conflict = None
         if flow is not None and flow.status == "proposed":
-            flow.status = "enabled" if body.get("approved") else "disabled"
+            # the loop rule: never enable a pull next to an enabled push of the same domain for a tool (or the reverse)
+            conflict = strategies.loop_conflict(flows.all_flows(self.hub), *flows.key(flow), exclude=flow.id,
+                                                states=("enabled",)) if body.get("approved") else None
+            flow.status = "enabled" if body.get("approved") and conflict is None else "disabled"
             flow.approval_id = None
+            if not body.get("approved"):  # a rejection stays binding: enabling the flow later proposes it again
+                flow.rejected = approval.id
             flows.save(self.hub, flow)
-            self.log("info", f"Data flow {flow.status}: {flow.title}", flow_id=flow.id)
+            if conflict is not None:
+                self.log("warn", f"Data flow not enabled: {flow.title} - "
+                         + strategies.loop_message(self.hub, flow.domain, flow.source, flow.target), flow_id=flow.id)
+            else:
+                self.log("info", f"Data flow {flow.status}: {flow.title}", flow_id=flow.id)
         if body.get("approved"):  # a rejected proposal stays "rejected"; the flow stays as a disabled record
-            self.hub.approvals.complete(approval.id, flow is not None, {"status": flow.status if flow else "removed"})
+            result: dict[str, Any] = {"status": flow.status if flow else "removed"}
+            if conflict is not None:
+                result.update(error="flow_conflict", flow_id=conflict.id)
+            self.hub.approvals.complete(approval.id, flow is not None and conflict is None, result)
 
     async def on_flow_failed(self, body: dict[str, Any], msg: Message) -> dict[str, Any]:
         """A flow failed again: after REPAIR_AFTER consecutive failures, ask the Patch Agent for a repair (once - until
@@ -252,25 +267,26 @@ class HubSupervisor(BaseAgent):
 
     async def on_chat(self, body: dict[str, Any], msg: Message) -> dict[str, Any]:
         text = str(body.get("text", "")).strip()
+        person = msg.sender if sender_person(msg.sender) else None  # commands asked for in chat are judged by them (F1)
         if self.hub.llm.available:
             try:
-                return {"reply": await self._llm_chat(text), "mode": "llm"}
+                return {"reply": await self._llm_chat(text, person), "mode": "llm"}
             except Exception as exc:  # fall back to rules on any API failure
                 note = f"(Claude unavailable: {exc.__class__.__name__}. Falling back to built-in commands.)\n\n"
-                return {"reply": note + await self._rules_chat(text), "mode": "rules"}
-        return {"reply": await self._rules_chat(text), "mode": "rules"}
+                return {"reply": note + await self._rules_chat(text, person), "mode": "rules"}
+        return {"reply": await self._rules_chat(text, person), "mode": "rules"}
 
     async def on_chat_reset(self, body: dict[str, Any], msg: Message) -> dict[str, Any]:
         async with self._chat_lock:
             self._history = []
         return {"ok": True}
 
-    async def _llm_chat(self, text: str) -> str:
+    async def _llm_chat(self, text: str, person: str | None = None) -> str:
         async with self._chat_lock:
             if len(self._history) > 80:  # start a fresh conversation instead of editing history
                 self._history = []
             self._history.append({"role": "user", "content": text})
-            ctx = toolkit.ToolContext(self.hub, self, frozenset(self.permissions))
+            ctx = toolkit.ToolContext(self.hub, self, frozenset(self.permissions), requested_by=person)
 
             async def run(name: str, args: dict[str, Any]) -> Any:
                 return await toolkit.execute(ctx, name, args)
@@ -278,7 +294,7 @@ class HubSupervisor(BaseAgent):
             return await toolkit.claude_loop(self.hub, self._history, system=self.instructions,
                                              tools=toolkit.definitions(ctx.permissions), model=self.model, run=run)
 
-    async def _rules_chat(self, text: str) -> str:
+    async def _rules_chat(self, text: str, person: str | None = None) -> str:
         low = text.lower().strip()
         if not low or low in ("help", "?", "hi", "hello"):
             return HELP
@@ -314,7 +330,7 @@ class HubSupervisor(BaseAgent):
             if verb == "patch":
                 result = await self.ask("patcher", "propose", {"tool_id": tool.id}, timeout=600)
                 return f"The Patch Agent proposed {len(result['patches'])} patch(es) for {tool.name}; see Approvals."
-            result = await self.ask(f"tool:{tool.id}", verb, timeout=60)
+            result = await self.ask(f"tool:{tool.id}", verb, {"requested_by": person}, timeout=60)
             return f"{verb.capitalize()} {tool.name}: {result.get('status', result)}"
         match = re.match(r"^(?:run|exec)\s+(?:on\s+([\w.-]+)\s*:\s*)?(.+)$", text.strip(), re.IGNORECASE | re.DOTALL)
         if match:
@@ -325,7 +341,8 @@ class HubSupervisor(BaseAgent):
                 if host is None:
                     return f"I don't know a host called '{host_name}'."
                 target = host.id
-            result = await self.ask("operator", "run", {"target": target, "command": command, "reason": "Requested in chat"}, timeout=900)
+            result = await self.ask("operator", "run", {"target": target, "command": command, "reason": "Requested in chat",
+                                                        "requested_by": person}, timeout=900)
             if result["status"] == "done":
                 return f"Exit code {result['exit_code']}:\n```\n{result['output'][-3000:]}\n```"
             return f"{result['status'].replace('_', ' ').capitalize()}: {result.get('reason', '')}"

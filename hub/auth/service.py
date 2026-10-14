@@ -17,13 +17,18 @@ from fastapi import Depends, HTTPException, Request, Response
 from ..models import ApiToken, User, normalize_username
 from .oidc import OidcClient, OidcIdentity
 from .passwords import dummy_hash, hash_password, validate_password, verify_password
-from .policy import ROLES
+from .policy import ROLE_RANK, ROLES
 
 if TYPE_CHECKING:
     from ..core import Hub
 
 SESSION_COOKIE = "atrium_session"
 STATE_COOKIE = "atrium_oidc_state"
+# Set by a successful password sign-in: that browser's attempts for that username are counted on their own, so failed
+# guesses from the same address (everyone behind one proxy) cannot lock its owner out (review F16).
+DEVICE_COOKIE = "atrium_device"
+DEVICE_DAYS = 180
+SSO_LOG_PER_IP, SSO_LOG_TOTAL = 20, 200  # single sign-on failures logged per THROTTLE_WINDOW (review F15)
 TOKEN_PREFIX = "atr_"
 TOUCH_INTERVAL = 60  # seconds between last_seen / last_used writes
 THROTTLE_WINDOW = 15 * 60
@@ -49,6 +54,7 @@ class Principal:
     bus_id: str  # sender id of bus messages sent on their behalf
     session_id: str | None = None
     must_change_password: bool = False
+    owner_id: str | None = None  # an API token's owning account (F2)
 
 
 def sha256(value: str) -> str:
@@ -97,18 +103,19 @@ class Throttle:
             bucket.pop(key, None)
         return times
 
-    def retry_after(self, username: str, ip: str) -> int | None:
-        """Seconds until the next attempt is allowed; None when not locked out."""
+    def retry_after(self, username: str, ip: str, per_ip: bool = True) -> int | None:
+        """Seconds until the next attempt is allowed; None when not locked out. `ip` is the client's address, or a
+        known browser ("device:<id>") whose attempts do not count towards an address (per_ip False)."""
         unlock = []
         user = self._recent(self._by_user, (username, ip))
         if len(user) >= MAX_USER_FAILURES:
             unlock.append(user[-MAX_USER_FAILURES] + THROTTLE_WINDOW)
-        by_ip = self._recent(self._by_ip, ip)
+        by_ip = self._recent(self._by_ip, ip) if per_ip else []
         if len(by_ip) >= MAX_IP_FAILURES:
             unlock.append(by_ip[-MAX_IP_FAILURES] + THROTTLE_WINDOW)
         return max(1, math.ceil(max(unlock) - time.time())) if unlock else None
 
-    def attempt(self, username: str, ip: str) -> float:
+    def attempt(self, username: str, ip: str, per_ip: bool = True) -> float:
         """Count an attempt as failed up front, so parallel guesses cannot slip past the limit while a password
         is being verified; returns its timestamp for cancel() / succeeded()."""
         if len(self._by_user) > 10_000:  # keep memory bounded under a spray of usernames
@@ -116,7 +123,8 @@ class Throttle:
                 self._recent(self._by_user, key)
         now = time.time()
         self._by_user.setdefault((username, ip), []).append(now)
-        self._by_ip.setdefault(ip, []).append(now)
+        if per_ip:
+            self._by_ip.setdefault(ip, []).append(now)
         return now
 
     def cancel(self, username: str, ip: str, ts: float) -> None:
@@ -141,6 +149,7 @@ class AuthService:
         self.oidc = OidcClient(sso_settings.effective(hub)[0])
         self.setup_token: str | None = None
         self.throttle = Throttle()
+        self._sso_log: list[tuple[float, str]] = []  # (time, ip) of logged single sign-on failures
 
     # -- first run -------------------------------------------------------------------
 
@@ -269,6 +278,9 @@ class AuthService:
         self._save_user(user)
         if user.disabled:
             self.revoke_sessions(user.id)
+            tokens = self.revoke_owned_tokens(user)  # F2: a disabled account's tokens end with its sessions
+            if tokens:
+                notes.append(f"revoked {tokens} API token(s)")
         if notes:
             self.hub.activity(principal.actor, "info", f"Updated account {user.username}: {', '.join(notes)}", user_id=user.id)
         return user
@@ -301,47 +313,91 @@ class AuthService:
             raise AuthError(400, "You cannot delete your own account.")
         self._guard_last_admin(user)
         self.revoke_sessions(user.id)
+        tokens = self.revoke_owned_tokens(user)
         self.store.delete("users", user.id)
-        self.hub.activity(principal.actor, "info", f"Deleted account {user.username}", user_id=user.id)
+        self.hub.activity(principal.actor, "info", f"Deleted account {user.username}"
+                          + (f" and revoked {tokens} API token(s) it owned" if tokens else ""), user_id=user.id)
 
     # -- signing in ------------------------------------------------------------------
 
-    def _check_throttle(self, username: str, ip: str) -> None:
-        wait = self.throttle.retry_after(username, ip)
+    def _check_throttle(self, username: str, ip: str, per_ip: bool = True) -> None:
+        wait = self.throttle.retry_after(username, ip, per_ip)
         if wait is not None:
             minutes = max(1, math.ceil(wait / 60))
             raise AuthError(429, f"Too many failed sign-ins. Try again in {minutes} minute{'s' if minutes != 1 else ''}.",
                             {"Retry-After": str(wait)})
 
-    def _begin_attempt(self, username: str, ip: str) -> float:
-        self._check_throttle(username, ip)
-        return self.throttle.attempt(username, ip)
+    def _begin_attempt(self, username: str, ip: str, per_ip: bool = True) -> float:
+        self._check_throttle(username, ip, per_ip)
+        return self.throttle.attempt(username, ip, per_ip)
 
-    def _failed(self, username: str, ip: str) -> None:
+    def _failed(self, username: str, ip: str, per_ip: bool = True, shown_ip: str | None = None) -> None:
         """Log a failed attempt (already counted by _begin_attempt), and the lockout it may start."""
         name = _printable(username)
         what = "first-run setup attempt" if username == "#setup" else f"sign-in for {name}"
-        self.hub.activity("auth", "warn", f"Failed {what}", username=name, ip=ip)
-        if self.throttle.retry_after(username, ip) is not None:
-            self.hub.activity("auth", "warn", f"Locked out {name} from {ip} after repeated failures",
-                              username=name, ip=ip, minutes=THROTTLE_WINDOW // 60)
+        where = shown_ip or ip
+        self.hub.activity("auth", "warn", f"Failed {what}", username=name, ip=where)
+        if self.throttle.retry_after(username, ip, per_ip) is not None:
+            self.hub.activity("auth", "warn", f"Locked out {name} from {where}"
+                              + ("" if per_ip else " (a browser it signed in from before)") + " after repeated failures",
+                              username=name, ip=where, minutes=THROTTLE_WINDOW // 60)
+
+    # -- known browsers (review F16) -------------------------------------------------
+
+    def device_of(self, request: Request, username: str) -> str | None:
+        """The id of this browser when it signed in as `username` before (its device cookie), else None."""
+        raw = request.cookies.get(DEVICE_COOKIE)
+        if not raw or len(raw) > 512:
+            return None
+        try:
+            name, _, device = self.hub.secrets.decrypt(raw + "=" * (-len(raw) % 4)).partition("|")
+        except Exception:  # not ours, tampered with, or no key: an unknown browser
+            return None
+        return device if device and hmac.compare_digest(name.encode(), username.encode()) else None
+
+    def remember_device(self, user: User, request: Request, response: Response) -> None:
+        try:
+            value = self.hub.secrets.encrypt(f"{user.username}|{secrets.token_urlsafe(12)}").rstrip("=")
+        except Exception:  # no usable key: sign-in works, the browser is just not remembered
+            return
+        response.set_cookie(DEVICE_COOKIE, value, max_age=DEVICE_DAYS * DAY, path="/api/auth",
+                            secure=self.secure_cookies(request), httponly=True, samesite="strict")
+
+    # -- single sign-on failures in the activity log (review F15) ---------------------
+
+    def log_sso_failure(self, text: str, ip: str) -> None:
+        """An activity entry for a failed single sign-on: at most SSO_LOG_PER_IP per address and SSO_LOG_TOTAL in all
+        per THROTTLE_WINDOW (the SSO routes are public), then one note that further failures are not logged."""
+        now = time.time()
+        self._sso_log = [(t, a) for t, a in self._sso_log if t > now - THROTTLE_WINDOW]
+        mine = sum(1 for _, a in self._sso_log if a == ip)
+        if mine >= SSO_LOG_PER_IP or len(self._sso_log) >= SSO_LOG_TOTAL:
+            return
+        self._sso_log.append((now, ip))
+        self.hub.activity("auth", "warn", text, ip=ip)
+        if mine + 1 >= SSO_LOG_PER_IP or len(self._sso_log) >= SSO_LOG_TOTAL:
+            whom = f"from {ip}" if mine + 1 >= SSO_LOG_PER_IP else "from anywhere"
+            self.hub.activity("auth", "warn", f"Further single sign-on failures {whom} are not logged for "
+                                              f"{THROTTLE_WINDOW // 60} minutes", ip=ip)
 
     async def login(self, username: str, password: str, request: Request) -> User:
         ip = client_ip(request)
         name = username.strip().lower()
         key = name[:64]  # bounded throttle key
-        attempt = self._begin_attempt(key, ip)
+        device = self.device_of(request, key)  # a browser this user signed in from before: counted on its own
+        where, per_ip = (f"device:{device}", False) if device else (ip, True)
+        attempt = self._begin_attempt(key, where, per_ip)
         user = self.find_user(name)
         stored = user.password_hash if user else None
         # Unknown users are verified against a dummy hash so timing does not reveal which usernames exist.
         ok = await asyncio.to_thread(verify_password, password, stored or dummy_hash())
         if user is None or stored is None or not ok:
-            self._failed(key, ip)
+            self._failed(key, where, per_ip, shown_ip=ip)
             raise AuthError(401, "Invalid username or password.")
         if user.disabled:
-            self.throttle.cancel(key, ip, attempt)
+            self.throttle.cancel(key, where, attempt)
             raise AuthError(403, "This account is disabled.")
-        self.throttle.succeeded(key, ip, attempt)
+        self.throttle.succeeded(key, where, attempt)
         user.last_login = time.time()
         self._save_user(user)
         self.hub.activity(user.username, "info", "Signed in", ip=ip, method="password")
@@ -376,18 +432,40 @@ class AuthService:
     def provision_oidc(self, identity: OidcIdentity, request: Request) -> User:
         """Find or create the account behind a single sign-on identity and sync its role."""
         subject = f"{identity.issuer}|{identity.subject}"
-        role = identity.role if identity.role in ROLES else self.settings.oidc_default_role
+        role = identity.role  # OidcClient.role_for: a claim value, else the effective default role (may be "none")
         user = next((u for u in self.users() if u.oidc_subject == subject), None)
+        if user is not None and user.disabled:
+            raise AuthError(403, "This account is disabled.")
+        if role not in ROLES:  # default role "none": not in an Atrium group at the provider (review F18)
+            if user is not None:
+                revoked = self.revoke_sessions(user.id)
+                self.hub.activity("auth", "warn", f"Refused the single sign-on of {user.username}: no Atrium group at "
+                                                  "the identity provider any more", user_id=user.id, sessions_revoked=revoked)
+            raise AuthError(403, "Your account is not in an Atrium group at the identity provider. Ask an administrator "
+                                 "for access.")
+        if self.setup_required and role != "admin":  # review F28: setup stays possible until an administrator exists
+            raise AuthError(403, "Atrium is not set up yet: its administrator signs in first (the setup link printed at "
+                                 "start-up, or single sign-on as an admin).")
         if user is None:
             user = User(username=self._free_username(identity.username or identity.email or "user"),
                         display_name=(identity.name or "").strip(), email=identity.email or None, role=role,  # type: ignore[arg-type]
                         auth_source="oidc", oidc_subject=subject)
             self.hub.activity("auth", "info", f"Created {role} account {user.username} from single sign-on", user_id=user.id)
-        elif user.disabled:
-            raise AuthError(403, "This account is disabled.")
         elif user.role != role:
-            self.hub.activity("auth", "info", f"Role of {user.username} synced from the identity provider: {user.role} -> {role}")
+            if user.role == "admin" and not [u for u in self.users() if u.role == "admin" and not u.disabled and u.id != user.id]:
+                # review F29: the last enabled administrator is never demoted (as update_user and delete_user)
+                self.hub.activity("auth", "warn", f"Kept {user.username} as admin although the identity provider gives "
+                                                  f"{role}: they are the last enabled administrator - make someone else "
+                                                  "an admin first", user_id=user.id)
+                role = "admin"
+            else:
+                self.hub.activity("auth", "info", f"Role of {user.username} synced from the identity provider: {user.role} -> {role}")
         user.role = role  # type: ignore[assignment]
+        if identity.email and user.email and identity.email.strip().lower() != user.email.strip().lower():
+            # review F17: keep the old address linked (People, leaver checks) and say so
+            user.previous_emails = list(dict.fromkeys([*user.previous_emails, user.email]))[-10:]
+            self.hub.activity("auth", "warn", f"Email of {user.username} changed at the identity provider: "
+                                              f"{user.email} -> {identity.email}", user_id=user.id)
         user.email = identity.email or user.email
         user.display_name = (identity.name or "").strip() or user.display_name
         user.last_login = time.time()
@@ -474,21 +552,32 @@ class AuthService:
     def tokens(self) -> list[ApiToken]:
         return self.hub.all("tokens", ApiToken)
 
-    def create_token(self, name: str, role: str, expires_days: int | None, principal: Principal) -> tuple[ApiToken, str]:
-        """Returns the token record and its secret; the secret is never stored and cannot be shown again."""
+    def create_token(self, name: str, role: str, expires_days: int | None, principal: Principal,
+                     tool_id: str | None = None) -> tuple[ApiToken, str]:
+        """Returns the token record and its secret; the secret is never stored and cannot be shown again. An
+        integration token publishes events as `tool_id` only (default: its name)."""
         name = name.strip()
         if not 1 <= len(name) <= 64:
             raise AuthError(400, "Give the token a name of at most 64 characters.")
         if role not in (*ROLES, "integration"):
             raise AuthError(400, "Role must be viewer, operator, admin or integration.")
+        if role != "integration" and tool_id:
+            raise AuthError(400, "Only integration tokens publish events for a tool.")
+        if role == "integration":
+            tool_id = (tool_id or name).strip()
+            if not re.fullmatch(r"[A-Za-z0-9][\w.-]{0,63}", tool_id):
+                raise AuthError(400, "The tool of an integration token is a tool id such as grafana.")
         if expires_days is not None and not 1 <= expires_days <= 3650:
             raise AuthError(400, "Tokens expire after 1 to 3650 days, or never.")
         if any(t.name == name for t in self.tokens()):
             raise AuthError(409, "A token with that name already exists.")
+        owner_id = principal.id if principal.kind == "user" else principal.owner_id
+        if owner_id is None or self.get_user(owner_id) is None:
+            raise AuthError(400, "Only a person's account, or a token that acts for one, can create API tokens.")
         secret = secrets.token_urlsafe(32)
         value = TOKEN_PREFIX + secret
         token = ApiToken(name=name, role=role, token_hash=sha256(value), prefix=secret[:8],  # type: ignore[arg-type]
-                         created_by=principal.actor,
+                         created_by=principal.actor, owner_id=owner_id, tool_id=tool_id if role == "integration" else None,
                          expires_at=time.time() + expires_days * DAY if expires_days else None)
         self.store.put("tokens", token.model_dump(mode="json"))
         self.hub.activity(principal.actor, "info", f"Created API token {name} ({role})", token_id=token.id)
@@ -501,18 +590,74 @@ class AuthService:
         self.store.delete("tokens", token_id)
         self.hub.activity(principal.actor, "info", f"Revoked API token {token.name}", token_id=token_id)
 
+    def token_owner(self, token: ApiToken) -> User | None:
+        """The account a token acts for (F2). Tokens stored before owner_id existed are bound once, by following
+        created_by (a token created with another token: that token's owner) to an account."""
+        if token.owner_id is not None:
+            return self.get_user(token.owner_id)
+        creator, seen = token.created_by, {token.id}
+        tokens = {t.name: t for t in self.tokens()}
+        while creator.startswith("token:"):
+            parent = tokens.get(creator[6:])
+            if parent is None or parent.id in seen:
+                return None
+            seen.add(parent.id)
+            if parent.owner_id is not None:
+                owner = self.get_user(parent.owner_id)
+                break
+            creator = parent.created_by
+        else:
+            owner = self.find_user(creator.removeprefix("user:")) if creator else None
+        if owner is not None:
+            token.owner_id = owner.id
+            self.store.put("tokens", token.model_dump(mode="json"))
+        return owner
+
     def token_role(self, token: ApiToken) -> str | None:
-        """The role a token may use now. A disabled or deleted creator stops the token. A demotion caps it at the
-        creator's current role. Integration tokens keep working only while their creator is still an administrator."""
-        user = next((u for u in self.users() if u.username == token.created_by), None)
-        if user is None or user.disabled:
+        """What a token may do now: never more than its owner's current role; None when the owner is gone or
+        disabled (the token is refused) or the token expired. Integration tokens keep their own, narrower role."""
+        if token.expires_at is not None and token.expires_at <= time.time():
+            return None
+        owner = self.token_owner(token)
+        if owner is None or owner.disabled:
             return None
         if token.role == "integration":
-            return "integration" if user.role == "admin" else None
-        rank = {"viewer": 1, "operator": 2, "admin": 3}
-        if rank[user.role] < rank.get(token.role, 0):
-            return user.role
-        return token.role
+            return "integration"
+        return token.role if ROLE_RANK[token.role] <= ROLE_RANK[owner.role] else owner.role
+
+    def revoke_owned_tokens(self, user: User) -> int:
+        """Delete the API tokens that act for `user` (account disabled or deleted)."""
+        revoked = 0
+        for token in self.tokens():
+            owner = self.token_owner(token)
+            if owner is not None and owner.id == user.id:
+                revoked += self.store.delete("tokens", token.id)
+        return revoked
+
+    def publishing_tool(self, principal: Principal, source: str) -> str:
+        """The tool an integration token may publish events as (review F31); a token from before tool_id existed is
+        bound to the first source it publishes as."""
+        doc = self.store.get("tokens", principal.id)
+        if doc is None:
+            raise AuthError(401, "Sign in required")
+        token = ApiToken.model_validate(doc)
+        if token.tool_id is None:
+            token.tool_id = source
+            self.store.put("tokens", token.model_dump(mode="json"))
+            self.hub.activity(principal.actor, "info", f"API token {token.name} now publishes events as {source} only",
+                              token_id=token.id)
+        return token.tool_id
+
+    def sender_role(self, sender: str) -> str | None:
+        """The current role of the person ("user:<name>") or API token ("token:<name>") behind a bus sender; None
+        for agents, unknown or disabled accounts and refused tokens."""
+        if sender.startswith("user:"):
+            user = self.find_user(sender[5:])
+            return user.role if user is not None and not user.disabled else None
+        if sender.startswith("token:"):
+            token = next((t for t in self.tokens() if t.name == sender[6:]), None)
+            return self.token_role(token) if token is not None else None
+        return None
 
     def token_principal(self, value: str) -> Principal | None:
         if not value.startswith(TOKEN_PREFIX):
@@ -522,8 +667,6 @@ class AuthService:
             if not hmac.compare_digest(str(doc.get("token_hash", "")), digest):
                 continue
             token = ApiToken.model_validate(doc)
-            if token.expires_at is not None and token.expires_at <= now:
-                return None
             role = self.token_role(token)
             if role is None:
                 return None
@@ -531,7 +674,8 @@ class AuthService:
                 token.last_used = now
                 self.store.put("tokens", token.model_dump(mode="json"))
             actor = f"token:{token.name}"
-            return Principal(kind="token", id=token.id, name=token.name, role=role, actor=actor, bus_id=actor)
+            return Principal(kind="token", id=token.id, name=token.name, role=role, actor=actor, bus_id=actor,
+                             owner_id=token.owner_id)
         return None
 
     # -- per request -----------------------------------------------------------------
@@ -549,13 +693,7 @@ class AuthService:
         now = time.time()
         if principal.kind == "token":
             doc = self.store.get("tokens", principal.id)
-            if doc is None or (doc.get("expires_at") is not None and doc["expires_at"] <= now):
-                return False
-            try:
-                token = ApiToken.model_validate(doc)
-            except Exception:
-                return False
-            return self.token_role(token) is not None
+            return doc is not None and self.token_role(ApiToken.model_validate(doc)) == principal.role
         session = self.store.get("sessions", principal.session_id or "")
         user = self.get_user(principal.id)
         return session is not None and self._session_live(session, now) and user is not None and not user.disabled

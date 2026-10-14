@@ -178,7 +178,8 @@ def test_connection_secrets_are_encrypted_and_never_shown(client, remote, sign_i
     assert view["capabilities"] == {"assets": ["read", "write"]} and view["system_of_record"] == ["assets"]
     stored = hub.store.get("connections", "inventory")["secrets"]["token"]
     assert stored != TOKEN and hub.secrets.decrypt(stored) == TOKEN
-    assert TOKEN.encode() not in Path(hub.settings.db_path).read_bytes()
+    on_disk = b"".join(p.read_bytes() for p in Path(hub.settings.db_path).parent.glob("hub.db*"))  # + the WAL
+    assert TOKEN.encode() not in on_disk
 
     # an empty secret keeps the stored one, as long as the address stays the same
     client.put("/api/tools/inventory/connection", json={"kind": "fake_inventory", "config": {"base_url": "https://inv.example.com/api"},
@@ -312,6 +313,43 @@ def test_grc_tool_receives_assets_and_controls_and_feeds_risks(client, remote, w
     remote.risks = remote.risks[:1]
     assert run(client, risks_flow["id"])["counts"]["closed"] == 1
     assert next(r for r in client.get("/api/grc/risks").json() if r["title"] == "Supplier outage")["status"] == "closed"
+
+
+def test_a_slow_grc_tool_never_holds_up_compliance_evaluation(client, remote, wait_for, monkeypatch):
+    """Review finding: the GRC Supervisor had one concurrency slot, shared with its data flows. While a pull from a
+    GRC tool waited, POST /api/grc/evaluate and control overrides timed out after 120 s."""
+    import asyncio
+
+    hub = client.app.state.hub
+    grc = hub.agents.get("module:grc")
+    add_tool(client, "grc", "GRC Tool")
+    connect(client, "grc", "fake_grc")
+    risks_flow = next(f for f in plan_and_enable(client, wait_for, "grc", 4) if f["domain"] == "risks")
+    released = {"go": False}
+
+    async def slow_pull(self, domain, since=None):
+        while not released["go"]:  # a GRC tool that takes minutes to answer
+            await asyncio.sleep(0.02)
+        return []
+
+    monkeypatch.setattr(FakeGrc, "pull", slow_pull)
+    try:
+        for _ in range(grc.max_concurrency + 2):  # every slot taken by runs of the slow flow
+            client.portal.call(hub.bus.tell, "user:admin", "module:grc", "flow.run",
+                               {"flow_id": risks_flow["id"], "trigger": "manual"})
+        wait_for(lambda: grc.active >= grc.max_concurrency)
+        started = time.monotonic()
+        result = client.portal.call(hub.bus.request, "user:admin", "module:grc", "evaluate", {}, 5)
+        assert "error" not in result and result["frameworks"] and time.monotonic() - started < 5
+        assert client.post("/api/grc/evaluate").status_code == 200
+        override = client.patch("/api/grc/controls/HB-VM-2", json={"status": "pass", "note": "checked by hand"})
+        assert override.status_code == 200, override.text
+        summary = client.portal.call(hub.bus.request, "user:admin", "module:grc", "summary", {}, 5)
+        assert "frameworks" in summary
+    finally:
+        released["go"] = True
+    wait_for(lambda: grc.active == 0)
+    assert next(f for f in flows_of(client, "grc") if f["id"] == risks_flow["id"])["last_result"]["ok"]
 
 
 # -- vulnerabilities and scans ---------------------------------------------------------------------

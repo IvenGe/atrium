@@ -285,7 +285,7 @@ class OpenVasConnector(Connector):
     ]
     capabilities = {"vulnerabilities": {"read"}}
     actions = {"scan", "scan_status"}
-    side_effects = {"scan"}
+    side_effect_actions = {"scan": "scan"}  # starting a scan loads the scanned systems: only via the scan approval path
 
     @classmethod
     def detect(cls, tool) -> int:

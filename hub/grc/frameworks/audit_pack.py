@@ -11,8 +11,10 @@
     manifest.json         SHA-256 and size of every file above, the framework source and who exported it
     SHA256SUMS            the same hashes for ``sha256sum -c``
 
-No secrets: the pack holds assessment data, control results and metadata only, and every text taken from the hub's
-state passes through the connector SDK's redaction (credential-looking key=value pairs masked).
+No secrets: the pack holds assessment data, control results and metadata only (never connection settings or file
+contents), and every text taken from the hub's state is masked before any file is written: the secret values this
+process knows (hub/extensions/selfpatch.known_secrets), the tool connections' credentials and credential-looking
+key=value pairs (connector SDK redact).
 """
 
 from __future__ import annotations
@@ -27,8 +29,12 @@ import zipfile
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
+from ... import __version__
 from ... import people as people_app
 from ...connectors.base import redact
+from ...extensions.selfpatch import known_secrets
+from ...integration import connections
+from ...models import ControlState
 from ..baseline import CONTROLS_BY_ID
 from . import LEVEL_NAMES, load, mapping
 from .assessments import FrameworkAssessment, control_states, evaluation, evidence_view
@@ -59,14 +65,25 @@ def _csv(header: list[str], rows: list[list[Any]]) -> bytes:
     return ("﻿" + out.getvalue()).encode("utf-8")  # BOM: spreadsheet programs read it as UTF-8
 
 
-def _clean(value: Any) -> Any:
+def pack_secrets(hub: "Hub") -> list[str]:
+    """Secret values that must never appear in a pack: the process's own and every tool connection's credentials."""
+    values = known_secrets(hub)
+    for conn in connections.all_connections(hub):
+        try:
+            values += [v for v in connections.decrypt(hub, conn).values() if isinstance(v, str) and len(v) >= 4]
+        except Exception:  # a credential that cannot be decrypted cannot leak either
+            continue
+    return values
+
+
+def _clean(value: Any, secrets: list[str] | None = None) -> Any:
     """Hub state as data for the pack: strings redacted, recursively."""
     if isinstance(value, dict):
-        return {k: _clean(v) for k, v in value.items()}
+        return {k: _clean(v, secrets) for k, v in value.items()}
     if isinstance(value, list):
-        return [_clean(v) for v in value]
+        return [_clean(v, secrets) for v in value]
     if isinstance(value, str):
-        return redact(value)
+        return redact(value, secrets)
     return value
 
 
@@ -186,17 +203,20 @@ def summary_html(assessment: FrameworkAssessment, result: dict[str, Any], meta: 
 def build(hub: "Hub", assessment: FrameworkAssessment, actor: str) -> tuple[bytes, str]:
     """(zip bytes, file name)."""
     catalog = load(assessment.framework)
+    secrets = pack_secrets(hub)
+    clean = lambda value: _clean(value, secrets)  # noqa: E731
+    assessment = FrameworkAssessment.model_validate(clean(assessment.model_dump(mode="json")))
     result = evaluation(assessment)
-    states = control_states(hub)
+    states = {k: ControlState.model_validate(clean(v.model_dump(mode="json"))) for k, v in control_states(hub).items()}
     people = {p.id: p for p in people_app.all_people(hub)}
     now = time.time()
-    meta = {"exported_at": _when(now), "exported_by": actor, "generator": __import__("hub").__version__}
+    meta = {"exported_at": _when(now), "exported_by": actor, "generator": __version__}
 
     rows, evidence_rows, items = [], [], {}
     for requirement in catalog.requirements:
         entry = assessment.requirements.get(requirement.ref_id)
         owner = people.get(entry.owner_person_id) if entry and entry.owner_person_id else None
-        links = [evidence_view(hub, link, states) for link in (entry.evidence if entry else [])]
+        links = clean([evidence_view(hub, link, states) for link in (entry.evidence if entry else [])])
         rows.append([requirement.ref_id, requirement.function, requirement.category, requirement.subcategory,
                      requirement.title, " ".join(requirement.tags), LEVEL_NAMES[requirement.level()],
                      "yes" if requirement.in_level(assessment.target_level) else "no",
@@ -229,12 +249,12 @@ def build(hub: "Hub", assessment: FrameworkAssessment, actor: str) -> tuple[byte
                                   "na_justification", "owner", "notes", "evidence", "updated_by", "updated_at",
                                   "requirement_text"], rows),
         "evidence/index.csv": _csv(["ref_id", "kind", "ref", "title", "status", "added_by", "added_at"], evidence_rows),
-        "evidence/controls.json": _json(_clean({"note": "Automated results of Atrium's hub controls at export time; "
-                                                        "the fit of each mapping is analyst judgement.",
-                                                "controls": controls})),
-        "evidence/items.json": _json(_clean({"note": "Metadata of the linked evidence; content is not included.",
-                                             "items": list(items.values())})),
-        "assessment.json": _json(_clean({"assessment": assessment.model_dump(mode="json"), "evaluation": result,
+        "evidence/controls.json": _json(clean({"note": "Automated results of Atrium's hub controls at export time; "
+                                                       "the fit of each mapping is analyst judgement.",
+                                               "controls": controls})),
+        "evidence/items.json": _json(clean({"note": "Metadata of the linked evidence; content is not included.",
+                                            "items": list(items.values())})),
+        "assessment.json": _json(clean({"assessment": assessment.model_dump(mode="json"), "evaluation": result,
                                          "framework": {k: catalog.data[k] for k in ("id", "name", "edition", "source",
                                                                                      "conformity", "notice")}})),
     }

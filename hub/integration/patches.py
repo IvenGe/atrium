@@ -353,8 +353,10 @@ def plan_patch(tool: Tool, others: list[Tool], strategy: str, hub_url: str, idp:
     if strategy == "reassign_port" and port:
         used = {o.manifest.launch.port for o in others if o.manifest and o.manifest.launch.port}
         new_port = _free_port(port + 1, used)
+        # Only PORT: apply_patch deep-merges, so the tool's other launch.env values stay without being copied into the
+        # patch, which viewers and the event stream read (review F13 - docs/MANIFEST.md: env values are never shown).
         update: dict[str, Any] = {
-            "launch": {"port": new_port, "env": {**m.launch.env, "PORT": str(new_port)}},
+            "launch": {"port": new_port, "env": {"PORT": str(new_port)}},
             "ui": {"url": f"http://localhost:{new_port}"},
         }
         if m.health.url:

@@ -31,7 +31,8 @@ APPS = {"assets": "Hub Assets", "vulnerabilities": "Hub Vulnerabilities", "risks
         "network": "Hub Network", "frameworks": "Hub Compliance frameworks",
         "assessments": "Hub framework self-assessments"}
 DEFAULT_SCHEDULE = {"pull": 60, "push": 60, "scan": 7 * 24 * 60}
-DOMAIN_SCHEDULE = {"network": 15}  # pull minutes where the default does not fit (device drift is noticed sooner)
+DOMAIN_SCHEDULE = {"network": 10}  # pull minutes where the default does not fit: device drift is noticed sooner, and
+# snapshots stay younger than the 15 minutes a device change needs (integration/network.py stale_after_minutes)
 REPAIR_AFTER = 3  # consecutive failures before the Hub Supervisor asks the Patch Agent for a repair
 STALE_RUN = 30 * 60  # a run marked as under way for longer than this was interrupted
 ASSET_TYPES = ("server", "workstation", "network", "software", "saas", "cloud", "data", "other")
@@ -50,6 +51,17 @@ def all_flows(hub: "Hub", tool_id: str | None = None) -> list[Flow]:
 def save(hub: "Hub", flow: Flow) -> Flow:
     flow.updated_at = time.time()
     return hub.save(COLLECTION, flow, "flow")
+
+
+def never_approved(hub: "Hub", flow: Flow) -> bool:
+    """A flow whose proposal was turned down - rejected in the approval queue, dismissed in its list, or proposed
+    without a pending approval any more. It neither runs nor gets enabled until a new proposal is approved."""
+    if flow.rejected:
+        return True
+    if flow.status == "proposed":
+        approval = hub.approvals.get(flow.approval_id) if flow.approval_id else None
+        return approval is None or approval.status == "rejected"
+    return False
 
 
 EXTENSIONS_OWNER = "module:extensions"  # extension domains ("x:<key>") are run by the Extensions Supervisor
@@ -84,110 +96,6 @@ def title(hub: "Hub", flow: Flow) -> str:
 
 def key(flow: Flow) -> tuple[str, str, str, str | None]:
     return flow.domain, flow.source, flow.target, flow.action
-
-
-class FlowError(ValueError):
-    """A create/enable refusal the API turns into 400 or 409 with `detail.code`."""
-
-    def __init__(self, code: str, message: str, status: int = 400, **extra: Any):
-        super().__init__(message)
-        self.code, self.message, self.status, self.extra = code, message, status, extra
-
-    def body(self) -> dict[str, Any]:
-        return {"code": self.code, "message": self.message, **self.extra}
-
-
-def ends_ok(source: str, target: str) -> bool:
-    return {bool(re.fullmatch(r"hub|tool:[A-Za-z0-9._:-]+", source)),
-            bool(re.fullmatch(r"hub|tool:[A-Za-z0-9._:-]+", target))} == {True} and (source == "hub") != (target == "hub")
-
-
-def occupying(flow: Flow) -> bool:
-    return flow.status in ("proposed", "enabled")
-
-
-def same_flow(hub: "Hub", domain: str, source: str, target: str, action: str | None) -> Flow | None:
-    key = (domain, source, target, action)
-    return next((f for f in all_flows(hub) if (f.domain, f.source, f.target, f.action) == key), None)
-
-
-def loop_conflict(hub: "Hub", domain: str, source: str, target: str, action: str | None,
-                  ignore_id: str | None = None) -> Flow | None:
-    """A pull and a push of the same domain for the same tool must not both be proposed or enabled (F7)."""
-    if action == "scan" or source == target:
-        return None
-    if "hub" not in (source, target):
-        return None
-    opposite_source, opposite_target = (target, source)
-    for flow in all_flows(hub):
-        if ignore_id and flow.id == ignore_id:
-            continue
-        if not occupying(flow) or flow.domain != domain or flow.action:
-            continue
-        if flow.source == opposite_source and flow.target == opposite_target:
-            return flow
-    return None
-
-
-def create_explicit(hub: "Hub", *, domain: str, source: str, target: str, action: str | None,
-                    actor: str, schedule_minutes: int | None = None,
-                    options: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Create a flow a person asked for (the map's connect panel). Raises FlowError."""
-    from . import strategies
-
-    if action not in (None, "scan") or not ends_ok(source, target):
-        raise FlowError("invalid", "A flow goes between the hub and a tool; action is empty or 'scan'.")
-    if source.startswith("tool:") and target.startswith("tool:"):
-        raise FlowError("invalid", "Tools exchange data through the hub, not directly.")
-    tool_id = (target if target.startswith("tool:") else source).split(":", 1)[1]
-    tool = hub.get_tool(tool_id)
-    if tool is None:
-        raise FlowError("invalid", f"Unknown tool '{tool_id}'")
-    conn = connections.get(hub, tool_id)
-    if conn is None:
-        raise FlowError("no_connection", f"{tool.name} has no API connection yet.")
-    existing = same_flow(hub, domain, source, target, action)
-    if existing is not None:
-        raise FlowError("flow_exists", "That data flow already exists.", 409, flow_id=existing.id)
-    other = loop_conflict(hub, domain, source, target, action)
-    if other is not None:
-        raise FlowError("flow_conflict",
-                        "A pull and a push of the same domain for the same tool would loop.",
-                        409, flow_id=other.id)
-    allowed = {(m.domain, m.source, m.target, m.action): m for m in strategies.moves(hub, tool_id)}
-    move = allowed.get((domain, source, target, action))
-    if move is None:
-        raise FlowError("no_capability", f"{tool.name} cannot {action or ('pull' if target == 'hub' else 'push')} {domain}.")
-    if move.blocked:
-        raise FlowError("system_of_record", move.blocked)
-    try:
-        flow = make(hub, domain, source, target, action, reason=move.reason, created_by=actor, strategy=move.strategy)
-    except ValueError as exc:
-        raise FlowError("invalid", str(exc)) from exc
-    if schedule_minutes is not None:
-        flow.schedule_minutes = schedule_minutes
-    if options:
-        try:
-            flow.options = validate_options(flow, options)
-        except ValueError as exc:
-            raise FlowError("invalid", str(exc)) from exc
-    autonomous = hub.prefs["autonomy"] == "autonomous"
-    if autonomous:
-        flow.status = "enabled"
-        save(hub, flow)
-        hub.activity(actor, "info", f"{actor} enabled data flow {flow.title}", flow_id=flow.id)
-        return {"flow": flow, "approval_id": None}
-    save(hub, flow)
-    approval = hub.approvals.create(
-        "flow", f"Data flow: {flow.title}", flow.reason,
-        {"flow_id": flow.id, "tool_id": flow.tool_id, "domain": flow.domain, "source": flow.source,
-         "target": flow.target, "action": flow.action, "schedule_minutes": flow.schedule_minutes,
-         "proposed_by": actor},
-        "supervisor")
-    flow.approval_id = approval.id
-    save(hub, flow)
-    hub.activity(actor, "info", f"{actor} proposed data flow {flow.title}", flow_id=flow.id)
-    return {"flow": flow, "approval_id": approval.id}
 
 
 def make(hub: "Hub", domain: str, source: str, target: str, action: str | None = None, *, reason: str = "",
@@ -289,6 +197,26 @@ def remove(hub: "Hub", flow_id: str, actor: str, note: str = "The data flow was 
     hub.store.delete(COLLECTION, flow_id)
     hub.bus.publish("flow_removed", {"id": flow_id})
     return flow
+
+
+def retire_unsupported(hub: "Hub", tool_id: str, actor: str) -> list[Flow]:
+    """The tool's connection changed: remove the enabled or proposed pulls and pushes it no longer supports (e.g.
+    "Send CyFun self-assessments" switched off), so they neither fail on every run nor get approved later; allowing
+    it again leads to a new proposal. Disabled flows stay (a rejected proposal stays rejected), and so do sync links,
+    so a flow proposed again updates the same records. Scans depend on the connector's actions, not its domains."""
+    conn = connections.get(hub, tool_id)
+    caps = connections.capabilities(conn) if conn is not None else {}
+    removed = []
+    for flow in all_flows(hub, tool_id):
+        op = {"pull": "read", "push": "write"}.get(flow.direction)
+        if op is None or flow.status == "disabled" or op in caps.get(flow.domain, []):
+            continue
+        remove(hub, flow.id, actor, "Superseded: the tool's connection no longer supports this data flow.")
+        hub.activity(actor, "warn", f"Removed data flow {flow.title or title(hub, flow)}: the connection no longer "
+                                    f"{'reads' if op == 'read' else 'writes'} {flow.domain.removeprefix('x:')}",
+                     flow_id=flow.id, tool_id=tool_id)
+        removed.append(flow)
+    return removed
 
 
 def forget_tool(hub: "Hub", tool_id: str, actor: str) -> None:

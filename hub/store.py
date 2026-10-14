@@ -37,15 +37,35 @@ def new_id(prefix: str = "") -> str:
     return f"{prefix}{uuid.uuid4().hex[:10]}"
 
 
+def _field(name: str) -> str:
+    """A top-level JSON field name for the queries above (internal constants; refused otherwise)."""
+    if not name or not name.replace("_", "").isalnum():
+        raise ValueError(f"Not a field name: {name!r}")
+    return name
+
+
+def private_db(path: Path) -> None:
+    """hub.db holds password hashes, rule bases and tools' launch environments: owner-only (review F14). SQLite gives
+    its -wal and -shm files the database file's permissions, so the file is created 0600 before SQLite opens it; files
+    from before are tightened."""
+    try:
+        os.close(os.open(path, os.O_RDWR | os.O_CREAT, 0o600))
+    except OSError:
+        return
+    for name in (path, Path(f"{path}-wal"), Path(f"{path}-shm")):
+        try:
+            if name.exists():
+                name.chmod(0o600)
+        except OSError:  # best effort (Windows ACLs are not mode bits)
+            pass
+
+
 class Store:
     def __init__(self, path: Path | str):
         self._lock = threading.RLock()
-        self._db = sqlite3.connect(str(path), check_same_thread=False)
         if str(path) != ":memory:":
-            for suffix in ("", "-wal", "-shm"):
-                file = Path(str(path) + suffix)
-                if file.exists():
-                    os.chmod(file, 0o600)
+            private_db(Path(path))
+        self._db = sqlite3.connect(str(path), check_same_thread=False)
         with self._lock:
             if str(path) != ":memory:":
                 self._db.execute("PRAGMA journal_mode=WAL")
@@ -79,6 +99,47 @@ class Store:
             ).fetchall()
         return [json.loads(r[0]) for r in rows]
 
+    @staticmethod
+    def _after(prefix: str) -> str:
+        """The smallest string greater than every string starting with `prefix` (for id range queries)."""
+        return prefix[:-1] + chr(ord(prefix[-1]) + 1)
+
+    def list_prefix(self, collection: str, prefix: str, without: str | None = None) -> list[dict[str, Any]]:
+        """Documents whose id starts with `prefix`, read through the primary key - only those rows are read and parsed;
+        `without`: a top-level field left out inside SQLite (e.g. a large record), in id order."""
+        column = f"json_remove(data, '$.{_field(without)}')" if without else "data"
+        with self._lock:
+            rows = self._db.execute(
+                f"SELECT {column} FROM docs WHERE collection = ? AND id >= ? AND id < ? ORDER BY id",
+                (collection, prefix, self._after(prefix)),
+            ).fetchall()
+        return [json.loads(r[0]) for r in rows]
+
+    def ids_prefix(self, collection: str, prefix: str) -> list[str]:
+        """The ids starting with `prefix`, sorted (nothing parsed)."""
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT id FROM docs WHERE collection = ? AND id >= ? AND id < ? ORDER BY id",
+                (collection, prefix, self._after(prefix)),
+            ).fetchall()
+        return [r[0] for r in rows]
+
+    def list_where(self, collection: str, field: str, value: Any) -> list[dict[str, Any]]:
+        """Documents whose top-level `field` equals `value`, filtered inside SQLite: only the matching ones are
+        parsed here."""
+        with self._lock:
+            rows = self._db.execute(
+                f"SELECT data FROM docs WHERE collection = ? AND json_extract(data, '$.{_field(field)}') = ? ORDER BY rowid",
+                (collection, value),
+            ).fetchall()
+        return [json.loads(r[0]) for r in rows]
+
+    def delete_many(self, collection: str, doc_ids: list[str]) -> int:
+        with self._lock, self._db:
+            cur = self._db.executemany("DELETE FROM docs WHERE collection = ? AND id = ?",
+                                       [(collection, doc_id) for doc_id in doc_ids])
+        return cur.rowcount
+
     def delete(self, collection: str, doc_id: str) -> bool:
         with self._lock, self._db:
             cur = self._db.execute("DELETE FROM docs WHERE collection = ? AND id = ?", (collection, doc_id))
@@ -97,12 +158,24 @@ class Store:
         entry["seq"] = cur.lastrowid
         return entry
 
-    def tail(self, stream: str, limit: int = 100) -> list[dict[str, Any]]:
+    def tail(self, stream: str, limit: int = 100, before: int | None = None) -> list[dict[str, Any]]:
+        """The last `limit` entries of a stream, oldest first; with `before`, the last ones before that seq (paging)."""
         with self._lock:
             rows = self._db.execute(
-                "SELECT seq, data FROM log WHERE stream = ? ORDER BY seq DESC LIMIT ?", (stream, limit)
+                "SELECT seq, data FROM log WHERE stream = ? AND seq < ? ORDER BY seq DESC LIMIT ?",
+                (stream, before if before is not None else 2**63 - 1, limit)
             ).fetchall()
         return [{**json.loads(data), "seq": seq} for seq, data in reversed(rows)]
+
+    def prune(self, stream: str, keep: int) -> int:
+        """Delete all but the newest `keep` entries of a stream; returns how many went."""
+        with self._lock, self._db:
+            cur = self._db.execute(
+                "DELETE FROM log WHERE stream = ? AND seq < "
+                "(SELECT seq FROM log WHERE stream = ? ORDER BY seq DESC LIMIT 1 OFFSET ?)",
+                (stream, stream, max(keep, 1) - 1),
+            )
+        return cur.rowcount
 
     def count(self, stream: str) -> int:
         with self._lock:

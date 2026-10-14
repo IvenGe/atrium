@@ -18,6 +18,9 @@ from pydantic import BaseModel, Field
 from .store import Store, new_id
 
 LOG_BODY_LIMIT = 32_000
+# The scheduler's routine pings (every 30-60 seconds, all day long) reach their agent but are not logged: they would
+# be most of the message log (review F38).
+ROUTINE = {("hub", "changes.tick"), ("hub", "health.sweep")}
 
 
 def loggable(record: dict[str, Any]) -> dict[str, Any]:
@@ -65,8 +68,9 @@ class Bus:
         self._inboxes.pop(agent_id, None)
 
     async def send(self, msg: Message) -> None:
-        record = self.store.append("messages", loggable(msg.model_dump(mode="json")))
-        self.publish("message", record)
+        if msg.kind != "event" or (msg.sender, msg.subject) not in ROUTINE:
+            record = self.store.append("messages", loggable(msg.model_dump(mode="json")))
+            self.publish("message", record)
         if msg.kind == "reply":
             fut = self._pending.get(msg.reply_to or "")
             if fut and not fut.done():

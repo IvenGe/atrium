@@ -3,8 +3,9 @@
 Source of the rules: the CyFun 2025 library that ships with CISO Assistant (``outcomes_definition``,
 ``implementation_groups_definition``, ``anchor_na_to_target``, ``score_calculation_method: average_of_averages``),
 checked by scripts/build_cyfun_catalog.py on every build. The CCB's own documents (booklets, self-assessment tool)
-were unreachable (HTTP 403), so these are the thresholds of the CISO Assistant library copy, not verified against the
-CCB originals. CyFun 2023's library defines no conformity rules: Atrium applies the 2025 rules to it as well
+were unreachable (HTTP 403), so these are the thresholds of the CISO Assistant library copy. UNVERIFIED: against the
+CCB originals, including whether the CCB averages the implementation and documentation maturity as CISO Assistant
+does. CyFun 2023's library defines no conformity rules: Atrium applies the 2025 rules to it as well
 (UNVERIFIED for CyFun 2023).
 
 How a score is computed, as CISO Assistant computes it (backend/core/models.py and core/cel_service.py, main branch,

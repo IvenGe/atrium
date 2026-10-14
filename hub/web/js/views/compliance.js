@@ -3,68 +3,11 @@ import { followPicker, loadPeople, personChip, personOptions } from "../people.j
 import {
   actions, badge, can, confirmDialog, emptyState, field, html, icon, md, modal, options, setHTML, timeAgo, toast,
 } from "../ui.js";
+import { renderFrameworks } from "./frameworks.js";
 
 const STATUS_ICON = { pass: "check", partial: "minus", fail: "x", manual: "edit", na: "minus" };
+const CYFUN = { CyFun2025: "cyfun2025", CyFun2023: "cyfun2023" }; // control-coverage tiles -> the self-assessment of that edition
 const POLICY_CATEGORIES = ["security", "access", "incident", "backup", "acceptable-use", "supplier", "other"];
-
-let frameworkFocus = null;
-
-function frameworksPanel(payload) {
-  if (frameworkFocus?.assessment) return assessmentWorkspace(frameworkFocus);
-  if (frameworkFocus?.catalog) return catalogWorkspace(frameworkFocus);
-  const items = payload?.frameworks || [];
-  return html`<section class="card"><header><h2>Compliance frameworks</h2></header>
-    <p class="muted">CyFun 2025 is the default self-assessment. Requirement text stays on cyfun.eu; Atrium stores titles, scores and evidence links. Viewers read, operators score, administrators delete.</p>
-    ${items.length ? html`<ul class="stack">${items.map((f) => html`<li class="check-row"><div style="flex:1"><b>${f.short_name || f.name}</b> ${f.kind === "external" ? badge("from CISO Assistant", "info") : ""}
-      ${f.default ? badge("default", "ok") : ""} ${f.counts?.requirements ? html`<span class="faint">${f.counts.requirements} requirements</span>` : ""}</div>
-      ${f.kind === "builtin" ? html`<button class="btn sm" data-act="open-fw" data-id="${f.id}">Open</button>` : ""}
-      ${f.kind === "builtin" && can("operator") ? html`<button class="btn sm" data-act="assess" data-id="${f.id}" data-min-role="operator">Start assessment</button>` : ""}</li>`)}</ul>`
-      : html`<p class="muted">No frameworks loaded.</p>`}
-    ${(payload?.ciso || []).length ? html`<p class="faint">${payload.ciso.length} CISO Assistant connection(s).</p>` : ""}</section>`;
-}
-
-function catalogWorkspace(focus) {
-  const catalog = focus.catalog;
-  const list = focus.assessments || [];
-  return html`<section class="card"><header><div><h2>${catalog.short_name || catalog.name}</h2>
-      <p class="muted">${catalog.notice || ""}</p></div>
-      <div class="row"><button class="btn sm" data-act="fw-back">All frameworks</button>
-        ${can("operator") ? html`<button class="btn sm primary" data-act="assess" data-id="${catalog.id}" data-min-role="operator">Start assessment</button>` : ""}</div></header>
-    ${catalog.text_url ? html`<p><a href="${catalog.text_url}" target="_blank" rel="noopener">Requirement text on cyfun.eu</a></p>` : ""}
-    <h3>Assessments</h3>
-    ${list.length ? html`<ul>${list.map((a) => html`<li class="check-row"><div style="flex:1"><b>${a.name}</b> ${badge(a.status || "draft")}
-      <span class="faint">target ${a.target_name || a.target_level} · ${a.verdict || ""} · maturity ${a.maturity ?? "-"}</span></div>
-      <button class="btn sm" data-act="open-as" data-id="${catalog.id}" data-aid="${a.id}">Open</button></li>`)}</ul>`
-      : html`<p class="muted">No assessments yet.</p>`}
-    ${(catalog.tree || []).map((fn) => html`<details><summary><b>${fn.title || fn.id}</b></summary>
-      ${(fn.categories || []).map((cat) => html`<p class="muted">${cat.title || cat.id}</p>`)}</details>`)}</section>`;
-}
-
-function assessmentWorkspace(focus) {
-  const a = focus.assessment;
-  const ev = a.evaluation || {};
-  const reqs = a.requirements || {};
-  const tree = focus.catalog?.tree || [];
-  return html`<section class="card"><header><div><h2>${a.name}</h2>
-      <p class="muted">${a.framework_name || ""} · target ${a.target_name || a.target_level} · ${ev.verdict || a.verdict || "not scored"}</p></div>
-      <div class="row"><button class="btn sm" data-act="as-back">Back</button>
-        <button class="btn sm" data-act="audit" data-id="${a.framework}" data-aid="${a.id}">Audit pack</button>
-        ${can("admin") ? html`<button class="btn sm danger" data-act="delete-as" data-id="${a.framework}" data-aid="${a.id}" data-min-role="admin">Delete</button>` : ""}</div></header>
-    <div class="notice">${ev.method?.source || "Scores follow the catalog's conformity rules."}
-      ${ev.progress ? html`<div class="faint">Scored ${ev.progress.scored ?? "-"} / ${ev.progress.total ?? "-"} · N/A ${ev.progress.na ?? 0}</div>` : ""}</div>
-    ${ev.levels?.length ? html`<div class="row" style="margin:10px 0">${ev.levels.map((lv) => html`<span class="badge ${lv.verdict === "conform" || lv.verdict === "met" ? "ok" : ""}">${lv.level} ${lv.verdict}</span>`)}</div>` : ""}
-    ${tree.map((fn) => html`<details open><summary><b>${fn.title || fn.id}</b></summary>
-      ${(fn.categories || []).flatMap((cat) => (cat.subcategories || []).flatMap((sub) => sub.requirements || [])).map((req) => {
-        const row = reqs[req.ref_id] || {};
-        return html`<div class="check-row"><div style="flex:1;min-width:0"><code>${req.ref_id}</code> <b>${req.title}</b>
-          ${row.na ? badge("n/a", "info") : ""} ${row.in_scope === false ? badge("out of target", "info") : ""}
-          <div class="faint">implementation ${row.implementation ?? "-"} · documentation ${row.documentation ?? "-"} · maturity ${row.maturity ?? "-"}
-            ${row.owner?.display_name ? html` · ${row.owner.display_name}` : ""}</div>
-          ${row.notes ? html`<div class="muted">${row.notes}</div>` : ""}
-          ${row.suggested?.length ? html`<div class="faint">Suggested: ${row.suggested.map((s) => html`${s.control} ${s.status}`).join(", ")}</div>` : ""}</div>
-          ${can("operator") ? html`<button class="btn sm" data-act="score" data-ref="${req.ref_id}" data-min-role="operator">Score</button>` : ""}</div>`;
-      })}</details>`)}</section>`;
-}
 
 function riskColor(score) {
   if (score >= 15) return "#dc2626";
@@ -91,7 +34,8 @@ function frameworkCards(frameworks) {
   return html`<div class="grid cols-5" style="margin-bottom:16px">${frameworks.map((f) => html`<div class="card">
     <div class="row" style="justify-content:space-between"><b>${f.name}</b><span style="font-size:20px;font-weight:750">${f.score ?? "-"}%</span></div>
     <div class="progress" style="margin:10px 0 8px"><span style="width:${f.score || 0}%"></span></div>
-    <div class="faint" style="font-size:12px">${f.passing}/${f.controls} controls passing${f.failing ? `, ${f.failing} failing` : ""}</div></div>`)}</div>`;
+    <div class="faint" style="font-size:12px">${f.passing}/${f.controls} controls passing${f.failing ? `, ${f.failing} failing` : ""}</div>
+    ${CYFUN[f.id] ? html`<a href="#/compliance/frameworks/${CYFUN[f.id]}" style="font-size:12px">Self-assessment &rarr;</a>` : ""}</div>`)}</div>`;
 }
 
 function controlRow(c) {
@@ -103,7 +47,7 @@ function controlRow(c) {
       <div style="margin-top:4px;font-size:13px">${c.detail}${c.note ? html` <span class="faint">- ${c.note}</span>` : ""}</div>
       ${c.evidence.length ? html`<details style="margin-top:4px"><summary class="faint" style="cursor:pointer;font-size:12px">Evidence (${c.evidence.length})</summary>
         <ul style="margin:4px 0;padding-left:18px;font-size:12.5px">${c.evidence.map((e) => html`<li>${e}</li>`)}</ul></details>` : ""}
-      <div class="row" style="gap:6px;margin-top:6px">${Object.entries(c.refs).map(([k, v]) => html`<span class="badge">${k} ${v}</span>`)}</div>
+      <div class="row" style="gap:6px;margin-top:6px">${Object.entries(c.refs).map(([k, v]) => html`<span class="badge wrap">${k} ${v}</span>`)}</div>
     </div>
     <div data-min-role="operator"><button class="btn sm" data-act="override" data-id="${c.id}">${icon("edit")}Set</button></div></div>`;
 }
@@ -157,23 +101,22 @@ export async function render(el, ctx) {
   let tab = ctx.params[0] || "overview";
   let data, risks, policies;
   let people = [];
-  let frameworks = null;
   let byId = {};
   const draw = async () => {
-    let frameworks = null;
-    [data, risks, policies, people, frameworks] = await Promise.all([
-      get("/grc"), get("/grc/risks"), get("/grc/policies"), loadPeople(),
-      tab === "frameworks" ? get("/frameworks") : null,
-    ]);
+    [data, risks, policies, people] = await Promise.all([get("/grc"), get("/grc/risks"), get("/grc/policies"), loadPeople()]);
     byId = Object.fromEntries(people.map((p) => [p.id, p]));
     const failing = data.controls.filter((c) => c.status === "fail" || c.status === "partial");
     const openRisks = risks.filter((r) => r.status !== "closed").sort((a, b) => b.score - a.score);
     const families = [...new Set(data.controls.map((c) => c.family))];
+    const tabName = { controls: "Controls", risks: "Risks", policies: "Policies" }[tab];
+    if (tab !== "frameworks") ctx.crumb(tabName ? `Compliance hub / ${tabName}` : "Compliance hub"); // like the Integration hub's tabs
     setHTML(el, html`
-      <div class="page-head"><div><h1>Compliance hub</h1><p class="muted">Governance, risk and compliance. The GRC Supervisor checks controls against live hub state and maps the evidence to ISO 27001, SOC 2 and NIS2.</p></div>
+      <div class="page-head"><div><h1>Compliance hub</h1><p class="muted">Governance, risk and compliance. The GRC Supervisor checks controls against live hub state and maps the evidence to ISO 27001, SOC 2, NIS2 and CyberFundamentals (CyFun); under Frameworks you assess yourself against CyFun.</p></div>
         <button class="btn" data-act="evaluate" data-min-role="operator">${icon("refresh")}Re-evaluate</button></div>
-      <div class="tabs">${[["overview", "Overview"], ["controls", `Controls (${data.controls.length})`], ["frameworks", "Frameworks"], ["risks", `Risks (${openRisks.length} open)`], ["policies", `Policies (${policies.length})`]]
+      <div class="tabs">${[["overview", "Overview"], ["frameworks", "Frameworks"], ["controls", `Controls (${data.controls.length})`], ["risks", `Risks (${openRisks.length} open)`], ["policies", `Policies (${policies.length})`]]
         .map(([k, label]) => html`<button class="${tab === k ? "active" : ""}" data-act="tab" data-tab="${k}">${label}</button>`)}</div>
+
+      ${tab === "frameworks" ? html`<div data-part="frameworks"><div class="empty faint">Loading...</div></div>` : ""}
 
       ${tab === "overview" ? html`${frameworkCards(data.frameworks)}
         <div class="grid split">
@@ -184,8 +127,6 @@ export async function render(el, ctx) {
             <div class="card"><header><h3>Top risks</h3></header>${openRisks.length ? openRisks.slice(0, 5).map((r) => html`<div class="msg-line" style="grid-template-columns:auto 1fr">
               <span class="badge" style="background:${riskColor(r.score)};color:#fff;border:0">${r.score}</span><span>${r.title}</span></div>`) : html`<p class="muted">No open risks.</p>`}</div>
           </section></div>` : ""}
-
-      ${tab === "frameworks" ? frameworksPanel(frameworks) : ""}
 
       ${tab === "controls" ? html`${families.map((fam) => html`<section class="card" style="margin-bottom:12px"><header><h2>${fam}</h2></header>
         ${data.controls.filter((c) => c.family === fam).map(controlRow)}</section>`)}` : ""}
@@ -210,6 +151,8 @@ export async function render(el, ctx) {
             <div class="row" style="gap:6px">${p.status !== "approved" ? html`<button class="btn sm ok" data-act="approve-policy" data-id="${p.id}" data-min-role="operator">${icon("check")}Approve</button>` : ""}
               <button class="btn sm" data-act="edit-policy" data-id="${p.id}">${can("operator") ? html`${icon("edit")}Edit` : html`${icon("file")}View`}</button></div></div>`)
           : emptyState("file", "No policies yet", "Start from a template - the GRC Supervisor counts approved policies as evidence.")}</section>` : ""}`);
+    // The Frameworks tab draws (and live-updates) itself; it is drawn once per route, see `tab` below.
+    if (tab === "frameworks") await renderFrameworks(el.querySelector('[data-part="frameworks"]'), ctx, ctx.params.slice(1));
     el.querySelector("#tpl")?.addEventListener("change", async (e) => {
       const cat = e.target.value;
       if (!cat) return;
@@ -241,77 +184,12 @@ export async function render(el, ctx) {
   };
 
   actions(el, {
-    tab: (d) => { tab = d.tab; history.replaceState(null, "", `#/compliance/${tab}`); draw(); },
-    async "open-fw"(d) {
-      const [catalog, listed] = await Promise.all([get(`/frameworks/${d.id}`), get(`/frameworks/${d.id}/assessments`)]);
-      frameworkFocus = { catalog, assessments: listed.assessments || [] };
-      draw();
+    tab: (d) => {
+      // to and from Frameworks: a real navigation, so its live listeners belong to that route only
+      if (d.tab === "frameworks" || tab === "frameworks") { location.hash = `#/compliance/${d.tab}`; return; }
+      tab = d.tab; history.replaceState(null, "", `#/compliance/${tab}`); draw();
     },
-    "fw-back"() { frameworkFocus = null; draw(); },
-    async "open-as"(d) {
-      const assessment = await get(`/frameworks/${d.id}/assessments/${d.aid}`);
-      const catalog = frameworkFocus?.catalog?.id === d.id ? frameworkFocus.catalog : await get(`/frameworks/${d.id}`);
-      frameworkFocus = { ...(frameworkFocus || {}), catalog, assessment };
-      draw();
-    },
-    "as-back"() {
-      if (frameworkFocus) frameworkFocus.assessment = null;
-      draw();
-    },
-    async assess(d) {
-      const name = window.prompt("Name this self-assessment");
-      if (!name) return;
-      const created = await post(`/frameworks/${d.id}/assessments`, { name, target_level: "B" });
-      toast("Assessment started", "ok");
-      const catalog = frameworkFocus?.catalog?.id === d.id ? frameworkFocus.catalog : await get(`/frameworks/${d.id}`);
-      frameworkFocus = { catalog, assessment: created };
-      tab = "frameworks";
-      draw();
-    },
-    async score(d) {
-      const row = frameworkFocus?.assessment?.requirements?.[d.ref] || {};
-      const m = modal({
-        title: d.ref, minRole: "operator",
-        body: html`${field("Implementation (1-5)", html`<input name="implementation" type="number" min="1" max="5" value="${row.implementation ?? ""}">`)}
-          ${field("Documentation (1-5)", html`<input name="documentation" type="number" min="1" max="5" value="${row.documentation ?? ""}">`)}
-          ${field("Not applicable", html`<input name="na" type="checkbox" ${row.na ? "checked" : ""}>`)}
-          ${field("N/A justification", html`<textarea name="na_justification" rows="2">${row.na_justification || ""}</textarea>`)}
-          ${field("Notes", html`<textarea name="notes" rows="3">${row.notes || ""}</textarea>`)}
-          ${field("Owner", html`<select name="owner_person_id">${personOptions(people, row.owner?.id, { none: "No person" })}</select>`)}`,
-        async onSubmit(f) {
-          const body = { na: f.get("na") === "on", notes: f.get("notes") || null, na_justification: f.get("na_justification") || null,
-            owner_person_id: f.get("owner_person_id") || null };
-          const impl = f.get("implementation");
-          const doc = f.get("documentation");
-          if (impl) body.implementation = Number(impl);
-          if (doc) body.documentation = Number(doc);
-          const fw = frameworkFocus.assessment.framework;
-          const aid = frameworkFocus.assessment.id;
-          frameworkFocus.assessment = await patch(`/frameworks/${fw}/assessments/${aid}/requirements/${encodeURIComponent(d.ref)}`, body);
-          toast("Requirement saved", "ok");
-          draw();
-        },
-      });
-    },
-    async audit(d) {
-      const res = await fetch(`/api/frameworks/${d.id}/assessments/${d.aid}/audit-pack`, { headers: { "X-Hub-Request": "1" } });
-      if (!res.ok) { toast("Could not download the audit pack", "bad"); return; }
-      const blob = await res.blob();
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = "audit-pack.zip";
-      a.click();
-      URL.revokeObjectURL(url);
-    },
-    async "delete-as"(d) {
-      if (!await confirmDialog("Delete assessment", "Delete this assessment? This cannot be undone.", "Delete")) return;
-      await del(`/frameworks/${d.id}/assessments/${d.aid}`);
-      frameworkFocus = { catalog: frameworkFocus?.catalog, assessments: (await get(`/frameworks/${d.id}/assessments`)).assessments };
-      toast("Assessment deleted", "ok");
-      draw();
-    },
-    async evaluate() { await post("/grc/evaluate"); toast("Controls re-evaluated", "ok"); draw(); },
+    async evaluate() { await post("/grc/evaluate"); toast("Controls re-evaluated", "ok"); if (tab !== "frameworks") draw(); },
     override(d) {
       const c = data.controls.find((x) => x.id === d.id);
       const m = modal({
@@ -355,5 +233,5 @@ export async function render(el, ctx) {
     },
   });
   await draw();
-  ctx.live(["grc", "risk", "risk_removed", "policy", "policy_removed", "person_removed"], draw, 600);
+  ctx.live(["grc", "risk", "risk_removed", "policy", "policy_removed", "person_removed"], () => (tab === "frameworks" ? null : draw()), 600);
 }

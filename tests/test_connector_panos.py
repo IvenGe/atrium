@@ -1,460 +1,850 @@
-"""PAN-OS connector against a fake XML API (httpx.MockTransport, no network)."""
+"""The PAN-OS connector against a fake PAN-OS XML API (httpx.MockTransport, no network). The fake follows the research
+doc (docs/research/fw-fortigate-panos-cisco.md section 3) and pan-os-python: form-encoded POSTs to /api/ with
+X-PAN-KEY, <response status=... code=...> answers, a running and a candidate configuration (show reads the running
+one, set/delete/move change the candidate), partial commits as jobs polled with <show><jobs> (FIN / OK / FAIL),
+pending changes, locks, partial revert, save/load of named snapshots, export and import of the configuration."""
 
 from __future__ import annotations
 
 import asyncio
 import copy
+import hashlib
 import json
+import re
 import xml.etree.ElementTree as ET
+from email.parser import BytesParser
 from typing import Any
 from urllib.parse import parse_qs
 
 import httpx
 import pytest
 
-from hub import connectors
-from hub.connectors.base import ConnectorError, normalize
-from hub.connectors.netmodel import TEST_CHECKS, Backup, ChangeError, ops_applied, ops_reverted
-from hub.connectors.panos import PanOsConnector
+from hub.connectors.base import normalize
+from hub.connectors.netmodel import (Backup, ChangeError, exposes_management, inverse_ops, ops_applied, ops_reverted,
+                                     parse_ops)
+from hub.connectors.panos import PanosConnector, parse_version
+from hub.integration.connections import clean_config
 
-KEY = "pan-secret-key-value-abcdef"
-BASE = "https://fw.example"
-USER = "atrium-api"
+KEY = "LUFRPT1panos-api-key-0123456789abcdef=="
+BASE = "https://pa.example.net"
+ADMIN = "atrium-api"
+PHASH = "$5$panos-admin-password-hash-do-not-leak"
+VSYS = "/config/devices/entry[@name='localhost.localdomain']/vsys/entry[@name='vsys1']"
+
+RUNNING = f"""<config version="11.1.0" urldb="paloaltonetworks">
+<mgt-config><users>
+  <entry name="{ADMIN}"><phash>{PHASH}</phash><permissions><role-based><superuser>yes</superuser></role-based>
+  </permissions></entry>
+</users></mgt-config>
+<shared>
+  <address><entry name="shared-dns"><ip-netmask>10.0.0.53</ip-netmask></entry></address>
+  <service><entry name="shared-ntp"><protocol><udp><port>123</port></udp></protocol></entry></service>
+</shared>
+<devices><entry name="localhost.localdomain">
+  <network>
+    <interface>
+      <ethernet>
+        <entry name="ethernet1/1"><layer3><ip><entry name="203.0.113.2/29"/></ip>
+          <interface-management-profile>ping-only</interface-management-profile></layer3></entry>
+        <entry name="ethernet1/2"><layer3><ip><entry name="10.0.10.1/24"/></ip>
+          <interface-management-profile>allow-mgmt</interface-management-profile>
+          <units><entry name="ethernet1/2.30"><tag>30</tag><ip><entry name="10.0.30.1/24"/></ip></entry></units>
+        </layer3></entry>
+        <entry name="ethernet1/3"><layer3><ip><entry name="srv-gw"/></ip></layer3></entry>
+        <entry name="ethernet1/4"><layer3><dhcp-client/></layer3></entry>
+      </ethernet>
+      <loopback><units><entry name="loopback.1"><ip><entry name="10.0.99.1"/></ip></entry></units></loopback>
+    </interface>
+    <profiles><interface-management-profile>
+      <entry name="allow-mgmt"><https>yes</https><ssh>yes</ssh><ping>yes</ping>
+        <permitted-ip><entry name="10.0.99.0/24"/></permitted-ip></entry>
+      <entry name="ping-only"><ping>yes</ping></entry>
+    </interface-management-profile></profiles>
+  </network>
+  <vsys><entry name="vsys1">
+    <zone>
+      <entry name="untrust"><network><layer3><member>ethernet1/1</member></layer3></network></entry>
+      <entry name="trust"><network><layer3><member>ethernet1/2</member></layer3></network></entry>
+      <entry name="dmz"><network><layer3><member>ethernet1/3</member></layer3></network></entry>
+      <entry name="guest"><network><layer3><member>ethernet1/2.30</member></layer3></network></entry>
+      <entry name="mgmt"><network><layer3><member>loopback.1</member></layer3></network></entry>
+    </zone>
+    <address>
+      <entry name="LAN-net"><ip-netmask>10.0.10.0/24</ip-netmask></entry>
+      <entry name="srv-gw"><ip-netmask>10.0.20.1/24</ip-netmask></entry>
+      <entry name="SERVERS-net"><ip-netmask>10.0.20.0/24</ip-netmask></entry>
+      <entry name="web-srv"><ip-netmask>10.0.20.10</ip-netmask></entry>
+      <entry name="guest-range"><ip-range>10.0.30.1-10.0.30.6</ip-range></entry>
+      <entry name="updates"><fqdn>updates.example.com</fqdn></entry>
+    </address>
+    <address-group>
+      <entry name="internal"><static><member>LAN-net</member><member>web-srv</member></static></entry>
+      <entry name="tagged"><dynamic><filter>'web'</filter></dynamic></entry>
+    </address-group>
+    <service>
+      <entry name="tcp-8443"><protocol><tcp><port>8443</port></tcp></protocol></entry>
+      <entry name="web-ports"><protocol><tcp><port>80,443,8000-8080</port></tcp></protocol></entry>
+    </service>
+    <service-group>
+      <entry name="web-and-ntp"><members><member>web-ports</member><member>shared-ntp</member></members></entry>
+    </service-group>
+    <rulebase><security><rules>
+      <entry name="mgmt-ssh" uuid="0a1b"><from><member>mgmt</member></from><to><member>trust</member></to>
+        <source><member>any</member></source><destination><member>LAN-net</member></destination>
+        <source-user><member>any</member></source-user><application><member>ssh</member></application>
+        <service><member>application-default</member></service><action>allow</action></entry>
+      <entry name="lan-to-web"><from><member>trust</member></from><to><member>dmz</member></to>
+        <source><member>LAN-net</member></source><destination><member>web-srv</member></destination>
+        <application><member>any</member></application><service><member>web-ports</member></service>
+        <action>allow</action><log-end>yes</log-end></entry>
+      <entry name="web-from-internet"><from><member>untrust</member></from><to><member>dmz</member></to>
+        <source><member>any</member></source><destination><member>web-srv</member></destination>
+        <application><member>web-browsing</member><member>ssl</member></application>
+        <service><member>application-default</member></service><action>allow</action>
+        <description>Web &lt;b&gt;in&lt;/b&gt;</description></entry>
+      <entry name="guest-block"><from><member>guest</member></from><to><member>any</member></to>
+        <source><member>guest-range</member></source><destination><member>internal</member></destination>
+        <application><member>any</member></application><service><member>any</member></service>
+        <action>deny</action></entry>
+      <entry name="lan-out"><from><member>trust</member></from><to><member>untrust</member></to>
+        <source><member>any</member></source><destination><member>any</member></destination>
+        <application><member>any</member></application><service><member>any</member></service>
+        <action>allow</action><log-end>no</log-end></entry>
+      <entry name="old-rule"><from><member>trust</member></from><to><member>dmz</member></to>
+        <source><member>10.0.10.5</member></source><destination><member>10.0.20.0/24</member></destination>
+        <application><member>any</member></application><service><member>web-and-ntp</member></service>
+        <action>allow</action><disabled>yes</disabled></entry>
+      <entry name="edl-block"><from><member>untrust</member></from><to><member>any</member></to>
+        <source><member>panw-known-ip-list</member></source><destination><member>any</member></destination>
+        <application><member>any</member></application><service><member>any</member></service>
+        <action>drop</action><negate-destination>no</negate-destination></entry>
+      <entry name="it's-odd"><from><member>trust</member></from><to><member>dmz</member></to>
+        <source><member>10.0.10.7</member></source><destination><member>web-srv</member></destination>
+        <application><member>any</member></application><service><member>service-https</member></service>
+        <action>allow</action></entry>
+    </rules></security></rulebase>
+  </entry></vsys>
+</entry></devices>
+</config>"""
 
 
 def run(coro):
     return asyncio.run(coro)
 
 
-def allow(marker: str = "atrium:chg_31") -> dict[str, Any]:
-    return {"op": "allow", "source": {"zone": "trust", "cidrs": ["10.0.10.0/24"]},
-            "destination": {"zone": "dmz", "cidrs": ["10.0.20.0/24"]},
-            "services": [{"proto": "tcp", "ports": "443"}], "log": True,
-            "description": "Users to intranet", "marker": marker}
+def steps(xpath: str) -> list[str]:
+    """An xpath split at "/" outside quotes."""
+    out, current, quoted = [], "", False
+    for ch in xpath.strip("/"):
+        if ch == "'":
+            quoted = not quoted
+        if ch == "/" and not quoted:
+            out.append(current)
+            current = ""
+        else:
+            current += ch
+    return out + [current]
 
 
-@pytest.fixture(autouse=True)
-def _register(monkeypatch):
-    monkeypatch.setitem(connectors.REGISTRY, "panos", PanOsConnector)
+STEP_RE = re.compile(r"^([\w.-]+)(?:\[@name='([^']*)'\])?$")
 
 
-def _form(request: httpx.Request) -> dict[str, str]:
-    if not request.content:
-        return {}
-    parsed = parse_qs(request.content.decode())
-    return {key: values[0] for key, values in parsed.items()}
+class FakePanos:
+    """Just enough of the PAN-OS XML API for the connector."""
 
-
-def _rule(**kwargs: Any) -> dict[str, Any]:
-    base = {"from": ["trust"], "to": ["untrust"], "source": ["any"], "destination": ["any"],
-            "service": ["any"], "action": "allow", "disabled": "no", "description": "", "log": "no"}
-    base.update(kwargs)
-    return base
-
-
-class FakePan:
-    def __init__(self):
-        self.running = {
-            "addresses": {"web-srv": "10.0.20.10/32", "users": "10.0.10.0/24"},
-            "services": {"tcp-443": ("tcp", "443")},
-            "rules": [
-                _rule(name="allow-web", destination=["web-srv"], service=["application-default"], log="yes",
-                      description="web\u202e"),
-                _rule(name="servers", to=["dmz"], source=["users"], destination=["web-srv"], service=["tcp-443"],
-                      description="servers"),
-                _rule(name="to-any", source=["users"], destination=["any"], description="wide"),
-            ],
-        }
+    def __init__(self, version: str = "11.1.4-h7"):
+        self.version = version
+        self.running = ET.fromstring(RUNNING)
         self.candidate = copy.deepcopy(self.running)
-        self.snapshots: dict[str, dict[str, Any]] = {}
-        self.fail_commits = 0
-        self.locked = False
-        self.panorama = ""
-        self.version_error = False
-        self.hide_version = False
-        self.calls: list[httpx.Request] = []
+        self.saved: dict[str, ET.Element] = {}
+        self.imported: dict[str, bytes] = {}
+        self.own_pending = False
+        self.others_pending = False
+        self.locks: list[str] = []
+        self.panorama = False
+        self.denied: set[str] = set()  # "op", "commit", "export", "import", "rules", ...
+        self.jobs: dict[str, dict[str, Any]] = {}
+        self.polls_before_done = 1
+        self.commit_result = "OK"  # or "FAIL" / "HANG"
+        self.fail_set = False
+        self.unreachable = False
+        self.tls_untrusted = False
+        self.calls: list[dict[str, str]] = []
+        self.hits = {"lan-to-web": 42, "lan-out": 99120}
+
+    # -- configuration trees ---------------------------------------------------------------
+
+    @staticmethod
+    def find(tree: ET.Element, xpath: str) -> ET.Element | None:
+        parts = steps(xpath)
+        assert parts[0] == "config", xpath
+        node = tree
+        for step in parts[1:]:
+            tag, name = STEP_RE.match(step).groups()
+            node = next((c for c in node if c.tag == tag and (name is None or c.get("name") == name)), None)
+            if node is None:
+                return None
+        return node
+
+    @staticmethod
+    def ensure(tree: ET.Element, xpath: str) -> ET.Element:
+        node = tree
+        for step in steps(xpath)[1:]:
+            tag, name = STEP_RE.match(step).groups()
+            found = next((c for c in node if c.tag == tag and (name is None or c.get("name") == name)), None)
+            if found is None:
+                found = ET.SubElement(node, tag, {"name": name} if name is not None else {})
+            node = found
+        return node
+
+    @classmethod
+    def merge(cls, target: ET.Element, new: ET.Element) -> None:
+        for child in new:
+            if child.tag == "member":
+                if child.text not in [m.text for m in target.findall("member")]:
+                    ET.SubElement(target, "member").text = child.text
+                continue
+            existing = next((c for c in target if c.tag == child.tag and c.get("name") == child.get("name")), None)
+            if existing is None:
+                target.append(copy.deepcopy(child))
+            elif len(child) == 0:
+                existing.text = child.text
+            else:
+                cls.merge(existing, child)
+
+    def rule_names(self, tree: ET.Element | None = None) -> list[str]:
+        rules = self.find(tree if tree is not None else self.running, f"{VSYS}/rulebase/security/rules")
+        return [e.get("name") for e in rules.findall("entry")]
+
+    def rule(self, name: str, tree: ET.Element | None = None) -> ET.Element | None:
+        return self.find(tree if tree is not None else self.running, f"{VSYS}/rulebase/security/rules/entry[@name='{name}']")
+
+    # -- HTTP -------------------------------------------------------------------------------
+
+    @staticmethod
+    def ok(result: str = "", **attrs: str) -> httpx.Response:
+        extra = "".join(f' {k}="{v}"' for k, v in attrs.items())
+        return httpx.Response(200, text=f'<response status="success"{extra}><result>{result}</result></response>')
+
+    @staticmethod
+    def err(code: str, msg: str = "error") -> httpx.Response:
+        return httpx.Response(200, text=f'<response status="error" code="{code}"><msg><line>{msg}</line></msg></response>')
+
+    @staticmethod
+    def form(request: httpx.Request) -> tuple[dict[str, str], dict[str, tuple[str, bytes]]]:
+        ctype = request.headers.get("content-type", "")
+        if ctype.startswith("multipart/form-data"):
+            message = BytesParser().parsebytes(b"Content-Type: " + ctype.encode() + b"\r\n\r\n" + request.content)
+            fields, files = {}, {}
+            for part in message.get_payload():
+                name = part.get_param("name", header="content-disposition")
+                filename = part.get_param("filename", header="content-disposition")
+                if filename:
+                    files[name] = (filename, part.get_payload(decode=True))
+                else:
+                    fields[name] = part.get_payload(decode=True).decode()
+            return fields, files
+        return {k: v[0] for k, v in parse_qs(request.content.decode(), keep_blank_values=True).items()}, {}
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
-        self.calls.append(request)
-        if KEY in str(request.url):
-            return self._error("500", f"url leaked {KEY}")
-        if request.headers.get("X-PAN-KEY") != KEY:
-            return self._error("403", f"Invalid credential {KEY}")
-        form = _form(request)
-        kind = form.get("type", "")
-        if self.version_error and kind == "version":
-            return self._error("500", f"rejected {KEY}")
+        if self.unreachable:
+            raise httpx.ConnectTimeout("timed out", request=request)
+        if self.tls_untrusted:
+            raise httpx.ConnectError("[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed", request=request)
+        assert request.method == "POST" and request.url.path == "/api/" and not request.url.query  # nothing in URLs
+        if request.headers.get("x-pan-key") != KEY:
+            return httpx.Response(403, text='<response status="error" code="403"><result><msg>Invalid Credential'
+                                            '</msg></result></response>')
+        data, files = self.form(request)
+        self.calls.append(data)
+        kind = data.get("type")
         if kind == "version":
-            if self.hide_version:
-                return self._xml("<response status='success'><result><model>PA-VM</model></result></response>")
-            return self._xml("<response status='success'><result><sw-version>11.1.4</sw-version><model>PA-VM</model>"
-                             "<serial>012345678901</serial><hostname>pa1</hostname></result></response>")
-        if kind == "export":
-            return self._xml("<config>panos-test-configuration</config>")
-        if kind == "commit":
-            return self._xml("<response status='success' code='19'><result><job>15</job>"
-                             "<msg><line>Commit job enqueued with jobid 15</line></msg></result></response>")
-        if kind == "op":
-            return self._op(form.get("cmd", ""))
+            return self.ok(f"<sw-version>{self.version}</sw-version><multi-vsys>off</multi-vsys><model>PA-VM</model>"
+                           "<serial>007951000123456</serial>")
+        if kind in self.denied:
+            return self.err("16", "Unauthorized request")
         if kind == "config":
-            return self._config(form)
-        return self._error("400", "unexpected request")
+            return self.config(data)
+        if kind == "op":
+            return self.op(data["cmd"])
+        if kind == "commit":
+            return self.commit(data)
+        if kind == "export":
+            return httpx.Response(200, content=b'<?xml version="1.0"?>\n' + ET.tostring(self.running))
+        if kind == "import":
+            name, content = files["file"]
+            self.imported[name] = content
+            return self.ok(f"<msg>{name} saved</msg>")
+        return self.err("400", "bad request")
 
-    def _op(self, cmd: str) -> httpx.Response:
-        if "<jobs>" in cmd:
-            if self.fail_commits:
-                self.fail_commits -= 1
-                return self._xml("<response status='success'><result><job><id>15</id><status>FIN</status>"
-                                 "<result>FAIL</result></job></result></response>")
-            self.running = copy.deepcopy(self.candidate)
-            return self._xml("<response status='success'><result><job><id>15</id><status>FIN</status>"
-                             "<result>OK</result></job></result></response>")
-        if "<save>" in cmd:
-            name = ET.fromstring(cmd).findtext(".//to") or ""
-            self.snapshots[name] = copy.deepcopy(self.running)
-            return self._ok()
-        if "<load>" in cmd:
-            name = ET.fromstring(cmd).findtext(".//from") or ""
-            if name not in self.snapshots:
-                return self._error("7", "snapshot missing")
-            self.candidate = copy.deepcopy(self.snapshots[name])
-            return self._ok()
-        if "<revert>" in cmd:
-            self.candidate = copy.deepcopy(self.running)
-            return self._ok()
-        if "rule-hit-count" in cmd:
-            return self._xml("<response status='success'><result><entry name='allow-web'><hit-count>42</hit-count>"
-                             "</entry></result></response>")
-        if "config-locks" in cmd:
-            if self.locked:
-                return self._xml("<response status='success'><result><entry name='other'/></result></response>")
-            return self._ok()
-        if "pending-changes" in cmd:
-            return self._ok()
-        return self._ok()
-
-    def _config(self, form: dict[str, str]) -> httpx.Response:
-        action, xpath, element = form.get("action", ""), form.get("xpath", ""), form.get("element", "")
+    def config(self, data: dict[str, str]) -> httpx.Response:
+        action, xpath = data.get("action"), data.get("xpath", "")
         if action == "show":
-            return self._xml(self._show(xpath))
+            if "rulebase" in xpath and "rules" in self.denied:
+                return self.err("16")
+            node = self.find(self.running, xpath)
+            return self.ok(ET.tostring(node, encoding="unicode") if node is not None else "")
+        if self.fail_set and action == "set":
+            return self.err("12", "rule -> service 'x' is not a valid reference")
+        self.own_pending = True
         if action == "set":
-            self._apply_set(xpath, element)
-            return self._ok()
+            element = ET.fromstring(f"<x>{data['element']}</x>")
+            self.merge(self.ensure(self.candidate, xpath), element)
+            return self.ok(code="20")
+        parent_path, _, last = xpath.rpartition("/")
+        parent = self.find(self.candidate, parent_path)
+        node = self.find(self.candidate, xpath)
+        if node is None or parent is None:
+            return self.err("7", "Object doesn't exist")
+        if action == "delete":
+            parent.remove(node)
+            return self.ok(code="20")
         if action == "move":
-            name = self._entry_name(xpath)
-            dst = form.get("dst", "")
-            rules = self.candidate["rules"]
-            rule = next((r for r in rules if r["name"] == name), None)
-            if rule is not None and any(r["name"] == dst for r in rules):
-                rules.remove(rule)
-                rules.insert(next(i for i, r in enumerate(rules) if r["name"] == dst), rule)
-            return self._ok()
-        return self._error("400", "bad config action")
+            anchor = next((c for c in parent if c.get("name") == data.get("dst")), None)
+            if anchor is None or data.get("where") != "before":
+                return self.err("14")
+            parent.remove(node)
+            parent.insert(list(parent).index(anchor), node)
+            return self.ok(code="20")
+        return self.err("400")
 
-    def _show(self, xpath: str) -> str:
-        if xpath.endswith("panorama-server"):
-            body = f"<panorama-server>{self.panorama}</panorama-server>" if self.panorama else ""
-            return f"<response status='success' code='19'><result>{body}</result></response>"
-        if xpath.endswith("/network/interface"):
-            return ("<response status='success' code='19'><result><ethernet>"
-                    "<entry name='ethernet1/1'><layer3><ip><entry name='203.0.113.2/29'/></ip></layer3></entry>"
-                    "<entry name='ethernet1/2'><layer3><ip><entry name='10.0.10.1/24'/></ip></layer3></entry>"
-                    "<entry name='ethernet1/3'><layer3><ip><entry name='10.0.20.1/24'/></ip><units>"
-                    "<entry name='ethernet1/3.20'><tag>20</tag><ip><entry name='10.0.30.1/24'/></ip></entry>"
-                    "</units></layer3></entry></ethernet></result></response>")
-        if xpath.endswith("/zone"):
-            return ("<response status='success' code='19'><result><zone>"
-                    "<entry name='trust'><network><layer3><member>ethernet1/2</member></layer3></network></entry>"
-                    "<entry name='untrust'><network><layer3><member>ethernet1/1</member></layer3></network></entry>"
-                    "<entry name='dmz'><network><layer3><member>ethernet1/3</member></layer3></network></entry>"
-                    "</zone></result></response>")
-        state = self.running if True else self.candidate
-        if xpath.endswith("/address"):
-            entries = "".join(f"<entry name='{name}'><ip-netmask>{cidr}</ip-netmask></entry>"
-                              for name, cidr in state["addresses"].items())
-            return f"<response status='success' code='19'><result><address>{entries}</address></result></response>"
-        if xpath.endswith("/service"):
-            entries = []
-            for name, (proto, port) in state["services"].items():
-                if proto == "icmp":
-                    entries.append(f"<entry name='{name}'><protocol><icmp/></protocol></entry>")
-                else:
-                    entries.append(f"<entry name='{name}'><protocol><{proto}><port>{port}</port></{proto}></protocol></entry>")
-            return f"<response status='success' code='19'><result><service>{''.join(entries)}</service></result></response>"
-        if xpath.endswith("/rules"):
-            return f"<response status='success' code='19'><result><rules>{''.join(self._rule_xml(r) for r in state['rules'])}</rules></result></response>"
-        return "<response status='success' code='19'><result></result></response>"
-
-    def _rule_xml(self, rule: dict[str, Any]) -> str:
-        def members(tag: str, values: list[str]) -> str:
-            return f"<{tag}>" + "".join(f"<member>{v}</member>" for v in values) + f"</{tag}>"
-        return ("<entry name='" + rule["name"] + "'>" + members("from", rule["from"]) + members("to", rule["to"])
-                + members("source", rule["source"]) + members("destination", rule["destination"])
-                + members("service", rule["service"]) + f"<action>{rule['action']}</action>"
-                + f"<disabled>{rule['disabled']}</disabled><log-end>{rule['log']}</log-end>"
-                + f"<description>{rule['description']}</description></entry>")
-
-    def _apply_set(self, xpath: str, element: str) -> None:
-        name = self._entry_name(xpath)
-        wrap = ET.fromstring(f"<wrap>{element}</wrap>")
-        if "/address/" in xpath:
-            self.candidate["addresses"][name] = (wrap.findtext("ip-netmask") or "").strip()
-            return
-        if "/service/" in xpath:
-            if wrap.find("protocol/icmp") is not None:
-                self.candidate["services"][name] = ("icmp", "")
-            elif wrap.find("protocol/udp/port") is not None:
-                self.candidate["services"][name] = ("udp", (wrap.findtext("protocol/udp/port") or "").strip())
+    def op(self, cmd: str) -> httpx.Response:
+        root = ET.fromstring(cmd)
+        if "op" in self.denied and root.tag != "save":
+            return self.err("16", "Unauthorized request")
+        if root.tag == "check":
+            return self.ok("yes" if self.own_pending or self.others_pending else "no")
+        if root.tag == "show" and root.find("config-locks") is not None:
+            return self.ok("<config-locks>" + "".join(f'<entry name="{n}"><comment>busy</comment></entry>'
+                                                      for n in self.locks) + "</config-locks>")
+        if root.tag == "show" and root.find("commit-locks") is not None:
+            return self.ok("<commit-locks/>")
+        if root.tag == "show" and root.find("panorama-status") is not None:
+            return self.ok(f"Panorama Server 1 : 10.1.1.1\n Connected : {'yes' if self.panorama else 'no'}\n")
+        if root.tag == "show" and root.find("jobs") is not None:
+            job = self.jobs[root.findtext("jobs/id")]
+            job["polls"] += 1
+            if self.commit_result == "HANG" or job["polls"] <= self.polls_before_done:
+                return self.ok(f"<job><id>{job['id']}</id><status>ACT</status><result>PEND</result>"
+                               "<progress>55</progress></job>")
+            return self.ok(f"<job><id>{job['id']}</id><type>Commit</type><status>FIN</status>"
+                           f"<result>{job['result']}</result><progress>100</progress></job>")
+        if root.tag == "show" and root.find("rule-hit-count") is not None:
+            entries = "".join(f'<entry name="{n}"><hit-count>{c}</hit-count></entry>' for n, c in self.hits.items())
+            return self.ok("<rule-hit-count><vsys><entry name=\"vsys1\"><rule-base><entry name=\"security\"><rules>"
+                           f"{entries}</rules></entry></rule-base></entry></vsys></rule-hit-count>")
+        if root.tag == "revert":
+            assert root.findtext("config/partial/admin/member") == ADMIN
+            self.candidate, self.own_pending = copy.deepcopy(self.running), False
+            return self.ok()
+        if root.tag == "save":
+            self.saved[root.findtext("config/to")] = copy.deepcopy(self.candidate)
+            return self.ok(f"<msg>Config saved to {root.findtext('config/to')}</msg>")
+        if root.tag == "load":
+            name = root.findtext("config/from")
+            if name == "running-config.xml":
+                self.candidate = copy.deepcopy(self.running)
+            elif name in self.saved:
+                self.candidate = copy.deepcopy(self.saved[name])
+            elif name in self.imported:
+                self.candidate = ET.fromstring(self.imported[name].split(b"?>", 1)[-1])
             else:
-                self.candidate["services"][name] = ("tcp", (wrap.findtext("protocol/tcp/port") or "").strip())
-            return
-        disabled = wrap.findtext("disabled")
-        if wrap.find("from") is None and disabled is not None:
-            for rule in self.candidate["rules"]:
-                if rule["name"] == name:
-                    rule["disabled"] = disabled.strip()
-            return
-        rule = _rule(name=name, **{
-            "from": [m.text for m in wrap.findall("from/member")],
-            "to": [m.text for m in wrap.findall("to/member")],
-            "source": [m.text for m in wrap.findall("source/member")],
-            "destination": [m.text for m in wrap.findall("destination/member")],
-            "service": [m.text for m in wrap.findall("service/member")],
-            "action": (wrap.findtext("action") or "allow").strip(),
-            "disabled": (disabled or "no").strip(),
-            "description": wrap.findtext("description") or "",
-            "log": (wrap.findtext("log-end") or "no").strip(),
-        })
-        self.candidate["rules"] = [r for r in self.candidate["rules"] if r["name"] != name] + [rule]
+                return self.err("7", "file not found")
+            self.own_pending, self.others_pending = True, False
+            return self.ok("<msg>Config loaded</msg>")
+        return self.err("17", "invalid command")
 
-    def _entry_name(self, xpath: str) -> str:
-        marker = "entry[@name='"
-        start = xpath.rfind(marker)
-        if start < 0:
-            return ""
-        rest = xpath[start + len(marker):]
-        return rest.split("'", 1)[0]
-
-    def _ok(self) -> httpx.Response:
-        return self._xml("<response status='success' code='19'><result></result></response>")
-
-    def _error(self, code: str, message: str) -> httpx.Response:
-        return self._xml(f"<response status='error' code='{code}'><result><msg>{message}</msg></result></response>")
-
-    def _xml(self, body: str) -> httpx.Response:
-        return httpx.Response(200, content=body.encode(), headers={"content-type": "application/xml"})
+    def commit(self, data: dict[str, str]) -> httpx.Response:
+        root = ET.fromstring(data["cmd"])
+        partial = root.find("partial") is not None
+        if partial:
+            assert data.get("action") == "partial" and root.findtext("partial/admin/member") == ADMIN
+        if not (self.own_pending or (self.others_pending and not partial)):
+            return httpx.Response(200, text='<response status="success" code="19"><msg>There are no changes to '
+                                            'commit.</msg></response>')
+        job = str(len(self.jobs) + 1)
+        self.jobs[job] = {"id": job, "polls": 0, "result": "FAIL" if self.commit_result == "FAIL" else "OK"}
+        if self.commit_result == "OK":
+            self.running = copy.deepcopy(self.candidate)
+            self.own_pending = False
+            if not partial:
+                self.others_pending = False
+        return httpx.Response(200, text=f'<response status="success" code="19"><result><msg><line>Commit job enqueued '
+                                        f'with jobid {job}</line></msg><job>{job}</job></result></response>')
 
 
-def connector(fake: FakePan, **config: Any) -> PanOsConnector:
-    cfg = {"base_url": BASE, "vsys": "vsys1", "verify_tls": True, "can_write": False, "api_user": USER, **config}
-    return PanOsConnector(cfg, {"api_key": KEY}, httpx.MockTransport(fake))
+@pytest.fixture
+def fake(monkeypatch) -> FakePanos:
+    device = FakePanos()
+    now = [1000.0]
+
+    async def sleep(seconds: float) -> None:
+        now[0] += seconds
+
+    monkeypatch.setattr(PanosConnector, "clock", staticmethod(lambda: now[0]))
+    monkeypatch.setattr(PanosConnector, "sleep", staticmethod(sleep))
+    return device
 
 
-def pulled(fake: FakePan, **config: Any) -> dict[str, Any]:
-    records = run(connector(fake, **config).pull("network"))
-    assert isinstance(records, list) and len(records) == 1
-    valid, errors = normalize("network", records)
-    assert not errors and len(valid) == 1
-    return valid[0]
+def connector(fake: FakePanos, **config: Any) -> PanosConnector:
+    """A new instance (= a new connection); the hub manages the firewall from 10.0.99.10."""
+    config = {"hub_address": "10.0.99.10", "api_admin": ADMIN, **config}
+    return PanosConnector(clean_config(PanosConnector, {"base_url": BASE, **{k: v for k, v in config.items()
+                                                                              if v is not None}}),
+                          {"api_key": KEY}, httpx.MockTransport(fake))
 
 
-def test_registry_and_config():
-    assert connectors.connector_class("panos") is PanOsConnector
-    described = PanOsConnector.describe()
-    assert described["capabilities"] == {"network": ["read"]}
-    assert described["network_write"]["rollback"] == "backup_restore"
-    assert PanOsConnector({"base_url": BASE, "api_user": USER}, {"api_key": KEY}).write_capability() is None
-    with pytest.raises(ConnectorError, match="https://"):
-        PanOsConnector.validate_config({"base_url": "http://fw.example", "vsys": "vsys1"})
-    with pytest.raises(ConnectorError, match="API admin"):
-        PanOsConnector.validate_config({"base_url": BASE, "vsys": "vsys1", "can_write": True})
+def snapshot(fake: FakePanos, **config: Any) -> dict[str, Any]:
+    records, errors = normalize("network", run(connector(fake, **config).pull("network")))
+    assert errors == [] and records[0]["errors"] == [], errors or records[0]["errors"]
+    return records[0]
 
 
-def test_pull_rules_zones_and_interfaces():
-    record = pulled(FakePan())
-    assert record["external_id"] == "012345678901"
-    assert record["device"]["version"] == "11.1.4" and record["device"]["hostname"] == "pa1"
-    assert record["revision"].startswith("h-")
-    wan = next(i for i in record["interfaces"] if i["id"] == "ethernet1/1")
-    assert wan["role"] == "wan" and wan["addresses"] == ["203.0.113.2"]
-    unit = next(i for i in record["interfaces"] if i["id"] == "ethernet1/3.20")
-    assert unit["vlan"] == 20 and "10.0.30.1" in unit["addresses"]
-    assert {z["id"] for z in record["zones"]} == {"trust", "untrust", "dmz"}
-    web = next(r for r in record["rules"] if r["id"] == "allow-web")
-    assert web["vendor_ref"] == "allow-web" and web["hits"] == 42 and web["action"] == "pass"
-    assert web["destination"]["cidrs"] == ["10.0.20.10/32"] and web["source"]["any"] is True
-    assert web["services"][0]["alias"] == "application-default"
-    assert "\u202e" not in web["description"]
-    servers = next(r for r in record["rules"] if r["id"] == "servers")
-    assert servers["services"][0]["ports"] == "443" and servers["source"]["cidrs"] == ["10.0.10.0/24"]
-    assert "10.0.10.1" in record["self_addresses"]
+def rule(record: dict[str, Any], rid: str) -> dict[str, Any]:
+    return next(r for r in record["rules"] if r["id"] == rid)
 
 
-def test_checks_privilege_note_and_xml_error_on_http_200():
-    result = run(connector(FakePan(), can_write=True).test())
-    assert result["ok"] is True
-    assert [c["name"] for c in result["checks"]] == list(TEST_CHECKS)
-    assert "read-only" in result["checks"][3]["detail"]
-    assert result["network_write"]["rollback"] == "backup_restore"
-    assert KEY not in json.dumps(result)
-
-    read_only = run(connector(FakePan(), can_write=False).test())
-    assert read_only["network_write"] is None and "read-only credential" in read_only["checks"][3]["detail"]
-
-    hidden = FakePan()
-    hidden.hide_version = True
-    assert run(connector(hidden, can_write=True).test())["network_write"] is None
-
-    broken = FakePan()
-    broken.version_error = True
-    failed = run(connector(broken, can_write=True).test())
-    assert failed["ok"] is False and failed["network_write"] is None
-    assert KEY not in failed["detail"] and "***" in failed["detail"]
-
-    denied = run(PanOsConnector({"base_url": BASE, "vsys": "vsys1", "verify_tls": True}, {"api_key": "other-key-value"},
-                                httpx.MockTransport(FakePan())).test())
-    assert denied["ok"] is False and any(c["name"] == "authentication" and not c["ok"] for c in denied["checks"])
-    assert "other-key-value" not in json.dumps(denied)
+ALLOW = parse_ops([{"op": "allow", "source": {"zone": "trust", "cidrs": ["10.0.10.0/24"]},
+                    "destination": {"zone": "dmz", "cidrs": ["10.0.20.0/24"]},
+                    "services": [{"proto": "tcp", "ports": "443"}, {"proto": "tcp", "ports": "8443"}],
+                    "log": True, "description": "Users to <intranet>", "marker": "atrium:chg_7"}])
 
 
-def test_preview_does_not_edit_the_candidate():
-    fake = FakePan()
-    preview = run(connector(fake, can_write=True).preview_change([allow()], {}))
-    assert preview["problems"] == []
-    assert preview["steps"][0]["detail"].endswith("atrium:chg_31")
-    forms = [_form(call) for call in fake.calls]
-    assert all(form.get("action") != "set" and form.get("type") != "commit" for form in forms)
-    bad = run(connector(FakePan(), can_write=True).preview_change([allow()], {}))
-    # unknown zone
-    refused = run(connector(FakePan(), can_write=True).preview_change(
-        [{**allow(), "source": {**allow()["source"], "zone": "no-such"}}], {}))
-    assert any("no-such" in problem for problem in refused["problems"])
-    locked = run(connector(FakePan(), can_write=True).preview_change(
-        [{"op": "disable_rules", "rules": [{"id": "to-any", "vendor_ref": "to-any"}]}], {}))
-    assert any("device itself" in problem for problem in locked["problems"])
-    assert bad["problems"] == []
+def disable(*names: str) -> list[dict[str, Any]]:
+    return parse_ops([{"op": "disable_rules", "rules": [{"id": n, "vendor_ref": n} for n in names]}])
 
 
-def test_apply_partial_commit_and_inverse_rollback():
-    fake = FakePan()
-    before = pulled(fake)
-    conn = connector(fake, can_write=True)
-    applied = run(conn.apply_change([allow()], before["revision"], None))
-    assert applied["rollback_until"] is None and applied["created"][0]["vendor_ref"].startswith("atr-r-")
-    assert KEY not in applied["token"]
-    forms = [_form(call) for call in fake.calls]
-    commits = [form for form in forms if form.get("type") == "commit"]
-    assert commits and commits[0].get("action") == "partial" and f"<member>{USER}</member>" in commits[0]["cmd"]
-    assert all(KEY not in (call.content or b"").decode() and KEY not in str(call.url) for call in fake.calls)
-    moves = [form for form in forms if form.get("action") == "move"]
-    assert moves and moves[0]["where"] == "before" and moves[0]["dst"] == "allow-web"
-    saved = [form for form in forms if form.get("type") == "op" and "<save>" in form.get("cmd", "")]
-    assert saved and "atrium-pre-chg_31.xml" in saved[0]["cmd"]
-    after = pulled(fake)
-    assert ops_applied(after, [allow()]) == []
-    assert after["revision"] != before["revision"]
-    rolled = run(connector(fake, can_write=True).rollback_change(applied["token"], None))
+def writes(fake: FakePanos) -> list[dict[str, str]]:
+    return [c for c in fake.calls if c.get("type") in ("commit", "import") or
+            (c.get("type") == "config" and c.get("action") != "show")]
+
+
+# --------------------------------------------------------------------------------------
+# reading
+# --------------------------------------------------------------------------------------
+
+
+def test_reads_rules_zones_and_objects_into_the_network_model(fake):
+    record = snapshot(fake)
+    assert record["external_id"] == "007951000123456" and record["kind"] == "firewall"
+    assert record["device"]["vendor"] == "Palo Alto Networks" and record["device"]["version"] == "11.1.4"
+    assert record["device"]["model"] == "PA-VM"
+    ifaces = {i["id"]: i for i in record["interfaces"]}
+    assert set(ifaces) == {"ethernet1/1", "ethernet1/2", "ethernet1/2.30", "ethernet1/3", "ethernet1/4", "loopback.1"}
+    assert ifaces["ethernet1/1"]["role"] == "wan" and ifaces["ethernet1/2"]["role"] == "lan"
+    assert ifaces["ethernet1/2.30"]["vlan"] == 30 and ifaces["ethernet1/2.30"]["subnets"] == ["10.0.30.0/24"]
+    assert ifaces["ethernet1/3"]["subnets"] == ["10.0.20.0/24"]  # the ip entry names an address object
+    assert ifaces["loopback.1"]["role"] == "mgmt" and ifaces["ethernet1/4"]["subnets"] == []
+    assert set(record["self_addresses"]) == {"203.0.113.2", "10.0.10.1", "10.0.30.1", "10.0.20.1", "10.0.99.1"}
+    zones = {z["id"]: z["interfaces"] for z in record["zones"]}
+    assert zones["trust"] == ["ethernet1/2"] and zones["guest"] == ["ethernet1/2.30"]
+
+    aliases = {a["name"]: a for a in record["aliases"]}
+    assert aliases["web-srv"] == {"name": "web-srv", "kind": "host", "cidrs": ["10.0.20.10/32"], "ports": None,
+                                  "resolved": True}
+    assert aliases["internal"]["cidrs"] == ["10.0.10.0/24", "10.0.20.10/32"] and aliases["internal"]["resolved"]
+    assert aliases["tagged"]["resolved"] is False and aliases["updates"]["resolved"] is False
+    assert aliases["guest-range"]["cidrs"][0] == "10.0.30.1/32" and aliases["shared-dns"]["cidrs"] == ["10.0.0.53/32"]
+
+    policies = [r for r in record["rules"] if not r["id"].startswith("mgmt-profile:")]
+    assert [r["id"] for r in policies] == ["mgmt-ssh", "lan-to-web", "web-from-internet", "guest-block", "lan-out",
+                                           "old-rule", "edl-block", "it's-odd"]
+    web = rule(record, "lan-to-web")
+    assert web["source_zones"] == ["trust"] and web["destination_zones"] == ["dmz"] and web["interfaces"] == []
+    assert web["services"] == [{"proto": "tcp", "ports": "80,443,8000-8080", "alias": None, "name": "web-ports"}]
+    assert web["hits"] == 42 and web["log"] and web["vendor_ref"] == "lan-to-web"
+    internet = rule(record, "web-from-internet")
+    assert internet["services"][0]["alias"] == "application-default" and "web-browsing" in internet["services"][0]["name"]
+    assert internet["description"] == "Web <b>in</b>" and internet["log"]  # device text stays text (never HTML)
+    assert rule(record, "guest-block")["action"] == "block" and rule(record, "guest-block")["destination_zones"] == []
+    out = rule(record, "lan-out")
+    assert out["source"]["any"] and out["services"] is None and out["log"] is False
+    old = rule(record, "old-rule")
+    assert not old["enabled"] and old["source"]["cidrs"] == ["10.0.10.5/32"]
+    assert {(s["proto"], s["ports"]) for s in old["services"]} == {("tcp", "80,443,8000-8080"), ("udp", "123")}
+    assert rule(record, "edl-block")["source"]["aliases"] == ["panw-known-ip-list"]
+    assert rule(record, "it's-odd")["services"][0]["ports"] == "443"  # predefined service-https
+    mgmt = rule(record, "mgmt-profile:ethernet1/2")
+    assert mgmt["destination"]["self"] and mgmt["source"]["cidrs"] == ["10.0.99.0/24"]
+    assert {(s["proto"], s["ports"]) for s in mgmt["services"]} == {("tcp", "443"), ("tcp", "22"), ("icmp", None)}
+    assert not any(exposes_management(record, r) for r in record["rules"])
+    assert KEY not in json.dumps(record) and PHASH not in json.dumps(record)
+
+
+def test_management_profile_on_the_internet_zone_is_exposure(fake):
+    profile = fake.find(fake.running, "/config/devices/entry[@name='localhost.localdomain']/network/profiles/"
+                                      "interface-management-profile/entry[@name='ping-only']")
+    ET.SubElement(profile, "https").text = "yes"
+    record = snapshot(fake)
+    assert exposes_management(record, rule(record, "mgmt-profile:ethernet1/1"))
+    assert snapshot(fake, wan_zones="dmz")["interfaces"][0]["role"] != "wan"  # the setting overrides the guess
+
+
+def test_revision_follows_the_configuration_not_counters(fake):
+    first = snapshot(fake)
+    fake.hits["lan-to-web"] = 777
+    assert snapshot(fake)["revision"] == first["revision"]
+    fake.rule("lan-to-web").find("action").text = "deny"
+    assert snapshot(fake)["revision"] != first["revision"]
+
+
+def test_unsupported_versions_and_missing_rights(fake):
+    fake.version = "9.1.16"
+    with pytest.raises(Exception, match="not supported"):
+        run(connector(fake).pull("network"))
+    fake.version = "11.1.4"
+    fake.denied = {"rules"}
+    with pytest.raises(Exception, match="role lacks"):
+        run(connector(fake).pull("network"))
+    fake.denied = {"op"}  # no hit counts, nothing else lost
+    record = snapshot(fake)
+    assert rule(record, "lan-to-web")["hits"] is None and any("hit counts" in n for n in record["notes"])
+
+
+# --------------------------------------------------------------------------------------
+# test()
+# --------------------------------------------------------------------------------------
+
+
+def names(result: dict[str, Any]) -> list[str]:
+    return [c["name"] for c in result["checks"]]
+
+
+def detail(result: dict[str, Any], name: str) -> str:
+    return next(c["detail"] for c in result["checks"] if c["name"] == name)
+
+
+def test_test_reports_each_step_and_the_write_capability(fake):
+    result = run(connector(fake).test())
+    assert result["ok"], result
+    assert names(result)[:6] == ["reachability", "tls", "authentication", "privileges", "version", "api_features"]
+    assert result["network_write"] == {"ops": ["allow", "disable_rules", "enable_rules"], "rollback": "backup_restore",
+                                       "window_s": 300}
+    assert "role superuser" in detail(result, "privileges") and "read-only one is recommended" in detail(result,
+                                                                                                         "privileges")
+    assert "PAN-OS 11.1.4 PA-VM - supported" in detail(result, "version")
+    assert "partial commits" in detail(result, "api_features") and "Panorama: not connected" in detail(result,
+                                                                                                    "api_features")
+    assert "Connected to PAN-OS 11.1.4" in result["detail"]
+    assert writes(fake) == []  # the test changed nothing
+
+    role = fake.find(fake.running, f"/config/mgt-config/users/entry[@name='{ADMIN}']/permissions/role-based")
+    role.remove(role.find("superuser"))
+    ET.SubElement(role, "superreader").text = "yes"
+    result = run(connector(fake).test())
+    assert result["ok"] and result["network_write"] is None and "read-only role" in detail(result, "privileges")
+
+
+@pytest.mark.parametrize("change, reason", [
+    (lambda f: setattr(f, "panorama", True), "Panorama"),
+    (lambda f: f.denied.add("op"), "Operational Requests"),
+])
+def test_write_capability_needs_a_safe_setup(fake, change, reason):
+    change(fake)
+    result = run(connector(fake).test())
+    assert result["ok"] and result["network_write"] is None, result
+    assert reason in detail(result, "privileges")
+
+
+def test_without_the_admin_account_or_with_read_only_nothing_is_written(fake):
+    result = run(connector(fake, api_admin=None).test())
+    assert result["ok"] and result["network_write"] is None and "API admin account" in detail(result, "privileges")
+    assert connector(fake, api_admin=None).write_capability() is None
+    assert connector(fake, read_only=True).write_capability() is None
+    with pytest.raises(ChangeError) as caught:
+        run(connector(fake, read_only=True).apply_change(ALLOW, snapshot(fake)["revision"], None))
+    assert caught.value.code == "unsupported" and writes(fake) == []
+
+
+def test_test_failures_say_what_to_fix(fake):
+    fake.unreachable = True
+    result = run(connector(fake).test())
+    assert result["ok"] is False and names(result) == ["reachability"]
+    fake.unreachable, fake.tls_untrusted = False, True
+    result = run(connector(fake).test())
+    assert names(result) == ["reachability", "tls"] and "CA certificate file" in detail(result, "tls")
+    fake.tls_untrusted = False
+    bad = PanosConnector({"base_url": BASE}, {"api_key": "wrong-key-value"}, httpx.MockTransport(fake))
+    result = run(bad.test())
+    assert names(result)[-1] == "authentication" and "refused the API key" in result["detail"]
+    assert "wrong-key-value" not in json.dumps(result) and KEY not in json.dumps(result)
+    fake.denied = {"config"}
+    result = run(connector(fake).test())
+    assert result["ok"] is False and "XML API: Configuration" in detail(result, "privileges")
+    fake.denied = set()
+    html = httpx.MockTransport(lambda request: httpx.Response(200, text="<!DOCTYPE html><html>login</html>"))
+    result = run(PanosConnector({"base_url": BASE}, {"api_key": KEY}, html).test())
+    assert names(result) == ["reachability", "tls", "authentication"] and "not like PAN-OS" in result["detail"]
+
+
+def test_config_validation_options_and_detection(fake):
+    from hub.models import Manifest, Tool
+
+    cfg = clean_config(PanosConnector, {"base_url": "https://pa:8443/api/"})
+    assert cfg["base_url"] == "https://pa:8443" and cfg["vsys"] == "vsys1" and cfg["commit_timeout"] == 300
+    for bad in ("http://pa", "https://user:pw@pa", "https://pa/?key=1"):
+        with pytest.raises(ValueError):
+            clean_config(PanosConnector, {"base_url": bad})
+    for field, value in (("vsys", "vsys1']/x"), ("api_admin", "a'b"), ("wan_zones", "untrust, x'y"),
+                         ("commit_timeout", 5), ("hub_address", "hub.local"), ("ca_file", "ca.pem")):
+        with pytest.raises(ValueError):
+            clean_config(PanosConnector, {"base_url": BASE, field: value})
+    assert clean_config(PanosConnector, {"base_url": BASE, "wan_zones": " untrust ,outside"})["wan_zones"] == \
+        "untrust, outside"
+    assert run(connector(fake).options("vsys")) == [{"value": "vsys1", "label": "vsys1"}]
+    tool = Tool(id="pa1", name="Palo Alto edge", source_type="saas", source="https://paloaltonetworks.com",
+                status="ready", manifest=Manifest(id="pa1", name="Palo Alto edge", kind="saas"))
+    assert PanosConnector.detect(tool) == 50  # the vendor name alone is a weak hint
+    firewall = Tool(id="pa2", name="PAN-OS edge", source_type="saas", source="https://example.net", status="ready",
+                    manifest=Manifest(id="pa2", name="PAN-OS edge", kind="saas"))
+    assert PanosConnector.detect(firewall) == 90
+    assert parse_version("10.2.10-h3") == (10, 2, 10)
+
+
+# --------------------------------------------------------------------------------------
+# changes
+# --------------------------------------------------------------------------------------
+
+
+def test_apply_snapshots_writes_the_candidate_and_commits_only_its_admin(fake):
+    before = snapshot(fake)
+    preview = run(connector(fake).preview_change(ALLOW, before))
+    assert preview["problems"] == [], preview
+    step = preview["steps"][0]
+    assert "before rule lan-to-web" in step["position"] and "atrium-tcp-443" in step["detail"]
+    assert writes(fake) == []  # a preview writes nothing
+
+    applied = run(connector(fake).apply_change(ALLOW, before["revision"], None))
+    assert applied["created"] == [{"op": 0, "id": "atrium-chg_7", "vendor_ref": "atrium-chg_7"}]
+    token = json.loads(applied["token"])
+    assert token == {"v": 1, "vsys": "vsys1", "admin": ADMIN, "snapshot": "atrium-pre-chg_7.xml",
+                     "rules": ["atrium-chg_7"], "services": ["atrium-tcp-443"], "toggled": {}}
+    assert "atrium-pre-chg_7.xml" in fake.saved
+    kinds = [(c["type"], c.get("action")) for c in writes(fake)]
+    assert kinds == [("config", "set"), ("config", "set"), ("config", "move"), ("commit", "partial")]
+    new = fake.rule("atrium-chg_7")
+    assert [m.text for m in new.findall("from/member")] == ["trust"]
+    assert [m.text for m in new.findall("source/member")] == ["10.0.10.0/24"]
+    assert [m.text for m in new.findall("service/member")] == ["atrium-tcp-443", "tcp-8443"]
+    assert [m.text for m in new.findall("application/member")] == ["any"]
+    assert new.findtext("description") == "atrium:chg_7 Users to <intranet>"  # escaped on the wire, text on the device
+    assert fake.rule_names().index("atrium-chg_7") == fake.rule_names().index("lan-to-web") - 1
+    assert not fake.own_pending
+
+    after = snapshot(fake)
+    assert ops_applied(after, ALLOW) == [] and rule(after, "atrium-chg_7")["marker"] == "chg_7"
+    confirmed = run(connector(fake).confirm_change(applied["token"]))
+    assert confirmed["confirmed"] and any("atrium-pre-chg_7.xml" in n for n in confirmed["notes"])
+    revert = inverse_ops(ALLOW, applied)  # a revert is a new change: the created rule is disabled
+    again = run(connector(fake).apply_change(revert, after["revision"], None))
+    assert again["disabled"] == ["atrium-chg_7"] and ops_reverted(before, snapshot(fake), ALLOW) == []
+
+
+def test_rollback_with_inverse_ops(fake):
+    before = snapshot(fake)
+    ops = ALLOW + disable("lan-to-web")
+    applied = run(connector(fake).apply_change(ops, before["revision"], None))
+    assert applied["disabled"] == ["lan-to-web"] and fake.rule("lan-to-web").findtext("disabled") == "yes"
+    rolled = run(connector(fake).rollback_change(applied["token"], None))
     assert rolled["method"] == "inverse_ops"
-    again = pulled(fake)
-    assert ops_reverted(before, again, [allow()]) == []
+    assert fake.rule("atrium-chg_7") is None and fake.rule("lan-to-web").findtext("disabled") == "no"
+    assert fake.find(fake.running, f"{VSYS}/service/entry[@name='atrium-tcp-443']") is None
+    assert ops_reverted(before, snapshot(fake), ops) == []
+    assert run(connector(fake).rollback_change(applied["token"], None))["notes"] == \
+        ["the firewall no longer runs the change"]
 
 
-def test_disable_then_confirm_does_not_commit_again():
-    fake = FakePan()
-    current = pulled(fake)
-    conn = connector(fake, can_write=True)
-    applied = run(conn.apply_change([{"op": "disable_rules", "rules": [{"id": "servers", "vendor_ref": "servers"}]}],
-                                    current["revision"], None))
-    assert applied["disabled"] == ["servers"]
-    assert next(r for r in pulled(fake)["rules"] if r["id"] == "servers")["enabled"] is False
-    commits = sum(1 for call in fake.calls if _form(call).get("type") == "commit")
-    confirmed = run(connector(fake, can_write=True).confirm_change(applied["token"]))
-    assert confirmed["confirmed"] is True
-    assert sum(1 for call in fake.calls if _form(call).get("type") == "commit") == commits
-    run(connector(fake, can_write=True).rollback_change(applied["token"], None))
-    assert next(r for r in pulled(fake)["rules"] if r["id"] == "servers")["enabled"] is True
+def test_rollback_falls_back_to_the_snapshot(fake, monkeypatch):
+    before = snapshot(fake)
+    applied = run(connector(fake).apply_change(ALLOW, before["revision"], None))
+    original = FakePanos.config
+
+    def refuse_delete(self, data):
+        if data.get("action") == "delete":
+            return self.err("10", "referenced")
+        return original(self, data)
+
+    monkeypatch.setattr(FakePanos, "config", refuse_delete)
+    fake.others_pending = True  # another admin started editing meanwhile: the load discards it
+    rolled = run(connector(fake).rollback_change(applied["token"], None))
+    assert rolled["method"] == "backup_restore" and any("snapshot" in n for n in rolled["notes"])
+    assert fake.rule("atrium-chg_7") is None and ops_reverted(before, snapshot(fake), ALLOW) == []
+    full = [c for c in fake.calls if c.get("type") == "commit"][-1]
+    assert "action" not in full and ET.fromstring(full["cmd"]).find("partial") is None
 
 
-def test_refuses_stale_lockout_lock_panorama_and_read_only():
-    fake = FakePan()
-    current = pulled(fake)
-    with pytest.raises(ChangeError) as exc:
-        run(connector(fake, can_write=True).apply_change([allow()], "h-stale", None))
-    assert exc.value.code == "stale" and exc.value.state == "unchanged"
-    assert not any(_form(call).get("type") == "commit" for call in fake.calls)
-
-    with pytest.raises(ChangeError) as exc:
-        run(connector(fake, can_write=True).apply_change(
-            [{"op": "disable_rules", "rules": [{"id": "to-any", "vendor_ref": "to-any"}]}], current["revision"], None))
-    assert exc.value.code == "lockout"
-
-    held = FakePan()
-    held.locked = True
-    revision = pulled(held)["revision"]
-    with pytest.raises(ChangeError) as exc:
-        run(connector(held, can_write=True).apply_change([allow()], revision, None))
-    assert exc.value.state == "unchanged"
-    assert not any("<save>" in _form(call).get("cmd", "") for call in held.calls)
-
-    managed = FakePan()
-    managed.panorama = "10.1.1.1"
-    tested = run(connector(managed, can_write=True).test())
-    assert tested["network_write"] is None
-    revision = pulled(managed)["revision"]
-    with pytest.raises(ChangeError) as exc:
-        run(connector(managed, can_write=True).apply_change([allow()], revision, None))
-    assert exc.value.code == "invalid"
-
-    quiet = FakePan()
-    with pytest.raises(ChangeError) as exc:
-        run(connector(quiet, can_write=False).apply_change([allow()], "h-anything", None))
-    assert exc.value.code == "unsupported" and quiet.calls == []
+def test_a_failed_commit_is_reverted_and_reported_unchanged(fake):
+    before = snapshot(fake)
+    fake.commit_result = "FAIL"
+    with pytest.raises(ChangeError) as caught:
+        run(connector(fake).apply_change(ALLOW, before["revision"], None))
+    assert caught.value.state == "unchanged" and "failed" in caught.value.message
+    assert fake.rule("atrium-chg_7") is None and not fake.own_pending  # the candidate was cleaned up
 
 
-def test_failed_commit_leaves_running_config_unchanged():
-    fake = FakePan()
-    revision = pulled(fake)["revision"]
-    fake.fail_commits = 1
-    with pytest.raises(ChangeError) as exc:
-        run(connector(fake, can_write=True).apply_change([allow()], revision, None))
-    assert exc.value.state == "unchanged"
-    assert not any(r.get("marker") == "chg_31" for r in pulled(fake)["rules"])
+def test_a_commit_that_does_not_finish_is_unknown(fake):
+    before = snapshot(fake)
+    fake.commit_result = "HANG"
+    with pytest.raises(ChangeError) as caught:
+        run(connector(fake, commit_timeout=30).apply_change(ALLOW, before["revision"], None))
+    assert caught.value.state == "unknown" and "may still complete" in caught.value.message
 
 
-def test_backup_export_and_snapshot_restore():
-    fake = FakePan()
-    backup = run(connector(fake, can_write=True).backup())
-    assert backup["format"] == "xml" and b"panos-test-configuration" in backup["content"]
-    assert KEY not in backup["content"].decode()
-    assert backup["device_backup_id"].startswith("atrium-hub-")
-    assert backup["sha256"]
-    restored = run(connector(fake, can_write=True).restore_backup(
-        Backup("b1", backup["content"], backup["sha256"], 0.0, format="xml", device_backup_id=backup["device_backup_id"])))
-    assert restored["restored"] is True
-    secret = b"<config>super-secret-config-line</config>"
-    with pytest.raises(ChangeError) as exc:
-        run(connector(fake, can_write=True).restore_backup(Backup("b2", secret, "abc", 0.0, format="xml")))
-    assert exc.value.code == "unsupported" and "super-secret-config-line" not in exc.value.message
+def test_a_failed_write_discards_the_candidate(fake):
+    before = snapshot(fake)
+    fake.fail_set = True
+    with pytest.raises(ChangeError) as caught:
+        run(connector(fake).apply_change(ALLOW, before["revision"], None))
+    assert caught.value.state == "unchanged" and "code 12" in caught.value.message
+    assert not fake.own_pending and not [c for c in fake.calls if c.get("type") == "commit"]
 
 
-def test_inverse_failure_loads_the_snapshot():
-    fake = FakePan()
-    revision = pulled(fake)["revision"]
-    applied = run(connector(fake, can_write=True).apply_change([allow()], revision, None))
-    assert any(r.get("marker") == "chg_31" for r in pulled(fake)["rules"])
-    fake.fail_commits = 1
-    rolled = run(connector(fake, can_write=True).rollback_change(applied["token"], None))
-    assert rolled["method"] == "backup_restore"
-    assert not any(r.get("marker") == "chg_31" and r.get("enabled", True) for r in pulled(fake)["rules"])
+def test_preflight_pending_changes_and_locks(fake):
+    before = snapshot(fake)
+    fake.own_pending = True  # a leftover of the API admin: discarded before writing
+    applied = run(connector(fake).apply_change(disable("lan-to-web"), before["revision"], None))
+    assert any("discarded" in n for n in applied["notes"])
+    record = snapshot(fake)
+    fake.others_pending = True
+    with pytest.raises(ChangeError) as caught:
+        run(connector(fake).apply_change(disable("guest-block"), record["revision"], None))
+    assert caught.value.state == "unchanged" and "other administrators" in caught.value.message
+    fake.others_pending = False
+    fake.locks = ["admin"]
+    preview = run(connector(fake).preview_change(disable("guest-block"), record))
+    assert any("locks are held by admin" in p for p in preview["problems"])
+    with pytest.raises(ChangeError) as caught:
+        run(connector(fake).apply_change(disable("guest-block"), record["revision"], None))
+    assert caught.value.state == "unchanged" and "never removes" in caught.value.message
 
 
-def test_requests_stay_on_the_firewall():
-    fake = FakePan()
-    run(connector(fake).pull("network"))
-    assert fake.calls
-    for call in fake.calls:
-        assert call.url.host == "fw.example"
-        assert KEY not in str(call.url)
-        assert call.headers.get("X-PAN-KEY") == KEY
-    with pytest.raises(ConnectorError):
-        run(connector(fake).pull("assets"))
+def test_stale_lockout_and_refused_ops(fake):
+    before = snapshot(fake)
+    fake.rule("lan-to-web").find("action").text = "deny"
+    with pytest.raises(ChangeError) as caught:
+        run(connector(fake).apply_change(ALLOW, before["revision"], None))
+    assert caught.value.code == "stale"
+
+    record = snapshot(fake)
+    preview = run(connector(fake).preview_change(disable("lan-out"), record))
+    assert any("cut the hub off" in p for p in preview["problems"])
+    with pytest.raises(ChangeError) as caught:
+        run(connector(fake).apply_change(disable("lan-out"), record["revision"], None))
+    assert caught.value.code == "lockout"
+    problems = run(connector(fake).preview_change(disable("it's-odd"), record))["problems"]
+    assert any("cannot address safely" in p for p in problems)
+    problems = run(connector(fake).preview_change(disable("mgmt-profile:ethernet1/2"), record))["problems"]
+    assert any("interface settings" in p for p in problems)
+    icmp = parse_ops([{"op": "allow", "source": {"zone": "trust", "cidrs": ["10.0.10.0/24"]},
+                       "destination": {"zone": "nowhere", "cidrs": ["10.0.20.0/24"]}, "services": [{"proto": "icmp"}],
+                       "marker": "atrium:chg_9"}])
+    problems = run(connector(fake).preview_change(icmp, record))["problems"]
+    assert any("App-ID" in p for p in problems) and any("no zone 'nowhere'" in p for p in problems)
+    assert writes(fake) == []
+
+
+def test_disabling_an_already_disabled_rule_writes_nothing(fake):
+    before = snapshot(fake)
+    applied = run(connector(fake).apply_change(disable("old-rule"), before["revision"], None))
+    assert applied["disabled"] == [] and not [c for c in writes(fake) if c.get("type") == "commit"]
+    assert run(connector(fake).confirm_change(applied["token"]))["confirmed"]
+
+
+def test_tokens_are_validated(fake):
+    good = {"v": 1, "vsys": "vsys1", "admin": ADMIN, "snapshot": "atrium-pre-x.xml", "rules": [], "services": [],
+            "toggled": {}}
+    for bad in ("{}", "not json", json.dumps({**good, "rules": ["x']/../../entry"]}),
+                json.dumps({**good, "snapshot": "../../etc/passwd"}), json.dumps({**good, "admin": "admin"}),
+                json.dumps({**good, "toggled": {"lan-to-web": "maybe"}})):
+        with pytest.raises(ChangeError) as caught:
+            run(connector(fake).rollback_change(bad, None))
+        assert caught.value.code == "invalid"
+
+
+# --------------------------------------------------------------------------------------
+# backups
+# --------------------------------------------------------------------------------------
+
+
+def test_backup_and_restore(fake):
+    taken = run(connector(fake).backup())
+    assert taken["format"] == "xml" and PHASH.encode() in taken["content"] and b"<config" in taken["content"]
+    content = taken["content"]
+    backup = Backup("bk_1", content, hashlib.sha256(content).hexdigest(), 0.0, "xml")
+    before = snapshot(fake)
+    run(connector(fake).apply_change(ALLOW, before["revision"], None))
+    restored = run(connector(fake).restore_backup(backup))
+    assert restored["restored"] and "atrium-restore-bk_1.xml" in fake.imported
+    assert ops_reverted(before, snapshot(fake), ALLOW) == [] and fake.rule("atrium-chg_7") is None
+
+    with pytest.raises(ChangeError) as caught:
+        run(connector(fake).restore_backup(Backup("bk_2", b"#config-version", "x", 0.0, "text")))
+    assert caught.value.code == "invalid" and caught.value.state == "unchanged"
+    fake.denied = {"export"}
+    with pytest.raises(Exception, match="XML API: Export"):
+        run(connector(fake).backup())
+
+
+def test_restore_refuses_other_administrators_changes(fake):
+    content = run(connector(fake).backup())["content"]
+    fake.others_pending = True
+    backup = Backup("bk", content, hashlib.sha256(content).hexdigest(), 0.0, "xml")
+    with pytest.raises(ChangeError) as caught:
+        run(connector(fake).restore_backup(backup))
+    assert caught.value.state == "unchanged" and not fake.imported
+    fake.others_pending = False
+    fake.denied = {"import"}
+    with pytest.raises(ChangeError) as caught:
+        run(connector(fake).restore_backup(backup))
+    assert caught.value.state == "unchanged" and "XML API: Import" in caught.value.message
+    # nothing was loaded, so nothing is discarded: other administrators' candidate edits are never thrown away
+    assert not [c for c in fake.calls if c.get("type") == "op" and "<load>" in c.get("cmd", "")]
+
+
+def test_errors_never_carry_secrets(fake):
+    fake.fail_set = True
+    with pytest.raises(ChangeError) as caught:
+        run(connector(fake).apply_change(ALLOW, snapshot(fake)["revision"], None))
+    text = json.dumps(caught.value.as_dict())
+    assert KEY not in text and "not a valid reference" not in text  # device text is not quoted
+
+
+# --------------------------------------------------------------------------------------
+# through the hub
+# --------------------------------------------------------------------------------------
+
+
+def test_through_the_hub(client, monkeypatch, wait_for):
+    from hub.models import Manifest, Tool
+
+    fake = FakePanos()
+    hub = client.app.state.hub
+    monkeypatch.setattr(hub, "connector_transport", httpx.MockTransport(fake), raising=False)
+    tool = Tool(id="pa1", name="Palo Alto edge", source_type="saas", source="https://paloaltonetworks.com",
+                status="ready", manifest=Manifest(id="pa1", name="Palo Alto edge", kind="saas"))
+    hub.save_tool(tool)
+    client.portal.call(hub.agents.ensure_tool_supervisor, tool)
+    assert any(c["kind"] == "panos" and c["can_backup"] for c in client.get("/api/connectors").json())
+    response = client.put("/api/tools/pa1/connection", json={"kind": "panos", "config": {"base_url": BASE,
+                                                                                        "api_admin": ADMIN},
+                                                             "secrets": {"api_key": KEY}})
+    assert response.status_code == 200, response.text
+    tested = client.post("/api/tools/pa1/connection/test").json()
+    assert tested["ok"] and tested["network_write"]["rollback"] == "backup_restore", tested
+    assert KEY not in json.dumps(tested)
+    approval = wait_for(lambda: next((a for a in client.get("/api/approvals?status=pending").json()
+                                      if a["kind"] == "flow" and a["payload"]["tool_id"] == "pa1"), None))
+    assert client.post(f"/api/approvals/{approval['id']}", json={"approve": True}).status_code == 200
+    wait_for(lambda: next((f for f in client.get("/api/flows?tool_id=pa1").json()
+                           if f["domain"] == "network" and f["status"] == "enabled"), None))
+    refreshed = client.post("/api/network/devices/pa1/refresh").json()
+    assert refreshed["results"][0]["ok"], refreshed
+    device = client.get("/api/network/devices/pa1").json()
+    assert device["record"]["device"]["vendor"] == "Palo Alto Networks" and len(device["record"]["rules"]) == 10
+    assert KEY not in json.dumps(device) and PHASH not in json.dumps(device)
+    seg = client.get("/api/segmentation?firewall=pa1").json()
+    edges = {(e["source"], e["target"]) for e in seg["edges"]}
+    assert ("z:pa1:trust", "z:pa1:dmz") in edges and ("z:internet", "z:pa1:dmz") in edges, edges
+    backup = client.post("/api/network/devices/pa1/backups")
+    assert backup.status_code == 201, backup.text
+    assert PHASH not in backup.text

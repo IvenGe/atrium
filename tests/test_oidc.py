@@ -18,7 +18,7 @@ import secrets
 import time
 from pathlib import Path
 from typing import Any, Callable
-from urllib.parse import parse_qs, unquote, urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 import httpx
 import pytest
@@ -31,6 +31,7 @@ from fastapi.testclient import TestClient
 from hub.app import create_app
 from hub.auth import oidc as oidc_module
 from hub.auth.oidc import OidcClient, OidcError, OidcIdentity
+from hub.auth.service import STATE_COOKIE
 from hub.config import Settings
 
 ISSUER = "https://idp.example.com/realms/hub"
@@ -125,8 +126,8 @@ class FakeIdP:
         query = {k: v[0] for k, v in parse_qs(urlsplit(url).query).items()}
         now = time.time()
         base = {"iss": self.issuer, "sub": SUBJECT, "aud": CLIENT_ID, "azp": CLIENT_ID, "exp": now + 300, "iat": now,
-                "nonce": query["nonce"], "preferred_username": "ada", "email": "ada@example.com",
-                "email_verified": True, "name": "Ada Lovelace", "groups": ["atrium-operators"]}
+                "nonce": query["nonce"], "preferred_username": "ada", "email": "ada@example.com", "name": "Ada Lovelace",
+                "groups": ["atrium-operators"]}
         code = secrets.token_urlsafe(16)
         self.grants[code] = {"query": query, "claims": {k: v for k, v in {**base, **(claims or {})}.items() if v is not None},
                              "alg": alg, "kid": kid, "key": key if key is not None else KEYS.get(kid or "rsa"),
@@ -305,13 +306,20 @@ def test_state_expires(idp, monkeypatch):
 
 
 def test_pending_sign_ins_are_bounded(idp, monkeypatch):
+    """The client keeps nothing per started sign-in, so a flood of anonymous starts cannot push a person's sign-in
+    out (review F30); it remembers only finished ones - at most MAX_PENDING - so each state is used once."""
     monkeypatch.setattr(oidc_module, "MAX_PENDING", 3)
     oidc = client_for(idp)
-    started = [asyncio.run(oidc.begin()) for _ in range(4)]
-    (first_url, first_state), (last_url, last_state) = started[0], started[-1]
+    started = [asyncio.run(oidc.begin()) for _ in range(50)]
+    assert len(oidc._used) == 0
+    first_url, first_state = started[0]
+    assert asyncio.run(oidc.complete(idp.authorize(first_url), first_state, first_state)).subject == SUBJECT
+    for url, state in started[1:6]:
+        assert asyncio.run(oidc.complete(idp.authorize(url), state, state)).subject == SUBJECT
+    assert len(oidc._used) == 3  # bounded
+    last_url, last_state = started[5]
     with pytest.raises(OidcError, match="expired or was already used"):
-        asyncio.run(oidc.complete(idp.authorize(first_url), first_state, first_state))
-    assert asyncio.run(oidc.complete(idp.authorize(last_url), last_state, last_state)).subject == SUBJECT
+        asyncio.run(oidc.complete(idp.authorize(last_url), last_state, last_state))
 
 
 @pytest.mark.parametrize("issuer, allow_http, allowed", [
@@ -391,11 +399,14 @@ def test_display_name_and_email_from_the_identity(idp):
     assert (identity.name, identity.email) == ("Grace Hopper", None)
 
 
-def test_unverified_email_is_not_accepted(idp):
-    missing = sign_in(client_for(idp), idp, claims={"email_verified": None})
-    refused = sign_in(client_for(idp), idp, claims={"email_verified": False})
-    assert missing.email is None and refused.email is None
-    assert missing.username == "ada"
+def test_an_email_the_provider_marks_unverified_is_not_taken(idp):
+    """email_verified false (or "false"): no email. A provider that sends no email_verified at all (Entra ID work
+    accounts) manages the address itself, so it is taken."""
+    for flag in (False, "false"):
+        refused = sign_in(client_for(idp), idp, claims={"email_verified": flag})
+        assert refused.email is None and refused.username == "ada"
+    assert sign_in(client_for(idp), idp, claims={"email_verified": True}).email == "ada@example.com"
+    assert sign_in(client_for(idp), idp, claims={"email_verified": None}).email == "ada@example.com"
 
 
 @pytest.mark.parametrize("overrides, claims, role", [
@@ -446,10 +457,14 @@ def sso(browser: TestClient, idp: FakeIdP, **grant) -> httpx.Response:
     return callback(browser, idp.authorize(url, **grant), state)
 
 
-def login_error(response: httpx.Response) -> str:
+def login_error(response: httpx.Response, browser: TestClient) -> str:
+    """Why a sign-in failed, as the sign-in screen shows it: the redirect carries no text (review F32), the browser's
+    next GET /api/auth/me does, once."""
     location = response.headers["location"]
-    assert response.status_code == 302 and location.startswith("/#/login?error="), location
-    return unquote(location.split("error=", 1)[1])
+    assert response.status_code == 302 and location == "/#/login", location
+    message = browser.get("/api/auth/me").json()["sso_error"]
+    assert message and browser.get("/api/auth/me").json()["sso_error"] is None
+    return message
 
 
 def test_sso_end_to_end(hub_client, idp):
@@ -494,7 +509,8 @@ def test_sso_end_to_end(hub_client, idp):
     assert len(hub.auth.users()) == 2
 
     assert hub_client.patch(f"/api/users/{user['id']}", json={"disabled": True}).status_code == 200
-    assert login_error(sso(new_browser(hub_client), idp)) == "This account is disabled."
+    refused = new_browser(hub_client)
+    assert login_error(sso(refused, idp), refused) == "This account is disabled."
     assert again.get("/api/auth/me").json()["authenticated"] is False
 
 
@@ -504,14 +520,14 @@ def test_sso_callback_rejections_land_on_the_login_screen(hub_client, idp):
     url, state = start(anon)
     code = idp.authorize(url)
     stranger = new_browser(hub_client)  # never started a sign-in, so it has no state cookie
-    assert login_error(callback(stranger, code, state)) == "This sign-in was not started in this browser. Start again."
+    assert login_error(callback(stranger, code, state), stranger) == "This sign-in was not started in this browser. Start again."
     assert stranger.get("/api/auth/me").json()["authenticated"] is False
 
     url, _ = start(anon)  # a newer sign-in in the same browser replaces the state cookie
-    assert login_error(callback(anon, idp.authorize(url), state)) == "This sign-in was not started in this browser. Start again."
-    assert "different identity provider" in login_error(sso(anon, idp, claims={"iss": "https://evil.example.com"}))
-    assert "does not accept (none)" in login_error(sso(anon, idp, alg="none"))
-    assert "signature is not valid" in login_error(sso(anon, idp, tamper=tamper_claims))
+    assert login_error(callback(anon, idp.authorize(url), state), anon) == "This sign-in was not started in this browser. Start again."
+    assert "different identity provider" in login_error(sso(anon, idp, claims={"iss": "https://evil.example.com"}), anon)
+    assert "does not accept (none)" in login_error(sso(anon, idp, alg="none"), anon)
+    assert "signature is not valid" in login_error(sso(anon, idp, tamper=tamper_claims), anon)
     assert anon.get("/api/auth/me").json()["authenticated"] is False
     assert hub.auth.users()[0].username == "admin" and len(hub.auth.users()) == 1
     failures = [e for e in hub.store.tail("activity", 200) if e["actor"] == "auth" and e["text"].startswith("Single sign-on failed")]
@@ -525,5 +541,5 @@ def test_sso_refuses_a_plain_http_issuer(tmp_path: Path):
     with TestClient(create_app(settings), headers={"X-Hub-Request": "1"}) as c:
         c.app.state.hub.auth.oidc = OidcClient(c.app.state.hub.settings, transport=idp.transport)
         response = c.get("/api/auth/oidc/login", follow_redirects=False)
-        assert "plain http" in login_error(response) and "set-cookie" not in response.headers
+        assert "plain http" in login_error(response, c) and not any(STATE_COOKIE in cookie for cookie in response.headers.get_list("set-cookie"))
         assert idp.calls == []

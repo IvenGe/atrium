@@ -54,60 +54,89 @@ Scanners implement the actions ``scan`` (params: ``hosts`` - IPs, CIDRs or hostn
 ``scan_status`` (params: ``job_id``) -> {"status", "progress" 0-100, "done": bool}; ``status`` "failed", "stopped"
 or "interrupted" marks the scan failed.
 
+Actions that change something (start a scan, ...) are listed in ``side_effect_actions`` with the approval kind that
+governs them (``{"scan": "scan"}``). The tool's supervisor runs such an action only for a person, or for the agent
+that owns that approval path (``tool_supervisor.ACTION_ROUTES``: kind "scan" -> ``module:vulns``, which applies the
+scan approval policy) - never for team agents or other modules, so none of them can bypass that approval. Actions not listed there must be
+read-only (``scan_status``).
+
 Errors: raise ``ConnectorError`` with a message a person can act on; ``self.error()`` / ``self.raise_for_status()``
 build one with the HTTP status and a response excerpt, both with every secret value masked.
 
 Network devices (firewalls, routers, switches, host firewalls) - the device connector contract
 ---------------------------------------------------------------------------------------------
-Reading: declare ``capabilities = {"network": {"read"}}`` and return ``[record]`` from ``pull("network")`` (shape in
-``netmodel.py``). ``test()`` should be useful to a person checking a real device: one check per step - reachability,
-TLS (certificate verified or the configured CA file), authentication, privileges (say when the credential can WRITE
-although device changes are off: "a read-only key is recommended until device changes are enabled"), product and
-version (and whether this connector supports it), and the API features it relies on. ``test()`` may add
-``"network_write": {...} | None`` to its result: what this device and credential actually allow (it can only narrow
-the class declaration below, e.g. a version without savepoints, or a read-only key -> None).
+The record shape, the change operations, their validation and the shared helpers are in ``netmodel.py`` (read its
+docstring first); ``fake_firewall.py`` implements the whole contract and is the reference. One connection = one device.
+
+Reading: declare ``capabilities = {"network": {"read"}}`` and return ``[record]`` from ``pull("network")``.
+``detect(tool)`` scores the product as usual (``name_score``). ``test()`` must be useful to a person checking a real
+device: one check per step, named as in ``netmodel.TEST_CHECKS`` - ``reachability``, ``tls`` (certificate verified, or
+the configured CA file), ``authentication``, ``privileges`` (the role found; when the credential can WRITE say
+``netmodel.LEAST_PRIVILEGE_NOTE``), ``version`` (product and version, and whether this connector supports it),
+``api_features`` (what it relies on: savepoints, transactions, confirmed commit, ...) - then vendor checks. ``ok`` is
+true when the device can be read. ``test()`` may add ``"network_write": {...} | None``: what this device and
+credential actually allow. It can only NARROW ``write_capability()`` (fewer ops; None for a read-only key or a
+version without a safe rollback mechanism); the hub keeps it with the test result (``integration.network``).
 
 Writing (only where the product has a safe mechanism): declare the class attribute
-``network_write = {"ops": ["allow", "disable_rules"], "rollback": <mode>, "window_s": <seconds>}`` and implement the
-six methods below. Rollback modes (``netmodel.ROLLBACK_MODES``): ``savepoint`` (the device reverts by itself unless
+``network_write = {"ops": ["allow", "disable_rules", "enable_rules"], "rollback": <mode>, "window_s": <seconds>}``
+(``window_s`` 10-3600) and implement the six methods below; ``write_capability()`` narrows it by the connection's
+settings (e.g. a "read only" setting -> None) and returns None unless every method but ``restore_backup`` is
+implemented. Rollback modes (``netmodel.ROLLBACK_MODES``): ``savepoint`` (the device reverts by itself unless
 confirmed within window_s), ``commit_confirm`` (a confirmed commit that reverts by itself), ``deadman`` (a revert job
 the connector arms on the device before writing and disarms on confirm), ``backup_restore`` (no device-side timer:
-rollback_change undoes the change with recorded inverse operations or by restoring the backup), ``none`` (not
+rollback_change undoes the change with ``netmodel.inverse_ops`` or by restoring the backup), ``none`` (not
 writable). These methods are NEVER connector actions: a class whose ``actions`` names one of them (or another name in
 ``netmodel.RESERVED_ACTIONS``) is refused when it is defined, and ``connector.action`` refuses them, so they are only
-reached through the hub's change path (approval bound to the revision and ops hash, backup first, verification).
-Generated / generic connectors are never write-capable. Every call opens its own connection (the hub verifies a
-change through a NEW connector instance, i.e. a new connection, so a surviving session proves nothing).
+reached through the hub's change path. Generated / generic connectors are never write-capable. Every call opens its
+own connection: the hub builds a NEW connector instance per call (so verification runs over a new connection, and a
+token must work in a new instance - even after a hub restart).
+
+How the hub drives a change (``module:network``; the connector never decides any of it):
+1. proposal: a fresh ``pull("network")``, then ``preview_change(ops, snapshot)``; ``problems`` refuse the change.
+2. after the approval (bound to the snapshot revision and ``netmodel.ops_hash(ops)``): ``backup()`` - stored
+   encrypted by the hub - unless the backup guardrail is off; a failed backup refuses the apply while it is on.
+3. ``apply_change(ops, base_revision, backup)``.
+4. verification through new instances: ``test()`` ok and a re-read where ``netmodel.ops_applied`` finds no problem.
+5. ``confirm_change(token)`` within the window; otherwise ``rollback_change(token, backup)``, a re-read must pass
+   ``netmodel.ops_reverted``, else the hub calls ``restore_backup(pre-change backup)`` and alerts.
+6. an approved "restore" change: ``restore_backup(backup)``.
 
 ``backup()`` -> ``{"content": bytes | str (the full configuration), "format": "xml" | "json" | "text" | ...,
     "device_backup_id": the device's own reference or None, "revision": the config revision it holds or None,
-    "sha256": optional (verified when given)}``. The hub encrypts the content (``hub/secrets.py``), stores it with its
-    SHA-256 and size and only ever hands it back as ``netmodel.Backup``. Never log it or put it in an error.
-``preview_change(ops, snapshot)`` -> ``{"steps": [{"op": index, "kind": "add_rule" | "disable_rule", "position":
-    "top of LAN rules", "detail": "..."}], "notes": [...], "problems": [...]}``. No side effects (it may read the
-    device). ``ops`` are ``netmodel.parse_ops`` canonical dicts, ``snapshot`` the hub's current normalised record;
-    ``problems`` (e.g. ``netmodel.management_guard``, a zone the device does not have) refuse the change.
+    "sha256": optional hex digest of content (verified when given)}``. The hub encrypts the content
+    (``hub/secrets.py``), stores it in ``device_backups`` with its SHA-256, size and revision, returns only metadata
+    ``{id, taken_at, size, sha256, ...}`` and hands the content back only as ``netmodel.Backup`` (and to an admin
+    download). Never log it, return it elsewhere or put it in an error.
+``preview_change(ops, snapshot)`` -> ``{"steps": [{"op": index, "kind": "add_rule" | "disable_rule" | "enable_rule",
+    "position": "top of LAN rules", "detail": "..."}], "notes": [...], "problems": [...]}``. No side effects (it may
+    read the device). ``ops`` are ``netmodel.parse_ops`` canonical dicts, ``snapshot`` the hub's current normalised
+    record; ``problems`` (``netmodel.management_guard``, a zone the device does not have, ...) refuse the change.
 ``apply_change(ops, base_revision, backup)`` -> ``{"token": str (opaque, JSON-safe, no secrets, <= 4096 chars),
     "rollback_until": epoch seconds when the device reverts by itself (None for backup_restore), "revision": the new
-    revision or None, "created": [{"op": index, "id", "vendor_ref"}], "disabled": [vendor_ref, ...], "notes": [...]}``.
-    It must: re-read and compare the revision with ``base_revision`` (``ChangeError(code="stale", state="unchanged")``
-    on a mismatch), run the management-path guard (``code="lockout"``), arm the rollback mechanism BEFORE writing,
-    write exactly the ops (one rule per allow, marked ``op["marker"]``), and apply. ``backup`` is the hub's
-    pre-change backup (``netmodel.Backup``, or None when the hub's backup guardrail is off) for backup_restore.
+    revision or None, "created": [{"op": index, "id", "vendor_ref"}] (the rule each allow made, as the next pull will
+    report it), "disabled": [vendor_ref, ...], "enabled": [vendor_ref, ...], "notes": [...]}``. It must: re-read and
+    compare the revision with ``base_revision`` (``ChangeError(code="stale", state="unchanged")`` on a mismatch), run
+    the management-path guard (``code="lockout"``), arm the rollback mechanism BEFORE writing, write exactly the ops
+    (one rule per allow, its description/comment starting with ``op["marker"]``), and apply. ``backup`` is the hub's
+    pre-change backup (``netmodel.Backup``, or None when the backup guardrail is off) - backup_restore needs it.
 ``confirm_change(token)`` -> ``{"confirmed": True, "revision": ..., "notes": [...]}``: cancel the timer / confirm the
     commit / persist (only now, where the product separates running and persisted config).
 ``rollback_change(token, backup)`` -> ``{"rolled_back": True, "method": "savepoint" | "commit_confirm" | "deadman" |
     "inverse_ops" | "backup_restore", "notes": [...]}``: undo now. The hub re-reads the device to prove it.
 ``restore_backup(backup)`` -> ``{"restored": True, "revision": ..., "notes": [...]}``: put an Atrium-managed backup
-    back (an approved "restore" change - the hub never restores without one).
+    back (only for an approved "restore" change, or after a failed rollback - the hub never restores on its own). A
+    restore change is a write: the hub proposes and runs one only while the connection's write capability (narrowed
+    by its settings and last test) is not None; recovering a change's own pre-change backup is not refused.
 
-Failures raise ``netmodel.ChangeError(message, code=..., state=...)``: ``state`` says what the device holds now
-(unchanged, rolled_back, applied or unknown - the hub then restores its own backup and alerts). The token must let a
-NEW connector instance confirm or roll back (it may be used after a hub restart).
+Failures raise ``netmodel.ChangeError(message, code=..., state=...)``: ``code`` stale | lockout | unsupported |
+invalid | unreachable | failed; ``state`` what the device holds now - unchanged, rolled_back, applied or unknown
+(the hub then restores its own backup and alerts). Messages must not quote device text or secrets.
 
-SSH-based connectors (host firewalls, CLI-only devices) use ``self.ssh(target)`` - one connection per session,
-stdout / stderr / exit status kept apart, scripts on stdin, no silent truncation (see ``execution/runner.py``); tests
-pass a fake SSH transport (``execution/sshfake.py``) as the connector's ``transport``.
+SSH-based connectors (host firewalls, CLI-only devices) use ``netmodel.SSH_FIELDS`` / ``validate_ssh_config`` /
+``ssh_target`` and ``self.ssh(target)`` - one connection per session, stdout / stderr / exit status kept apart,
+scripts on stdin, no silent truncation, strict host keys (see ``execution/runner.py``); tests pass a fake SSH
+transport (``execution/sshfake.FakeSshTransport``) as the connector's ``transport`` (or ``hub.connector_transport``).
 """
 
 from __future__ import annotations
@@ -621,8 +650,11 @@ def endpoint_of(value: Any) -> str:
     return text.lower()
 
 
+# Settings that decide who receives a connection's secrets: changing one needs the secrets entered again. An SSH
+# connection's pinned host key and known_hosts file are among them (review F22): with another key the password
+# would go to whichever host presents it.
 ENDPOINT_FIELDS = ("host", "hostname", "port", "server", "address", "socket", "socket_path", "connection_type",
-                   "transport", "ca_file")
+                   "transport", "ca_file", "host_key", "known_hosts")
 
 
 class Connector:
@@ -634,9 +666,8 @@ class Connector:
     fields: ClassVar[list[ConnectorField]] = []
     capabilities: ClassVar[dict[str, set[str]]] = {}  # domain -> {"read", "write"}
     actions: ClassVar[set[str]] = set()  # e.g. {"scan", "scan_status"}
-    # actions that change the tool. The tool supervisor refuses them from anyone except a person or the agent that
-    # owns that action's approval path (OpenVAS "scan" -> module:vulns). Reads such as scan_status stay open.
-    side_effects: ClassVar[set[str]] = set()
+    # actions that change something -> the approval kind whose path alone may run them (see the module docstring)
+    side_effect_actions: ClassVar[dict[str, str]] = {}
     system_of_record: ClassVar[set[str]] = set()  # domains this product is authoritative for (never pushed to)
     timeout: ClassVar[float] = 30.0
     # device changes (see the module docstring): {"ops": [...], "rollback": mode, "window_s": seconds}; None = read-only
@@ -651,6 +682,9 @@ class Connector:
             raise TypeError(f"{cls.__name__}: {', '.join(reserved)} cannot be connector actions - device changes go "
                             "through the network change path only")
         validate_write_spec(cls.network_write)  # a bad declaration fails at import, not during a change
+        unknown = sorted(set(cls.side_effect_actions) - set(cls.actions))
+        if unknown:
+            raise TypeError(f"{cls.__name__}: side_effect_actions names unknown actions: {', '.join(unknown)}")
 
     def __init__(self, config: dict[str, Any], secrets: dict[str, str], transport: Any = None):
         self.config = {**self.defaults(), **{k: v for k, v in (config or {}).items() if v is not None}}

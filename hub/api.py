@@ -11,11 +11,12 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from . import connectors, guardrails, llm_providers
+from . import canvas_api, connectors, guardrails, llm_providers, network_api, network_changes_api
 from . import people as people_app
 from .agents import teams
 from .agents import vulns as vuln_app
 from .agents.grc import control_catalog
+from .approvals import DecisionRefused
 from .auth.service import CurrentPrincipal, Principal
 from .bus import AgentError
 from .connectors.base import ConnectorError
@@ -27,8 +28,9 @@ from .extensions import registry as ext_registry
 from .extensions import selfpatch
 from .grc.baseline import POLICY_TEMPLATES
 from .grc.checks import framework_scores
-from . import api_canvas, api_changes, api_frameworks, api_network
-from .integration import changes as network_changes
+from .grc.frameworks import api as frameworks_api
+from .grc.frameworks import sync as framework_sync
+from .integration import changes as device_changes
 from .integration import connections, flows, identity, importer, strategies
 from .integration.compatibility import suite_matrix
 from .integration.identity import SSO_STRATEGIES
@@ -191,6 +193,9 @@ class PersonPatch(BaseModel):
 
 class PersonAction(BaseModel):
     asset_ids: list[str] | None = Field(None, max_length=5000)  # unassign_assets: only these (default: all)
+    # disable_atrium_account: the accounts the administrator confirmed (default: the one linked account - refused
+    # when several are linked; review F27)
+    user_ids: list[str] | None = Field(None, max_length=50)
 
 
 class AccountLink(BaseModel):
@@ -260,7 +265,24 @@ class SelfPatchRequest(BaseModel):
 
 # changes to Atrium itself and new agent definitions: only administrators decide them (operators may still ask for them)
 ADMIN_APPROVALS = ("extension", "self_patch", "agent_team")
-EXTENSION_GUARDRAILS = ("allow_extensions", "extensions_need_approval", "allow_self_patching",
+
+
+def runs_on_hub(approval: Any) -> bool:
+    """A command on the hub machine, or starting a tool's process: it runs with Atrium's own privileges, so only an
+    administrator approves it (F1); operators may still reject it."""
+    payload = approval.payload or {}
+    if approval.kind == "command":
+        return (payload.get("target") or "local") == "local"
+    return approval.kind == "process" and payload.get("action") != "stop"
+
+
+def device_repair(approval: Any) -> bool:
+    """A repair of a network device's connection (review F22): it may change only the connection's URL path, but
+    a device's connection is an administrator's to change, so only an administrator approves it."""
+    return approval.kind == "repair" and bool((approval.payload or {}).get("device"))
+
+
+EXTENSION_GUARDRAILS =("allow_extensions", "extensions_need_approval", "allow_self_patching",
                         "self_patch_requires_tests", "self_patch_requires_approval", "self_patch_via_pull_request")
 
 
@@ -320,7 +342,7 @@ def build_router(hub: Hub) -> APIRouter:
 
     @router.get("/tools")
     async def list_tools() -> list[dict[str, Any]]:
-        return [t.model_dump(mode="json") for t in hub.tools()]
+        return [t.public() for t in hub.tools()]
 
     @router.post("/tools/import", status_code=202)
     async def import_tool(req: importer.ImportRequest, p: CurrentPrincipal) -> dict[str, Any]:
@@ -329,7 +351,7 @@ def build_router(hub: Hub) -> APIRouter:
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
         await hub.bus.tell(p.bus_id, "supervisor", "tool.import", {"tool_id": tool.id, "branch": req.branch})
-        return tool.model_dump(mode="json")
+        return tool.public()
 
     @router.get("/tools/{tool_id}")
     async def get_tool(tool_id: str) -> dict[str, Any]:
@@ -337,7 +359,7 @@ def build_router(hub: Hub) -> APIRouter:
         if tool is None:
             raise not_found("Tool")
         return {
-            **tool.model_dump(mode="json"),
+            **tool.public(),
             "patches": [p.model_dump(mode="json") for p in sorted(hub.patches(tool_id), key=lambda p: -p.created_at)],
             "process": hub.processes.status(tool_id),
         }
@@ -354,6 +376,7 @@ def build_router(hub: Hub) -> APIRouter:
         hub.store.delete("tools", tool_id)
         identity.forget_tool(hub, tool_id)
         flows.forget_tool(hub, tool_id, p.actor)
+        framework_sync.forget_tool(hub, tool_id)
         people_app.forget_tool(hub, tool_id)
         await hub.bus.tell(p.bus_id, "module:people", "leavers")  # people it said had left keep that status
         ext_registry.forget_tool(hub, tool_id, p.actor)
@@ -438,12 +461,18 @@ def build_router(hub: Hub) -> APIRouter:
     @router.put("/tools/{tool_id}/connection")
     async def put_connection(tool_id: str, body: ConnectionBody, p: CurrentPrincipal) -> dict[str, Any]:
         tool = tool_or_404(tool_id)
+        previous = connections.get(hub, tool_id)
+        before = connections.capabilities(previous) if previous is not None else {}
         try:
             conn, changed = connections.save(hub, tool_id, body.kind, body.config, body.secrets, p.actor)
         except (ValueError, ConnectorError, SecretError) as exc:
             raise HTTPException(400, getattr(exc, "message", None) or str(exc)) from exc
         what = f"; updated secret(s): {', '.join(changed)}" if changed else ""
         hub.activity(p.actor, "info", f"Saved the {conn.kind} connection of {tool.name}{what}", tool_id=tool_id)
+        flows.retire_unsupported(hub, tool_id, p.actor)  # e.g. a write switched off: its flow must not keep running
+        grew = any(set(ops) - set(before.get(d, [])) for d, ops in connections.capabilities(conn).items())
+        if grew and conn.last_test and conn.last_test.get("ok"):  # e.g. a switch turned back on that the test covers
+            await hub.bus.tell(p.bus_id, "supervisor", "flows.plan")
         if not teams.has_team_or_proposal(hub, tool_id):  # a connected tool gets an agent team proposal (once)
             await hub.bus.tell(p.bus_id, f"tool:{tool_id}", "team.propose", {"auto": True})
         return connection_view(tool)
@@ -454,6 +483,7 @@ def build_router(hub: Hub) -> APIRouter:
         if connections.get(hub, tool_id) is None:
             raise not_found("Connection")
         flows.forget_tool(hub, tool_id, p.actor)  # its flows and sync links go with it
+        framework_sync.forget_tool(hub, tool_id)  # and the frameworks read from it
         hub.activity(p.actor, "info", f"Removed the connection of {tool.name} and its data flows", tool_id=tool_id)
         return {"ok": True}
 
@@ -582,18 +612,15 @@ def build_router(hub: Hub) -> APIRouter:
     # -- integration ---------------------------------------------------------------------
 
     @router.get("/integration")
-    async def integration(p: CurrentPrincipal) -> dict[str, Any]:
+    async def integration() -> dict[str, Any]:
         all_flows = [flows.public(hub, f) for f in flows.all_flows(hub)]
         flow_links = [{"source": "hub" if f["source"] == "hub" else f["source"].split(":", 1)[1],
                        "target": "hub" if f["target"] == "hub" else f["target"].split(":", 1)[1],
                        "type": "flow", "via": f["domain"] + (f" ({f['action']})" if f["action"] else ""),
                        "flow_id": f["id"], "status": f["status"], "failing": bool(f["failures"])} for f in all_flows]
-        data = {**suite_matrix(hub.tools()), "routes": hub.toolbus.routes(), "deliveries": hub.toolbus.recent(30),
-                "flows": all_flows, "flow_links": flow_links}
-        if p.role == "viewer":
-            data["routes"] = [{**r, "webhook": bool(r.get("webhook"))} for r in data["routes"]]
-            data["deliveries"] = [{k: v for k, v in d.items() if k != "payload"} for d in data["deliveries"]]
-        return data
+        # routes and deliveries without webhook URLs or event payloads: viewers read this, and URLs may carry tokens
+        return {**suite_matrix(hub.tools()), "routes": hub.toolbus.public_routes(),
+                "deliveries": hub.toolbus.public_recent(30), "flows": all_flows, "flow_links": flow_links}
 
     @router.post("/integration/evaluate")
     async def reevaluate(p: CurrentPrincipal) -> dict[str, Any]:
@@ -628,9 +655,33 @@ def build_router(hub: Hub) -> APIRouter:
         result = await ask(p, "supervisor", "flows.plan", timeout=120)
         return {**result, "flows": [flows.public(hub, f) for f in flows.all_flows(hub)]}
 
+    def precheck_side_decision(approval_id: str | None, approve: bool, p: Principal) -> None:
+        """Enabling (or disabling) a proposal in its own list decides its approval too: the approval's rules - the
+        second-person rule, expiry - are checked BEFORE anything changes, so this path cannot bypass them; 403
+        same_person, 409."""
+        approval = hub.approvals.get(approval_id) if approval_id else None
+        if approval is None or approval.status != "pending":
+            return
+        try:
+            hub.approvals.precheck(approval, approve, p.actor)
+        except DecisionRefused as exc:
+            raise HTTPException(403, {"code": exc.code, "message": str(exc)}) from exc
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
+
     @router.patch("/flows/{flow_id}")
     async def update_flow(flow_id: str, body: FlowPatch, p: CurrentPrincipal) -> dict[str, Any]:
         flow = flow_or_404(flow_id)
+        # A flow whose proposal was turned down (by the proposer or anyone else) is proposed again when it is
+        # switched on: never enabled here, so neither the second-person rule nor a rejection can be stepped around.
+        again = body.status == "enabled" and flow.status != "enabled" and flows.never_approved(hub, flow)
+        if flow.status == "proposed" and body.status and body.status != flow.status and not again:
+            precheck_side_decision(flow.approval_id, body.status == "enabled", p)
+        if body.status == "enabled" and flow.status != "enabled":  # the loop rule: no pull and push of one domain for one tool
+            conflict = strategies.loop_conflict(flows.all_flows(hub), *flows.key(flow), exclude=flow.id)
+            if conflict is not None:
+                message = strategies.loop_message(hub, flow.domain, flow.source, flow.target)
+                raise HTTPException(409, {"code": "flow_conflict", "flow_id": conflict.id, "message": message})
         changes = []
         if body.options is not None:
             try:
@@ -641,15 +692,12 @@ def build_router(hub: Hub) -> APIRouter:
         if body.schedule_minutes is not None:
             flow.schedule_minutes = body.schedule_minutes
             changes.append(f"every {body.schedule_minutes} min" if body.schedule_minutes else "manual only")
-        pending = flow.approval_id if flow.status == "proposed" else None
-        if body.status and body.status != flow.status:
-            if body.status == "enabled":
-                other = flows.loop_conflict(hub, flow.domain, flow.source, flow.target, flow.action,
-                                            ignore_id=flow.id)
-                if other is not None:
-                    raise HTTPException(409, {"code": "flow_conflict",
-                                              "message": "A pull and a push of the same domain for the same tool would loop.",
-                                              "flow_id": other.id})
+        pending = flow.approval_id if flow.status == "proposed" and not again else None
+        if again:
+            changes.append("proposed again" if strategies.propose_again(hub, flow, p.actor) else "enabled")
+        elif body.status and body.status != flow.status:
+            if flow.status == "proposed" and body.status == "disabled":  # dismissed: the proposal is turned down
+                flow.rejected = flow.approval_id or "dismissed"
             flow.status, flow.approval_id = body.status, None
             changes.append(body.status)
         flows.save(hub, flow)
@@ -668,6 +716,8 @@ def build_router(hub: Hub) -> APIRouter:
         flow = flow_or_404(flow_id)
         if flow.status == "proposed" and not flow.job:  # a scan started by hand on a proposed flow can still be polled
             raise HTTPException(400, "Approve or enable this proposed flow first")
+        if flows.never_approved(hub, flow) and not flow.job:
+            raise HTTPException(400, "This flow's proposal was turned down - enable it to propose it again")
         return run_result(await ask(p, flows.owner(flow), "flow.run", {"flow_id": flow_id, "trigger": "manual"}, timeout=900))
 
     @router.post("/flows/{flow_id}/repair", status_code=202)
@@ -697,14 +747,13 @@ def build_router(hub: Hub) -> APIRouter:
         hub.activity(p.actor, "info", f"Removed data flow {flow.title if flow else flow_id}", flow_id=flow_id)
         return {"ok": True}
 
-    api_canvas.add_routes(router, hub)
-    api_network.add_routes(router, hub)
-    api_frameworks.add_routes(router, hub)
-    api_changes.add_routes(router, hub)
-
     @router.post("/bus/publish")
-    async def bus_publish(body: PublishBody) -> dict[str, Any]:
-        return {"deliveries": await hub.toolbus.publish(body.source, body.event, body.payload)}
+    async def bus_publish(body: PublishBody, p: CurrentPrincipal) -> dict[str, Any]:
+        if p.kind == "token" and p.role == "integration":  # a tool's token speaks for that tool only (review F31)
+            tool = hub.auth.publishing_tool(p, body.source)
+            if body.source != tool:
+                raise HTTPException(403, f"This integration token publishes events for {tool} only")
+        return {"deliveries": await hub.toolbus.publish(body.source, body.event, body.payload, by=p.actor)}
 
     # -- agents & chat -------------------------------------------------------------------
 
@@ -811,8 +860,9 @@ def build_router(hub: Hub) -> APIRouter:
         return hub.store.tail("messages", min(limit, 2000))
 
     @router.get("/activity")
-    async def activity(limit: int = 100) -> list[dict[str, Any]]:
-        return hub.store.tail("activity", min(limit, 2000))
+    async def activity(limit: int = 100, before: int | None = None) -> list[dict[str, Any]]:
+        """The latest entries; `before` (an entry's seq) pages back to older ones, so nothing is out of reach."""
+        return hub.store.tail("activity", min(limit, 2000), before=before)
 
     @router.post("/chat")
     async def chat(body: ChatBody, p: CurrentPrincipal) -> dict[str, Any]:
@@ -838,44 +888,42 @@ def build_router(hub: Hub) -> APIRouter:
             elif a.kind == "self_patch":
                 patch = selfpatch.get(hub, a.payload.get("self_patch_id", ""))
                 item["self_patch"] = selfpatch.public(patch) if patch else None
+            elif a.kind == "firewall":  # the change's live state (scheduled, verifying, ...) for the approval card
+                change = device_changes.get(hub, a.payload.get("change_id", ""))
+                item["firewall_change"] = {k: change.get(k) for k in device_changes.CARD_FIELDS} if change else None
+                if change and a.status == "pending":  # when it would be applied as of now: windows added since count
+                    item["firewall_change"]["maintenance"] = device_changes.maintenance_info(  # (payload: at proposal)
+                        hub, change["firewall"], time.time(), expires_at=change.get("expires_at") or a.payload.get("expires_at"))
             out.append(item)
         return out
 
     @router.post("/approvals/{approval_id}")
     async def decide(approval_id: str, body: DecisionBody, p: CurrentPrincipal) -> dict[str, Any]:
         pending = hub.approvals.get(approval_id)
+        if pending is not None and pending.kind == "firewall" and p.role != "admin":
+            raise HTTPException(403, {"code": "admin_required",
+                                      "message": "Only administrators decide device changes (canvas-design S4)"})
+        if pending is not None and pending.kind == "firewall" and body.approve and p.kind != "user":
+            raise HTTPException(403, {"code": "person_required",
+                                      "message": "A device change is approved by an administrator on the Approvals "
+                                                 "page, not with an API token (canvas-design S4, S5)"})
         if pending is not None and pending.kind in ADMIN_APPROVALS and p.role != "admin":
             raise HTTPException(403, "Only administrators decide changes to Atrium itself and new agents "
                                      "(extensions, self-patches and agent teams)")
-        if pending is not None and pending.kind == "firewall" and p.role != "admin":
+        if pending is not None and body.approve and device_repair(pending) and p.role != "admin":
             raise HTTPException(403, {"code": "admin_required",
-                                     "message": "Only an administrator can approve a network change."})
-        if pending is not None and pending.kind == "command" and pending.payload.get("local_change") and p.role != "admin":
+                                      "message": "Only administrators approve a repair of a network device's "
+                                                 "connection. You can still reject it."})
+        if pending is not None and body.approve and runs_on_hub(pending) and p.role != "admin":
             raise HTTPException(403, {"code": "admin_required",
-                                     "message": "Only an administrator can approve a state-changing command on this machine."})
-        if pending is not None and pending.status == "pending":
-            if network_changes.approval_expired(hub, pending):
-                raise HTTPException(409, {"code": "expired", "message": "This approval has expired."})
-            if pending.kind == "self_patch" and pending.payload.get("commit"):
-                bound = selfpatch.get(hub, str(pending.payload.get("self_patch_id") or ""))
-                head = bound.commit if bound else ""
-                if bound and bound.worktree:
-                    import subprocess
-                    try:
-                        head = subprocess.check_output(["git", "-C", bound.worktree, "rev-parse", "HEAD"],
-                                                       text=True, stderr=subprocess.DEVNULL).strip()
-                    except Exception:
-                        head = bound.commit
-                if head and head != pending.payload["commit"]:
-                    raise HTTPException(409, {"code": "stale",
-                                             "message": "This self-patch approval was bound to a different commit."})
-            code = network_changes.same_person_blocked(hub, pending.kind, pending.payload, pending.requested_by, p.actor)
-            if code:
-                raise HTTPException(403, {"code": code, "message": "You proposed this. Someone else has to decide it."})
+                                      "message": "Only administrators approve commands on the hub machine and starting "
+                                                 "tools: they run with Atrium's own privileges. You can still reject it."})
         try:
             approval = await hub.approvals.decide(approval_id, body.approve, body.note, p.actor, sender=p.bus_id)
         except KeyError as exc:
             raise not_found("Approval") from exc
+        except DecisionRefused as exc:  # the second-person rule: a proposer may not approve their own proposal
+            raise HTTPException(403, {"code": exc.code, "message": str(exc)}) from exc
         except ValueError as exc:
             raise HTTPException(409, str(exc)) from exc
         return approval.model_dump(mode="json")
@@ -1069,7 +1117,10 @@ def build_router(hub: Hub) -> APIRouter:
         if action == "unassign_assets":
             result = people_app.unassign_assets(hub, person, p.actor, (body or PersonAction()).asset_ids)
         elif action == "disable_atrium_account":
-            result = people_app.disable_atrium_account(hub, person, p)
+            try:
+                result = people_app.disable_atrium_account(hub, person, p, (body or PersonAction()).user_ids)
+            except LookupError as exc:
+                raise HTTPException(409, str(exc)) from exc
         else:
             raise HTTPException(404, f"Unknown action '{action}': use {', '.join(people_app.ACTIONS)}")
         await people_changed(p)
@@ -1241,6 +1292,9 @@ def build_router(hub: Hub) -> APIRouter:
     async def policy_templates() -> dict[str, Any]:
         return POLICY_TEMPLATES
 
+    # compliance frameworks: CyFun catalogs, self-assessments, audit packs, frameworks read from CISO Assistant
+    router.include_router(frameworks_api.build_router(hub))
+
     # -- settings ------------------------------------------------------------------------
 
     @router.get("/settings")
@@ -1263,8 +1317,6 @@ def build_router(hub: Hub) -> APIRouter:
                 hub.update_prefs(p.actor, **values)
             if body.guardrails:
                 guardrails.update(hub, p.actor, body.guardrails)
-                if body.guardrails.get("device_changes") is False:
-                    network_changes.block_unapproved(hub, p.actor)
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
         if body.vuln_sla_days:
@@ -1279,8 +1331,6 @@ def build_router(hub: Hub) -> APIRouter:
             raise HTTPException(400, "Send at least one guardrail")
         try:
             guardrails.update(hub, p.actor, body)
-            if body.get("device_changes") is False:
-                network_changes.block_unapproved(hub, p.actor)
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
         await hub.bus.tell(p.bus_id, "module:grc", "evaluate")
@@ -1396,6 +1446,8 @@ def build_router(hub: Hub) -> APIRouter:
     async def set_extension_status(ext_id: str, body: ExtensionStatus, p: CurrentPrincipal) -> dict[str, Any]:
         rec = extension_or_404(ext_id)
         pending = rec.approval_id if rec.status == "proposed" else None
+        if pending and body.status != rec.status:
+            precheck_side_decision(pending, body.status == "enabled", p)
         try:
             rec = ext_registry.set_status(hub, ext_id, body.status, p.actor)
         except ValueError as exc:
@@ -1604,9 +1656,17 @@ def build_router(hub: Hub) -> APIRouter:
             raise HTTPException(400, f"The self-patch is {patch.status}: only an approved one that could not be "
                                      "applied can be applied again")
         result = await selfpatch.apply(hub, patch, p.actor)
+        if result.get("busy"):
+            raise HTTPException(409, result["detail"])
         if result["ok"] and patch.approval_id:
             hub.approvals.complete(patch.approval_id, True, result)
         return {**result, "self_patch": selfpatch.public(selfpatch.get(hub, patch_id) or patch)}
+
+    # -- Network app and segmentation map (hub/network_api.py) ----------------------------
+
+    network_api.add_routes(router, hub, ask)
+    network_changes_api.add_routes(router, hub, ask)  # device changes and maintenance windows (R3-NETCHANGE)
+    canvas_api.add_routes(router, hub, ask)  # integration map, Connect options, POST /flows, layouts (R3-CANVAS-BE)
 
     # -- live events (SSE) ---------------------------------------------------------------
 

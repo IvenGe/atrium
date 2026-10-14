@@ -95,7 +95,10 @@ def serve(settings: Settings) -> int:
     token = app.state.hub.auth.setup_token
     if token:
         print(f"First run: create the administrator at {settings.public_url}/#/setup?token={token}", flush=True)
-    uvicorn.run(app, host=settings.host, port=settings.port, log_level="warning")
+    # HUB_TRUSTED_PROXIES: whose X-Forwarded-For uvicorn believes, so sign-in throttling sees each client's own
+    # address behind a reverse proxy (review F16); unset: uvicorn's FORWARDED_ALLOW_IPS, else 127.0.0.1 only
+    uvicorn.run(app, host=settings.host, port=settings.port, log_level="warning", proxy_headers=True,
+                forwarded_allow_ips=settings.trusted_proxies)
     return 0
 
 

@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 import asyncio
-import os
 import time
 from collections import deque
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from .runner import kill_tree, new_group_kwargs
+from .runner import child_env, kill_tree, new_group_kwargs
 
 if TYPE_CHECKING:
     from ..core import Hub
@@ -57,7 +56,7 @@ class ProcessManager:
             cwd=cwd or None,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
-            env={**os.environ, **(env or {})},
+            env=child_env(env),  # never the hub's own settings and credentials
             **new_group_kwargs(),
         )
         mp = ManagedProcess(tool_id=tool_id, command=command, cwd=cwd, proc=proc)
