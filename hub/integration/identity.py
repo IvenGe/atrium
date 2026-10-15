@@ -206,7 +206,7 @@ class IdentityPrefs:
     default: str | None = None
     choices: dict[str, str] = field(default_factory=dict)
     settings: dict[str, dict[str, str]] = field(default_factory=dict)
-    llm: bool = False  # Claude is available (decides between a code patch and the proxy)
+    llm: bool = False  # an AI model can write code patches (decides between a code patch and the proxy)
     catalog: tuple[Any, ...] = ()  # SSO recipes of the active extension packs (sso_catalog.CatalogEntry)
 
 
@@ -217,7 +217,7 @@ def load_prefs(hub: "Hub") -> IdentityPrefs:
     prefs = hub.prefs
     return IdentityPrefs(default=prefs.get(PREF_DEFAULT), choices=dict(prefs.get(PREF_CHOICES) or {}),
                          settings={k: dict(v) for k, v in (prefs.get(PREF_SETTINGS) or {}).items()},
-                         llm=hub.llm.available, catalog=tuple(extension_entry(i) for i in registry.sso_items(hub)))
+                         llm=hub.llm.ready("patcher", "code"), catalog=tuple(extension_entry(i) for i in registry.sso_items(hub)))
 
 
 @dataclass

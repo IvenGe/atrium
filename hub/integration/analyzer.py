@@ -524,6 +524,12 @@ def analyze_repo(root: Path, tool_id: str, name: str) -> tuple[Manifest, list[st
     if problem:
         notes.append(f"Ignored the tool's own manifest: {problem}")
     if native:
+        ui = native.get("ui")
+        if isinstance(ui, dict) and "widgets" in ui:  # the tool's own dashboard widgets: bad ones are left out, not all
+            from ..extensions.pack import widget_decls
+
+            ui["widgets"], problems = widget_decls(ui["widgets"])
+            notes.extend(f"Ignored a dashboard widget of the tool's own manifest: {p}" for p in problems)
         merged = deep_merge(m.model_dump(), {k: v for k, v in native.items() if k != "id"})
         merged["native"] = True
         try:

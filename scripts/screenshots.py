@@ -3,17 +3,20 @@
     .venv/bin/python scripts/screenshots.py [--out docs/screenshots] [--port 8790] [--check-only] [--chromium PATH]
 
 Needs Playwright and a Chromium (``pip install playwright && playwright install chromium``, or --chromium). The script
-starts the demo hub (fake tool APIs, the fake firewall, a temporary data directory, a port other than 8710), seeds it
-through the hub's API, and then:
+starts the demo hub (fake tool APIs and model servers, the fake firewall, a temporary data directory, a port other than
+8710), seeds it through the hub's API (dashboards, AI providers and agent settings, a subsidiary with its scripted
+sidecar included), and then:
 
 1. replaces the PNG files in docs/screenshots (1440 x 900, light theme; home-dark in the dark theme and home-phone at
-   390 px) - every PNG there is removed first, so screens that no longer exist leave no picture behind. With Pillow
-   (in this Python or in ``python3`` on the PATH) the pictures are stored as 256-colour PNGs;
-2. checks the UI in a real browser: every page and tab as an administrator, an operator and a viewer, and the
-   administrator's pages at phone width. It reports console errors, page errors, failed API calls (other than 403 for
-   the lower roles) and content wider than its card or the window, and exits with status 1 when it found any.
+   390 px; dashboard-edit holds a widget halfway through a drag) - every PNG there is removed first, so screens that no
+   longer exist leave no picture behind. With Pillow (in this Python or in ``python3`` on the PATH) the pictures are
+   stored as 256-colour PNGs;
+2. checks the UI in a real browser: every page and tab - dashboards, agent settings and subsidiaries included - as an
+   administrator, an operator and a viewer, and the administrator's pages at phone width. It reports console errors,
+   page errors, failed API calls (other than 403 for the lower roles) and content wider than its card or the window,
+   and exits with status 1 when it found any.
 
-The hub is stopped by its PID, the fake tools are stopped and the data directory is removed afterwards.
+The fake tools and the sidecar are stopped, then the hub by its PID, and the data directory is removed afterwards.
 """
 
 from __future__ import annotations
@@ -28,6 +31,7 @@ import sys
 import tempfile
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import demo_hub  # noqa: E402 - the sibling module
@@ -38,7 +42,10 @@ PHONE = {"width": 390, "height": 844}
 LOADED = "#main:not(:has(.empty.faint))"  # the page's "Loading..." placeholder is gone
 SHOT_NAMES = ("home", "apps", "integration-overview", "integration-map", "segmentation-map", "network", "network-device",
               "approvals", "compliance-frameworks", "compliance-controls", "people", "person", "vulnerabilities",
-              "agents", "settings-guardrails", "users", "home-dark", "home-phone")
+              "agents", "settings-guardrails", "users", "home-dark", "home-phone", "home-dashboard", "dashboard-edit",
+              "ai-models", "agent-settings", "subsidiaries", "subsidiary-approval")
+AGENT_TABS = ("overview", "model", "behaviour", "tools", "limits", "escalation", "playground", "history")
+SUBSIDIARY_TABS = ("charter", "activity", "reports", "setup")
 
 # content sticking out of a card (outside its own scroll box) or the window
 OVERFLOW = """() => {
@@ -119,20 +126,31 @@ def watch(page, base: str, events: list) -> None:
 # -- 1. the check ------------------------------------------------------------------------------------------------------
 
 
-def routes(info: dict[str, Any]) -> list[str]:
+def routes(info: dict[str, Any], user: str = "ava") -> list[str]:
+    """Every page and tab; `user`'s own dashboard too (another person's is not found, by design)."""
     tools, fw, fid = info["tools"], info["firewall"], info["framework"]
-    out = ["#/", "#/tools"]
+    out = ["#/", f"#/d/{info['dashboard']}", "#/tools"]
+    if user == "ava":
+        out.append(f"#/d/{info['my_dashboard']}")
     for tab, tool in (("", "Snipe-IT"), ("/connection", "Snipe-IT"), ("/manifest", "OpenVAS"), ("/patches", "Keycloak"),
                       ("/process", "Grafana"), ("/supervisor", "Wazuh"), ("/connection", "Edge firewall")):
         out.append(f"#/tools/{tools[tool]}{tab}")
-    out += ["#/integration", "#/integration/map", "#/integration/segmentation", "#/agents", "#/approvals", "#/operator",
-            "#/network", "#/network/drift", "#/network/changes", f"#/network/{fw}"]
+    out += ["#/integration", "#/integration/map", "#/integration/segmentation", "#/agents"]
+    for agent, tabs in (("supervisor", AGENT_TABS), ("patcher", ("model",)), (info.get("triage"), AGENT_TABS)):
+        if agent:  # agent ids hold ":" - links encode it
+            out += [f"#/agents/{quote(agent, safe='')}/settings" + (f"/{tab}" if tab != "overview" else "")
+                    for tab in tabs]
+    sub = info["subsidiary_tool"]
+    out += ["#/subsidiaries", f"#/subsidiaries/{sub}", *(f"#/subsidiaries/{sub}/{tab}" for tab in SUBSIDIARY_TABS),
+            f"#/tools/{sub}"]
+    out += ["#/approvals", "#/operator", "#/network", "#/network/drift", "#/network/changes", f"#/network/{fw}"]
     out += [f"#/network/{fw}/{tab}" for tab in ("interfaces", "history", "drift", "backups", "changes")]
     out += ["#/assets", "#/people", "#/people/leavers", "#/people/accounts", f"#/people/{info['person_id']}",
             f"#/people/{info['leaver_id']}", "#/vulnerabilities", "#/vulnerabilities/scope", "#/compliance",
             "#/compliance/frameworks", f"#/compliance/frameworks/{fid}", f"#/compliance/frameworks/{fid}/{info['assessment_id']}",
             "#/compliance/controls", "#/compliance/risks", "#/compliance/policies", "#/extensions", "#/extensions/gaps",
-            "#/extensions/self-patches", "#/x/alerts", "#/settings", "#/settings/network", "#/settings/sso", "#/users"]
+            "#/extensions/self-patches", "#/x/alerts", "#/settings", "#/settings/ai", "#/settings/network",
+            "#/settings/sso", "#/users"]
     return out
 
 
@@ -143,7 +161,8 @@ def check(b: Browser, info: dict[str, Any]) -> list[tuple[str, ...]]:
         label = f"{role} {viewport['width']}px"
         events: list = ["sign-in"]
         context, page = b.session(user, viewport, events=events)
-        for route in routes(info):
+        pages = routes(info, user)
+        for route in pages:
             events[0] = route
             try:
                 b.go(page, route)
@@ -153,7 +172,7 @@ def check(b: Browser, info: dict[str, Any]) -> list[tuple[str, ...]]:
             events += [(route, "layout", issue) for issue in page.evaluate(OVERFLOW)]
         context.close()
         found = [e for e in events[1:] if not (role != "admin" and e[1] == "HTTP 403")]  # expected for lower roles
-        print(f"  {label}: {len(routes(info))} pages, {len(found)} problem(s)")
+        print(f"  {label}: {len(pages)} pages, {len(found)} problem(s)")
         problems += [(label, *e) for e in found]
     return problems
 
@@ -217,6 +236,7 @@ def take(b: Browser, info: dict[str, Any], out: Path) -> list[Path]:
     taken.append(shot(page, out, "settings-guardrails"))
     b.go(page, "#/users")
     taken.append(shot(page, out, "users"))
+    taken += take_round4(b, page, info, out)
     context.close()
 
     context, page = b.session("ava", DESKTOP, theme="dark")
@@ -227,6 +247,52 @@ def take(b: Browser, info: dict[str, Any], out: Path) -> list[Path]:
     b.go(page, "#/")
     taken.append(shot(page, out, "home-phone"))
     context.close()
+    return taken
+
+
+def drag_shot(page, out: Path, dash: str) -> Path:
+    """The shared dashboard in edit mode with a widget held halfway through a drag (the drop target shows where it
+    lands), then the drag cancelled with Escape and edit mode left: nothing changes."""
+    Browser.go(page, f"#/d/{dash}")
+    page.click('[data-act="d-customize"]')
+    page.wait_for_selector(".dash-grid.editing .dash-handle")
+    page.wait_for_timeout(500)
+    handle = page.locator('.widget[data-wid="w_demo0007"] .dash-handle').bounding_box()
+    target = page.locator('.widget[data-wid="w_demo0005"]').bounding_box()
+    x, y = handle["x"] + handle["width"] / 2, handle["y"] + handle["height"] / 2
+    page.mouse.move(x, y)
+    page.mouse.down()
+    for n in range(1, 11):  # in steps, as a hand would: the board follows pointer moves
+        page.mouse.move(x + (target["x"] + 40 - x) * n / 10, y + (target["y"] + 30 - y) * n / 10)
+        page.wait_for_timeout(40)
+    page.wait_for_timeout(500)
+    page.evaluate("() => document.querySelectorAll('.toasts').forEach((t) => t.remove())")
+    path = out / "dashboard-edit.png"
+    page.screenshot(path=str(path))
+    print(f"  {path.name}")
+    page.keyboard.press("Escape")
+    page.mouse.up()
+    page.click('[data-act="e-done"]')
+    page.wait_for_selector(".dash-grid:not(.editing)")
+    return path
+
+
+def take_round4(b: Browser, page, info: dict[str, Any], out: Path) -> list[Path]:
+    """Dashboards, AI models, agent settings and subsidiaries (round 4)."""
+    taken: list[Path] = []
+    b.go(page, f"#/d/{info['dashboard']}")
+    taken.append(shot(page, out, "home-dashboard"))
+    taken.append(drag_shot(page, out, info["dashboard"]))
+    b.go(page, "#/settings/ai")  # the providers next to the model choice
+    scroll_to(page, "#main .ai-panels", 72)
+    taken.append(shot(page, out, "ai-models"))
+    b.go(page, "#/agents/supervisor/settings/model")
+    taken.append(shot(page, out, "agent-settings"))
+    b.go(page, f"#/subsidiaries/{info['subsidiary_tool']}")
+    taken.append(shot(page, out, "subsidiaries"))
+    b.go(page, "#/approvals")  # the in-tool change the subsidiary's clerk asked for, with its buttons
+    scroll_to(page, f'#main section.card:has([data-act="approve"][data-id="{info["subsidiary_approval"]}"])', 70)
+    taken.append(shot(page, out, "subsidiary-approval"))
     return taken
 
 
@@ -252,7 +318,7 @@ def compress(paths: list[Path]) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--out", default=str(ROOT / "docs" / "screenshots"), help="where to write the PNG files")
-    parser.add_argument("--port", type=int, default=8790, help="the hub's port (never 8710); the fakes use the next 8")
+    parser.add_argument("--port", type=int, default=8790, help="the hub's port (never 8710); the fakes use the next 10")
     parser.add_argument("--check-only", action="store_true", help="only check the UI; take no screenshots")
     parser.add_argument("--chromium", help="the Chromium executable to use")
     args = parser.parse_args()
@@ -290,8 +356,8 @@ def main() -> int:
             finally:
                 browser.close()
     finally:
+        tools.stop()  # the fake tools and the subsidiary's sidecar, then the hub
         demo_hub.stop_hub(hub)
-        tools.stop()
         shutil.rmtree(data_dir, ignore_errors=True)
     return 1 if problems else 0
 

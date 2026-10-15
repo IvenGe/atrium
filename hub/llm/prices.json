@@ -1,0 +1,18 @@
+{
+  "_comment": "USD per 1M tokens, keyed '<provider id>:<model>'. input = base input, cache_write = 5-minute cache write, cached_input = cache hit. Tiers apply by a call's total input tokens (input + cache reads + cache writes). Admins override these in settings/llm_prices. OpenAI bills reasoning tokens as output tokens (included in output_tokens). Prices of gpt-6-astra and gpt-6.1-sol were not checked and are not shipped.",
+  "anthropic:claude-fable-5-1": {"input": 10.0, "cache_write": 12.5, "cached_input": 0.25, "output": 50.0,
+    "as_of": "2026-10-14", "source": "https://platform.claude.com/docs/en/about-claude/pricing"},
+  "anthropic:claude-opus-5-5": {"input": 4.0, "cache_write": 5.0, "cached_input": 0.2, "output": 20.0,
+    "as_of": "2026-10-14", "source": "https://platform.claude.com/docs/en/about-claude/pricing"},
+  "anthropic:claude-sonnet-5-5": {"input": 2.0, "cache_write": 2.5, "cached_input": 0.1, "output": 10.0,
+    "as_of": "2026-10-14", "source": "https://platform.claude.com/docs/en/about-claude/pricing"},
+  "anthropic:claude-haiku-5-5": {"input": 0.1, "cache_write": 0.125, "cached_input": 0.01, "output": 0.5,
+    "tiers": [{"above_input_tokens": 100000, "input": 0.5, "cache_write": 0.625, "cached_input": 0.05, "output": 2.5}],
+    "as_of": "2026-10-14", "source": "https://platform.claude.com/docs/en/about-claude/pricing"},
+  "anthropic:claude-opus-5": {"input": 5.0, "cache_write": 6.25, "cached_input": 0.5, "output": 25.0,
+    "as_of": "2026-10-14", "source": "https://platform.claude.com/docs/en/about-claude/pricing"},
+  "anthropic:claude-sonnet-5": {"input": 2.0, "cache_write": 2.5, "cached_input": 0.2, "output": 10.0,
+    "as_of": "2026-10-14", "source": "https://platform.claude.com/docs/en/about-claude/pricing"},
+  "openai:gpt-6-luna": {"input": 0.1, "cache_write": 0.125, "cached_input": 0.01, "output": 0.5,
+    "as_of": "2026-10-14", "source": "https://developers.openai.com/api/docs/models/gpt-6-luna"}
+}

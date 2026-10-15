@@ -6,21 +6,31 @@ import asyncio
 import json
 import time
 from typing import Any, Literal
+from urllib.parse import urlsplit
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
-from . import canvas_api, connectors, guardrails, llm_providers, network_api, network_changes_api
+from . import agent_settings_api, canvas_api, connectors, dashboards_api, guardrails, llm_providers, network_api
+from . import network_changes_api
 from . import people as people_app
 from .agents import teams
 from .agents import vulns as vuln_app
 from .agents.grc import control_catalog
 from .approvals import DecisionRefused
 from .auth.service import CurrentPrincipal, Principal
-from .bus import AgentError
+from .bus import AgentError, redacted
+from .agents import settings as agent_settings
+from .llm import LLMUnavailable
+from .llm import resolve as llm_resolve
+from .llm import selection as llm_selection
+from .llm import usage as llm_usage
+from .llm.adapters import openai as openai_adapter
 from .connectors.base import ConnectorError
 from .core import Hub
+from .dashboards import metrics as dash_metrics
+from .dashboards import resolve as dash_resolve
 from .extensions import gaps as ext_gaps
 from .extensions import pack as ext_pack
 from .extensions import records as ext_records
@@ -34,10 +44,12 @@ from .integration import changes as device_changes
 from .integration import connections, flows, identity, importer, strategies
 from .integration.compatibility import suite_matrix
 from .integration.identity import SSO_STRATEGIES
-from .models import (OPEN_STATES, SEVERITY_ORDER, AgentPermission, Asset, ControlState, Host, PersonStatus, Policy, Risk,
-                     Vulnerability)
+from .models import (OPEN_STATES, SEVERITY_ORDER, AgentPermission, Asset, ControlState, Host, LlmChoice, PersonStatus,
+                     Policy, Risk, Supplier, TeamLlm, Vulnerability)
 from .secrets import SecretError
 from .store import new_id
+from .subsidiary import governance as subsidiary_governance
+from .subsidiary import routes as subsidiary_routes
 
 SlaDays = dict[Literal["critical", "high", "medium", "low"], int]
 
@@ -85,7 +97,7 @@ class AgentCreate(BaseModel):
     title: str = Field("Team agent", max_length=80)
     description: str = Field("", max_length=1000)
     instructions: str = Field("", max_length=20_000)
-    provider: str | None = Field(None, max_length=64)  # default: Claude if available, else a local provider, else rules
+    provider: str | None = Field(None, max_length=64)  # default "": the suite's model choice (hub/llm/resolve.py)
     model: str = Field("", max_length=200)
     permissions: list[AgentPermission] = ["read"]
     team: str = Field("hub", max_length=64)
@@ -100,27 +112,74 @@ class AgentRun(BaseModel):
 
 
 class TeamRequest(BaseModel):
-    designer: Literal["auto", "templates", "claude"] = "auto"
+    designer: Literal["auto", "templates", "model", "claude"] = "auto"  # "claude": the name before "model"
 
 
 class ProviderCreate(BaseModel):
+    kind: Literal["openai_compatible", "openai"] = "openai_compatible"  # "openai": an Azure OpenAI resource
+    variant: Literal["azure"] | None = None  # kind "openai" (OpenAI itself is built in)
     name: str = Field(min_length=1, max_length=80)
     id: str | None = Field(None, max_length=40)
     base_url: str = Field(llm_providers.DEFAULT_BASE_URL, max_length=500)
     default_model: str = Field("", max_length=200)
+    pinned_models: list[str] | None = Field(None, max_length=llm_providers.MAX_PINNED)  # Azure: deployment names
     api_key: str | None = Field(None, max_length=4096)
     tools: bool = True
+    structured_output: Literal["auto", "json_schema", "json_object", "prompt"] = "auto"
+    send_effort: bool = False
     timeout: float = Field(300, ge=5, le=3600)
+    requests_per_minute: int | None = Field(None, ge=0, le=100_000)  # None / 0: no limit
+    max_concurrency: int = Field(4, ge=1, le=64)
+    location: Literal["self_hosted", "third_party"] | None = None  # default: from the address
+    confirm_self_hosted: bool | None = None  # a public address is the administrator's own server
 
 
 class ProviderPatch(BaseModel):
     name: str | None = Field(None, min_length=1, max_length=80)
     base_url: str | None = Field(None, max_length=500)
     default_model: str | None = Field(None, max_length=200)
+    pinned_models: list[str] | None = Field(None, max_length=llm_providers.MAX_PINNED)
     api_key: str | None = Field(None, max_length=4096)  # empty or absent: keep the stored key
     clear_api_key: bool = False
+    enabled: bool | None = None
     tools: bool | None = None
+    structured_output: Literal["auto", "json_schema", "json_object", "prompt"] | None = None
+    send_effort: bool | None = None
     timeout: float | None = Field(None, ge=5, le=3600)
+    requests_per_minute: int | None = Field(None, ge=0, le=100_000)  # 0: no limit
+    max_concurrency: int | None = Field(None, ge=1, le=64)
+    location: Literal["self_hosted", "third_party"] | None = None
+    confirm_self_hosted: bool | None = None
+    supplier: Supplier | None = None  # the whole supplier record (owner, terms reviewed, notes): HB-SC-1
+
+
+class SelectionPatch(BaseModel):
+    """PATCH /api/llm/selection: what is sent changes (teams and purposes per key; null unsets one)."""
+
+    default: LlmChoice | None = None
+    purposes: dict[str, LlmChoice | None] | None = Field(None, max_length=3)
+    teams: dict[str, TeamLlm | None] | None = Field(None, max_length=200)
+    fallback: list[str] | None = Field(None, max_length=8)
+    language: str | None = Field(None, max_length=35)
+    version: int | None = None
+
+
+class AgentSettingsPatch(BaseModel):
+    """PATCH /api/agents/{id}/settings: the model choice ("" = inherit), per-task models and local-only, with the
+    version read (other settings come later and are refused until then)."""
+
+    model_config = {"extra": "allow"}
+    llm: LlmChoice | None = None
+    config: dict[str, Any] | None = None
+    version: int | None = None
+
+
+class ProviderProbe(BaseModel):
+    model: str = Field(min_length=1, max_length=200)
+
+
+class PricesPut(BaseModel):
+    overrides: dict[str, llm_usage.Price | None] = Field(max_length=500)  # "<provider id>:<model>"; null = default
 
 
 class SettingsPatch(BaseModel):
@@ -239,7 +298,7 @@ class ExtensionRollback(BaseModel):
 
 
 class ExtendRequest(BaseModel):
-    designer: Literal["auto", "templates", "claude"] = "auto"
+    designer: Literal["auto", "templates", "model", "claude"] = "auto"  # "claude": the name before "model"
 
 
 class RecordBody(BaseModel):
@@ -276,6 +335,18 @@ def runs_on_hub(approval: Any) -> bool:
     return approval.kind == "process" and payload.get("action") != "stop"
 
 
+def subsidiary_decider(approval: Any) -> str | None:
+    """Who decides a subsidiary's approval (round4-spec 9.4): "admin" for charters, bridge patches and in-tool actions
+    of admin risk or with an external effect; "operator" for other in-tool actions; None for other approvals.
+    Approving them needs a person (never an API token); rejecting follows the same role rules."""
+    payload = approval.payload or {}
+    if approval.kind == "subsidiary_charter" or (approval.kind == "patch" and payload.get("strategy") == "atrium_bridge"):
+        return "admin"
+    if approval.kind == "subsidiary_action":
+        return "admin" if payload.get("risk") == "admin" or payload.get("external_effect") else "operator"
+    return None
+
+
 def device_repair(approval: Any) -> bool:
     """A repair of a network device's connection (review F22): it may change only the connection's URL path, but
     a device's connection is an administrator's to change, so only an administrator approves it."""
@@ -301,6 +372,20 @@ def build_router(hub: Hub) -> APIRouter:
     def not_found(what: str) -> HTTPException:
         return HTTPException(404, f"{what} not found")
 
+    async def ask_chat(p: Principal, recipient: str, subject: str, body: dict[str, Any]) -> Any:
+        """ask() for a chat turn: a reached AI budget or rate limit answers HTTP 429 {detail, code, retry_after}
+        (the person who asked sees why, rather than a rules answer)."""
+        try:
+            return await hub.bus.request(p.bus_id, recipient, subject, body, 900)
+        except AgentError as exc:
+            if exc.code in ("budget_exceeded", "rate_limited"):
+                headers = {"Retry-After": str(exc.retry_after)} if exc.retry_after else None
+                return JSONResponse(status_code=429, headers=headers, content={
+                    "detail": str(exc), "code": exc.code, "retry_after": exc.retry_after})
+            if exc.code == "offline":  # a subsidiary's staff member whose sidecar is offline (R4-SUB)
+                raise HTTPException(503, {"code": "offline", "message": str(exc)}) from exc
+            raise HTTPException(400, str(exc)) from exc
+
     # -- overview ------------------------------------------------------------------------
 
     @router.get("/health")
@@ -309,30 +394,9 @@ def build_router(hub: Hub) -> APIRouter:
 
     @router.get("/overview")
     async def overview() -> dict[str, Any]:
-        tools = hub.tools()
-        scores = [t.report.score for t in tools if t.report]
-        agents = hub.agents.all()
-        states = hub.all("controls", ControlState)
-        baseline = framework_scores(states)[0]["score"] if states else None
-        assets = hub.all("assets", Asset)
-        vulns = hub.all("vulnerabilities", Vulnerability)
+        # the same counts as the dashboard metrics (hub/dashboards/metrics.py), so a tile and a badge never disagree
         return {
-            "tools": len(tools),
-            "running": sum(1 for t in tools if t.running),
-            "suite_score": round(sum(scores) / len(scores)) if scores else None,
-            "agents": len(agents),
-            "agents_working": sum(1 for a in agents if a.status == "working"),
-            "approvals_pending": hub.approvals.pending_count(),
-            "assets": sum(1 for a in assets if a.status != "retired"),
-            "compliance_score": baseline,
-            "risks_open": sum(1 for r in hub.all("risks", Risk) if r.status != "closed"),
-            "vulnerabilities_open": sum(1 for v in vulns if v.status in OPEN_STATES),
-            "vulnerabilities_overdue": sum(1 for v in vulns if v.overdue),
-            "flows_enabled": sum(1 for f in flows.all_flows(hub) if f.status == "enabled"),
-            "people": len(people_app.all_people(hub)),
-            "leavers": len(people_app.leavers(hub)),
-            "extensions": sum(1 for r in ext_registry.records(hub) if r.status == "enabled"),
-            "extension_domains": len(ext_registry.active_domains(hub)),
+            **dash_metrics.overview(dash_resolve.Snapshot(hub)),
             "restart_required": hub.restart_required is not None,
             "llm": hub.llm.status(),
             "autonomy": hub.prefs["autonomy"],
@@ -370,6 +434,7 @@ def build_router(hub: Hub) -> APIRouter:
         if tool is None:
             raise not_found("Tool")
         await hub.processes.stop(tool_id)
+        subsidiary_governance.forget_tool(hub, tool_id, p.actor)  # its agent team inside the tool: stopped, archived
         await hub.agents.remove(f"tool:{tool_id}")
         for patch in hub.patches(tool_id):
             hub.store.delete("patches", patch.id)
@@ -447,7 +512,7 @@ def build_router(hub: Hub) -> APIRouter:
         builtin = strategies.builtin_connector(tool)
         return {**connections.public(hub, tool, connections.get(hub, tool.id)),
                 "flows": [flows.public(hub, f) for f in flows.all_flows(hub, tool.id)],
-                "can_generate": hub.llm.available and strategies.has_openapi(tool) and builtin is None,
+                "can_generate": hub.llm.ready("patcher", "generate") and strategies.has_openapi(tool) and builtin is None,
                 "has_openapi": strategies.has_openapi(tool)}
 
     @router.get("/connectors")
@@ -794,10 +859,13 @@ def build_router(hub: Hub) -> APIRouter:
         if agent.kind == "custom":
             if given.get("paused") is not None and given.get("enabled") is None:
                 given["enabled"] = not given["paused"]
+            before = teams.get_def(hub, agent_id)
             try:
                 defn = teams.update(hub, agent_id, {k: v for k, v in given.items() if k != "paused"}, p.actor)
             except ValueError as exc:
                 raise HTTPException(400, str(exc)) from exc
+            if before is not None and any(getattr(before, k) != getattr(defn, k) for k in teams.FIELDS):
+                agent_settings.bump(hub, agent_id)  # its settings moved: a new settings version (and history entry)
             record = agent_or_404(defn.id).record()
             return {**record, "clamped": [x for x in defn.permissions if x not in record["effective_permissions"]]}
         extra = sorted(k for k in given if k not in CORE_AGENT_FIELDS)
@@ -808,6 +876,9 @@ def build_router(hub: Hub) -> APIRouter:
         changed = ", ".join(k for k, v in given.items() if v is not None)
         if changed:
             hub.activity(p.actor, "info", f"Configured {record['name']}: {changed}", agent_id=agent_id)
+        if given.get("model") is not None or given.get("instructions") is not None:  # a new settings version
+            agent_settings.bump(hub, agent_id)
+            record = agent_or_404(agent_id).record()
         return record
 
     @router.delete("/agents/{agent_id}")
@@ -819,8 +890,8 @@ def build_router(hub: Hub) -> APIRouter:
         return {"ok": True}
 
     @router.post("/agents/{agent_id}/chat")
-    async def chat_with_agent(agent_id: str, body: ChatBody, p: CurrentPrincipal) -> dict[str, Any]:
-        """Chat with the Hub Supervisor or any team agent (Claude, a local model, or rules)."""
+    async def chat_with_agent(agent_id: str, body: ChatBody, p: CurrentPrincipal) -> Any:
+        """Chat with the Hub Supervisor or any team agent (on its AI model - Claude, a local model - or rules)."""
         agent = agent_or_404(agent_id)
         if agent_id != "supervisor" and agent.kind != "custom":
             raise HTTPException(400, f"{agent.name} does not chat - chat with the Hub Supervisor or a team agent")
@@ -828,7 +899,8 @@ def build_router(hub: Hub) -> APIRouter:
             raise HTTPException(409, f"{agent.name} is {'disabled' if agent.kind == 'custom' else 'paused'}")
         if not body.text.strip():
             raise HTTPException(400, "Say something")
-        return {**await ask(p, agent_id, "chat", {"text": body.text}, timeout=900), "agent_id": agent_id}
+        reply = await ask_chat(p, agent_id, "chat", {"text": body.text})
+        return reply if isinstance(reply, JSONResponse) else {**reply, "agent_id": agent_id}
 
     @router.post("/agents/{agent_id}/chat/reset")
     async def reset_agent_chat(agent_id: str, p: CurrentPrincipal) -> dict[str, Any]:
@@ -850,14 +922,38 @@ def build_router(hub: Hub) -> APIRouter:
             payload["task"] = body.task.strip()
         return await ask(p, agent_id, "run", payload, timeout=900)
 
+    # Chat text is never in the message log (Bus.send keeps its routing only); rows written before that are redacted
+    # on the way out too (review D7).
+    @router.get("/agents/{agent_id}/settings")
+    async def get_agent_settings(agent_id: str) -> dict[str, Any]:
+        """The agent's model choice, what it resolves to per purpose and through which levels, and its usage."""
+        return agent_settings.view(hub, agent_or_404(agent_id))
+
+    @router.patch("/agents/{agent_id}/settings")
+    async def patch_agent_settings(agent_id: str, body: AgentSettingsPatch, p: CurrentPrincipal) -> Any:
+        agent = agent_or_404(agent_id)
+        given = {**body.model_dump(exclude_unset=True), **(body.model_extra or {})}
+        try:
+            view, lines, loosened = agent_settings.save(hub, agent, given, p.actor)
+        except agent_settings.Conflict as exc:
+            return JSONResponse(status_code=409, content={"detail": str(exc), "code": "version_conflict",
+                                                          "settings": exc.view, "version": exc.view["version"]})
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        if lines:
+            hub.activity(p.actor, "warn" if loosened else "info", f"Configured {agent.name}: " + "; ".join(lines),
+                         agent_id=agent_id, version=view["version"])
+            await hub.bus.tell(p.bus_id, "module:grc", "evaluate")  # HB-SC-1: which cloud providers are in use
+        return view
+
     @router.get("/agents/{agent_id}/messages")
     async def agent_messages(agent_id: str, limit: int = 100) -> list[dict[str, Any]]:
         recent = hub.store.tail("messages", 2000)
-        return [m for m in recent if agent_id in (m["sender"], m["recipient"])][-limit:]
+        return [redacted(m) for m in recent if agent_id in (m["sender"], m["recipient"])][-limit:]
 
     @router.get("/messages")
     async def messages(limit: int = 200) -> list[dict[str, Any]]:
-        return hub.store.tail("messages", min(limit, 2000))
+        return [redacted(m) for m in hub.store.tail("messages", min(limit, 2000))]
 
     @router.get("/activity")
     async def activity(limit: int = 100, before: int | None = None) -> list[dict[str, Any]]:
@@ -865,8 +961,8 @@ def build_router(hub: Hub) -> APIRouter:
         return hub.store.tail("activity", min(limit, 2000), before=before)
 
     @router.post("/chat")
-    async def chat(body: ChatBody, p: CurrentPrincipal) -> dict[str, Any]:
-        return await ask(p, "supervisor", "chat", {"text": body.text}, timeout=900)
+    async def chat(body: ChatBody, p: CurrentPrincipal) -> Any:
+        return await ask_chat(p, "supervisor", "chat", {"text": body.text})
 
     @router.post("/chat/reset")
     async def chat_reset(p: CurrentPrincipal) -> dict[str, Any]:
@@ -910,6 +1006,15 @@ def build_router(hub: Hub) -> APIRouter:
         if pending is not None and pending.kind in ADMIN_APPROVALS and p.role != "admin":
             raise HTTPException(403, "Only administrators decide changes to Atrium itself and new agents "
                                      "(extensions, self-patches and agent teams)")
+        decider = subsidiary_decider(pending) if pending is not None else None
+        if decider == "admin" and p.role != "admin":
+            raise HTTPException(403, {"code": "admin_required",
+                                      "message": "Only administrators decide subsidiary charters, bridge patches and "
+                                                 "high-risk changes inside a tool."})
+        if decider is not None and body.approve and p.kind != "user":
+            raise HTTPException(403, {"code": "person_required",
+                                      "message": "A subsidiary's approval is approved by a person on the Approvals "
+                                                 "page, not with an API token. A token may reject it."})
         if pending is not None and body.approve and device_repair(pending) and p.role != "admin":
             raise HTTPException(403, {"code": "admin_required",
                                       "message": "Only administrators approve a repair of a network device's "
@@ -1300,12 +1405,13 @@ def build_router(hub: Hub) -> APIRouter:
     @router.get("/settings")
     async def get_settings() -> dict[str, Any]:
         prefs = hub.prefs
-        return {**prefs, "guardrail_catalog": guardrails.catalog(prefs["guardrails"]), "llm": hub.llm.status(),
+        return {**prefs, "model": hub.llm.default_model("anthropic"),  # Claude's default model (its provider record)
+                "guardrail_catalog": guardrails.catalog(prefs["guardrails"]), "llm": hub.llm.status(),
                 "data_dir": str(hub.settings.data_dir), "version": __import__("hub").__version__}
 
     @router.patch("/settings")
     async def patch_settings(body: SettingsPatch, p: CurrentPrincipal) -> dict[str, Any]:
-        values = body.model_dump(exclude={"vuln_sla_days", "guardrails"})
+        values = body.model_dump(exclude={"vuln_sla_days", "guardrails", "model"})
         if body.vuln_sla_days:
             if any(not 1 <= days <= 3650 for days in body.vuln_sla_days.values()):
                 raise HTTPException(400, "SLA days must be between 1 and 3650")
@@ -1317,8 +1423,15 @@ def build_router(hub: Hub) -> APIRouter:
                 hub.update_prefs(p.actor, **values)
             if body.guardrails:
                 guardrails.update(hub, p.actor, body.guardrails)
+            if body.model is not None:  # compatibility: the default model of the Claude provider
+                llm_providers.save(hub, "anthropic", {"default_model": body.model}, p.actor)
+                hub.activity(p.actor, "info", "Changed the AI provider Claude: default model", provider_id="anthropic")
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
+        changed = [k for k, v in values.items() if v is not None] + (["model"] if body.model is not None else []) \
+            + (["guardrails"] if body.guardrails else [])
+        if changed:  # key names only, never values: every signed-in principal gets the event
+            hub.bus.publish("settings", {"keys": changed})
         if body.vuln_sla_days:
             await hub.bus.tell(p.bus_id, "module:vulns", "sla.recompute")
         await hub.bus.tell(p.bus_id, "module:grc", "evaluate")
@@ -1333,6 +1446,7 @@ def build_router(hub: Hub) -> APIRouter:
             guardrails.update(hub, p.actor, body)
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
+        hub.bus.publish("settings", {"keys": ["guardrails"]})  # key names only, never values
         await hub.bus.tell(p.bus_id, "module:grc", "evaluate")
         return await get_settings()
 
@@ -1345,9 +1459,54 @@ def build_router(hub: Hub) -> APIRouter:
         return provider
 
     def providers_view() -> dict[str, Any]:
-        return {"providers": [llm_providers.public(x) for x in llm_providers.all_providers(hub)],
-                "choices": teams.provider_choices(hub), "anthropic": hub.llm.status(),
-                "default_base_url": llm_providers.DEFAULT_BASE_URL, "kinds": ["openai_compatible"]}
+        """Every provider record in card order (`records`: Claude, OpenAI, Azure OpenAI, local servers), the model
+        servers people added (`providers`), the built-in ones, what agents can run on (`choices`) and the status of
+        the provider layer (`anthropic`: the name before it covered every provider)."""
+        status = hub.llm.status()
+        records = [{**llm_providers.public(x), "caps": {  # what is known per model: stored, learned or documented
+            m: hub.llm.caps(x.id, m).model_dump(mode="json", exclude_none=True, exclude={"at"})
+            for m in dict.fromkeys([hub.llm.default_model(x.id), *x.pinned_models, *x.models]) if m}}
+            for x in llm_providers.ordered(hub)]
+        return {"records": records, "providers": [llm_providers.public(x) for x in llm_providers.local(hub)],
+                "builtin": [r for r in records if r["id"] in llm_providers.BUILTIN],
+                "choices": teams.provider_choices(hub), "anthropic": status, "llm": status,
+                "default_base_url": llm_providers.DEFAULT_BASE_URL, "kinds": ["openai", "openai_compatible"],
+                "selection": llm_resolve.selection(hub.llm).model_dump(mode="json"),
+                "guardrails": {"allow_cloud_llm": hub.llm.cloud_allowed()},
+                "known_models": {"openai": list(openai_adapter.KNOWN_MODELS)}}
+
+    def provider_title(provider: Any) -> str:
+        return f"{'AI' if provider.kind != 'openai_compatible' else 'local model'} provider {provider.name}"
+
+    def provider_changes(before: Any, after: Any, body: BaseModel, key_changed: bool) -> list[str]:
+        """What a PATCH changed, as words for the activity log - never a key value."""
+        sent = body.model_dump(exclude={"api_key", "clear_api_key", "confirm_self_hosted", "supplier"}, exclude_none=True)
+        names = {"base_url": "base URL", "default_model": "default model", "pinned_models": "model list",
+                 "structured_output": "structured output", "send_effort": "effort setting", "enabled": "on/off"}
+        out = [names.get(k, k.replace("_", " ")) for k in sent if getattr(before, k, None) != getattr(after, k, None)]
+        if before.supplier != after.supplier:  # HB-SC-1 evidence: who answers for the supplier, and the last review
+            s = after.supplier
+            reviewed = time.strftime("%Y-%m-%d", time.gmtime(s.reviewed_at)) if s.reviewed_at else None
+            out.append(f"supplier owner {s.owner or 'none'}, "
+                       + (f"terms reviewed {reviewed}" if reviewed else "terms not reviewed"))
+        if key_changed:
+            out.append("API key removed" if after.api_key is None else "API key set")
+        return out
+
+    def provider_users(provider_id: str) -> list[str]:
+        """Who chose the provider: agents (custom, or a core agent's override) and the suite's model selection."""
+        def per_task(config: dict[str, Any]) -> set[str]:
+            return {str((c or {}).get("provider") or "") for c in (config.get("purposes") or {}).values()}
+
+        users = [d.name for d in teams.defs(hub) if provider_id in (d.provider, *(c.provider for c in d.config.purposes.values()))]
+        users += [(hub.agents.get(d["id"]).name if hub.agents.get(d["id"]) else d["id"]) for d in hub.store.list("agents")
+                  if d.get("provider") == provider_id or provider_id in per_task(d.get("config") or {})]
+        sel = llm_resolve.selection(hub.llm)
+        if sel.default.provider == provider_id:
+            users.append("the suite default")
+        users += [f"the {k} default" for k, v in sel.purposes.items() if v.provider == provider_id]
+        users += [f"the {teams.team_name(hub, k)} team" for k, v in sel.teams.items() if v.provider == provider_id]
+        return users + (["the fallback chain"] if provider_id in sel.fallback else [])
 
     @router.get("/llm/providers")
     async def list_llm_providers() -> dict[str, Any]:
@@ -1360,41 +1519,105 @@ def build_router(hub: Hub) -> APIRouter:
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
         key = "; API key set" if provider.api_key else ""
-        hub.activity(p.actor, "info", f"Added the local model provider {provider.name} ({provider.base_url}){key}",
+        hub.activity(p.actor, "info", f"Added the {provider_title(provider)} ({provider.base_url}){key}",
                      provider_id=provider.id)
+        self_hosted_marked(provider, None, p.actor)
         return llm_providers.public(provider)
+
+    def self_hosted_marked(provider: Any, before: Any, actor: str) -> None:
+        host = urlsplit(provider.base_url).hostname or provider.base_url
+        if provider.location_confirmed and not (before is not None and before.location_confirmed
+                                                and urlsplit(before.base_url).hostname == host):
+            hub.activity(actor, "warn", f"Marked {provider.name} as self-hosted (public address {host}): its agents "
+                         "count as running on own hardware", provider_id=provider.id)
 
     @router.patch("/llm/providers/{provider_id}")
     async def update_llm_provider(provider_id: str, body: ProviderPatch, p: CurrentPrincipal) -> dict[str, Any]:
-        provider_or_404_llm(provider_id)
+        before = provider_or_404_llm(provider_id)
         try:
             provider, key_changed = llm_providers.save(hub, provider_id, body.model_dump(), p.actor)
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
-        changed = [k for k, v in body.model_dump(exclude={"api_key", "clear_api_key"}).items() if v is not None]
-        what = ", ".join(changed + (["API key"] if key_changed else []))
-        hub.activity(p.actor, "info", f"Changed the local model provider {provider.name}" + (f": {what}" if what else ""),
-                     provider_id=provider.id)
+        what = ", ".join(provider_changes(before, provider, body, key_changed))
+        hub.activity(p.actor, "warn" if before.enabled and not provider.enabled else "info",
+                     f"Changed the {provider_title(provider)}" + (f": {what}" if what else ""), provider_id=provider.id)
+        self_hosted_marked(provider, before, p.actor)
         return llm_providers.public(provider)
 
     @router.delete("/llm/providers/{provider_id}")
     async def delete_llm_provider(provider_id: str, p: CurrentPrincipal) -> dict[str, Any]:
         provider = provider_or_404_llm(provider_id)
-        users = [d.name for d in teams.defs(hub) if d.provider == provider_id]
+        if provider_id in llm_providers.BUILTIN:
+            raise HTTPException(409, f"{provider.name} is built in - remove its API key instead")
+        users = provider_users(provider_id)
         if users:
             raise HTTPException(409, f"{provider.name} is used by {', '.join(users[:5])}"
                                      f"{' and more' if len(users) > 5 else ''} - move them to another provider first")
         llm_providers.delete(hub, provider_id)
-        hub.activity(p.actor, "info", f"Removed the local model provider {provider.name}", provider_id=provider_id)
+        hub.activity(p.actor, "info", f"Removed the {provider_title(provider)}", provider_id=provider_id)
         return {"ok": True}
 
     @router.post("/llm/providers/{provider_id}/test")
     async def test_llm_provider(provider_id: str, p: CurrentPrincipal) -> dict[str, Any]:
-        result = await llm_providers.test(hub, provider_or_404_llm(provider_id))
+        provider = provider_or_404_llm(provider_id)
+        result = await llm_providers.test(hub, provider)
         hub.activity(p.actor, "info" if result["ok"] else "warn",
-                     f"Tested the local model provider {result['provider']['name']}: {result['detail']}",
-                     provider_id=provider_id)
+                     f"Tested the {provider_title(provider)}: {result['detail']}", provider_id=provider_id)
         return result
+
+    @router.post("/llm/providers/{provider_id}/probe")
+    async def probe_llm_provider(provider_id: str, body: ProviderProbe, p: CurrentPrincipal) -> dict[str, Any]:
+        """Check what one model supports (tools, JSON schema output) with two tiny calls; the result is stored."""
+        provider = provider_or_404_llm(provider_id)
+        model = body.model.strip()
+        try:
+            caps, used = await hub.llm.probe(provider_id, model, person=p.actor)
+        except LLMUnavailable as exc:
+            hub.activity(p.actor, "warn", f"Checked {model} on the {provider_title(provider)}: {exc}",
+                         provider_id=provider_id)
+            raise HTTPException(409, str(exc)) from exc
+        said = {True: "yes", False: "no", None: "unknown"}
+        tokens = used.input_tokens + used.cached_input_tokens + used.output_tokens
+        hub.activity(p.actor, "info", f"Checked {model} on the {provider_title(provider)}: tools {said[caps.tools]}, "
+                     f"JSON {said[caps.json_schema]} ({tokens} tokens)", provider_id=provider_id)
+        return {"model": model, "caps": caps.model_dump(mode="json"), "tokens": tokens,
+                "provider": llm_providers.public(provider_or_404_llm(provider_id))}
+
+    @router.get("/llm/prices")
+    async def llm_prices() -> dict[str, Any]:
+        """USD per 1M tokens: shipped (dated, with sources), set by administrators, and what applies."""
+        return llm_usage.price_view(hub)
+
+    @router.put("/llm/prices")
+    async def put_llm_prices(body: PricesPut, p: CurrentPrincipal) -> dict[str, Any]:
+        try:
+            changed = llm_usage.set_overrides(hub, body.overrides, p.actor)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        if changed:
+            hub.activity(p.actor, "info", "AI prices changed: " + "; ".join(changed)[:900])
+        return llm_usage.price_view(hub)
+
+    @router.get("/llm/selection")
+    async def get_llm_selection() -> dict[str, Any]:
+        """The suite's model choice (default, per purpose, per team, fallback chain) and what every agent runs on."""
+        return llm_selection.view(hub)
+
+    @router.patch("/llm/selection")
+    async def patch_llm_selection(body: SelectionPatch, p: CurrentPrincipal) -> Any:
+        try:
+            sel, lines, loosened = llm_selection.save(hub, body.model_dump(exclude={"version"}, exclude_unset=True),
+                                                      p.actor, body.version)
+        except llm_selection.Conflict as exc:
+            return JSONResponse(status_code=409, content={"detail": str(exc), "code": "version_conflict",
+                                                          "selection": exc.current.model_dump(mode="json")})
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        if lines:
+            hub.activity(p.actor, "warn" if loosened else "info", "AI model selection: " + "; ".join(lines)[:900],
+                         version=sel.version)
+            await hub.bus.tell(p.bus_id, "module:grc", "evaluate")  # HB-SC-1: which cloud providers are in use
+        return llm_selection.view(hub)
 
     # -- extensions ----------------------------------------------------------------------
 
@@ -1481,7 +1704,7 @@ def build_router(hub: Hub) -> APIRouter:
 
     @router.post("/tools/{tool_id}/extend")
     async def extend_for_tool(tool_id: str, p: CurrentPrincipal, body: ExtendRequest | None = None) -> dict[str, Any]:
-        """Ask the Patch Agent to close the tool's hub-side gaps with an extension pack (and, with Claude, a self-patch
+        """Ask the Patch Agent to close the tool's hub-side gaps with an extension pack (and, with an AI model, a self-patch
         when only code can close one)."""
         tool = hub.get_tool(tool_id)
         if tool is None or tool.manifest is None:
@@ -1633,12 +1856,13 @@ def build_router(hub: Hub) -> APIRouter:
 
     @router.post("/self-patches", status_code=202)
     async def request_self_patch(body: SelfPatchRequest, p: CurrentPrincipal) -> dict[str, Any]:
-        """Ask the Patch Agent (Claude) for a change to Atrium's own code; it appears in Approvals once its tests ran."""
+        """Ask the Patch Agent (an AI model) for a change to Atrium's own code; it appears in Approvals once its tests ran."""
         state = selfpatch.availability(hub)
         if not state["allowed"]:
             raise HTTPException(400, "Self-patching is switched off (guardrail allow_self_patching)")
-        if not state["claude"]:
-            raise HTTPException(400, "Self-patches need Claude - set ANTHROPIC_API_KEY")
+        if not state["model"]:
+            raise HTTPException(400, "Self-patches need an AI model - configure one in Settings > AI providers (or "
+                                     "set ANTHROPIC_API_KEY)")
         if not state["git_checkout"]:
             raise HTTPException(400, "Atrium does not run from a git checkout, so it cannot patch itself")
         if body.tool_id and hub.get_tool(body.tool_id) is None:
@@ -1667,6 +1891,9 @@ def build_router(hub: Hub) -> APIRouter:
     network_api.add_routes(router, hub, ask)
     network_changes_api.add_routes(router, hub, ask)  # device changes and maintenance windows (R3-NETCHANGE)
     canvas_api.add_routes(router, hub, ask)  # integration map, Connect options, POST /flows, layouts (R3-CANVAS-BE)
+    dashboards_api.add_routes(router, hub)  # Home dashboards, widgets and their data (R4-DASH)
+    agent_settings_api.add_routes(router, hub)  # agent settings history, playground, budgets, usage (R4-LLM 4)
+    subsidiary_routes.add_routes(router, hub, ask)  # subsidiaries and their sidecars' API (R4-SUB)
 
     # -- live events (SSE) ---------------------------------------------------------------
 

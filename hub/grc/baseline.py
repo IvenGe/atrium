@@ -92,6 +92,14 @@ CONTROLS: list[Control] = [
                         "CyFun2025": "GV.RR-04.2 / PR.AA-01.1 / PR.AA-05.1 / GV.SC-02.1",
                         "CyFun2023": "PR.AC-1.1 / PR.AT-3.2 / PR.IP-11.2"},
             ("Former staff keep access or company devices", 3, 4)),
+    # UNVERIFIED: analyst mapping (round4-spec 10.2) - not checked against the official framework texts.
+    Control("HB-AC-8", "Access control", "AI agent teams inside tools are governed",
+            "Agent teams that work inside tools act only within a charter an administrator approved, through a bridge "
+            "that verifies the parent's signatures, with budgets, a kill switch, an audit trail, and human approval "
+            "for writes, code and patches.",
+            "subsidiaries", {"ISO27001": "A.5.15 / A.8.2 / A.8.15 / A.8.32", "SOC2": "CC6.1 / CC6.3 / CC8.1",
+                             "NIS2": "21(2)(i)", "CyFun2025": "PR.AA-05.3 / PR.AA-05.7", "CyFun2023": "PR.AC-4.7"},
+            ("AI agents act inside business tools beyond the parent's control", 3, 4)),
     Control("HB-CM-1", "Configuration management", "Integration configuration as code",
             "Every tool's integration contract (hub manifest) is explicit and versioned.",
             "tools_manifest", {"ISO27001": "A.8.9", "SOC2": "CC7.1",
@@ -182,7 +190,8 @@ CONTROLS: list[Control] = [
                               "CyFun2025": "PR.IR-01.1 / PR.IR-01.8 / PR.PS-01.3", "CyFun2023": "PR.PT-3.2"},
             ("Overly broad firewall rules expose systems", 3, 4)),
     Control("HB-SC-1", "Supplier management", "SaaS and supplier inventory",
-            "Every SaaS service is registered as an asset with an owner responsible for the supplier relationship.",
+            "Every SaaS service, including the cloud AI model providers agents send data to, is registered with an "
+            "owner responsible for the supplier relationship; the AI providers' terms are reviewed at least yearly.",
             "saas_inventory", {"ISO27001": "A.5.19 / A.5.23", "SOC2": "CC9.2", "NIS2": "21(2)(d)",
                                "CyFun2025": "ID.AM-04.1 / GV.SC-07.2 / GV.OC-05.1",
                                "CyFun2023": "ID.AM-4.1 / ID.SC-2.2"},

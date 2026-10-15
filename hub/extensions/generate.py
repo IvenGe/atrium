@@ -1,6 +1,6 @@
-"""Extension packs and self-patches written by Claude (structured output). Everything Claude returns is validated like
-an upload: a pack through the strict pack models, a self-patch through the path and secret checks of selfpatch.py,
-and Claude may only rewrite files of Atrium it was shown."""
+"""Extension packs and self-patches written by the AI model the Patch Agent resolves to (structured output, hub/llm).
+Everything the model returns is validated like an upload: a pack through the strict pack models, a self-patch through
+the path and secret checks of selfpatch.py, and the model may only rewrite files of Atrium it was shown."""
 
 from __future__ import annotations
 
@@ -70,8 +70,10 @@ def _pack_id(text: str) -> str:
     return re.sub(r"[^a-z0-9-]+", "-", text.lower()).strip("-")[:48].strip("-") or "extension"
 
 
-async def claude_pack(hub: "Hub", tool: Tool, gaps: list[Gap], model: str) -> tuple[ExtensionPack | None, str, bool, str]:
-    """(pack or None, rationale, needs_code, code_goal) - raises when Claude's answer is not usable."""
+async def model_pack(hub: "Hub", tool: Tool, gaps: list[Gap], agent_id: str = "patcher"
+                     ) -> tuple[ExtensionPack | None, str, bool, str, dict[str, str]]:
+    """(pack or None, rationale, needs_code, code_goal, generated_by {provider, model}) - raises when the model's
+    answer is not usable."""
     from ..agents.patcher import load_openapi
 
     spec, known_base = "", None
@@ -96,13 +98,14 @@ async def claude_pack(hub: "Hub", tool: Tool, gaps: list[Gap], model: str) -> tu
               f"<agent_permissions>{', '.join(AGENT_PERMISSIONS)}</agent_permissions>\n"
               + (f"<openapi known_api_base=\"{known_base or ''}\">\n{spec[:PROMPT_CHARS]}\n</openapi>" if spec else
                  "<openapi>none</openapi>"))
-    result = await hub.llm.json(system=EXTENSION_INSTRUCTIONS, prompt=prompt, schema=EXTENSION_SCHEMA, model=model,
-                                effort="high", max_tokens=32_000)
+    result, meta = await hub.llm.json(agent_id, "generate", system=EXTENSION_INSTRUCTIONS, prompt=prompt,
+                                      schema=EXTENSION_SCHEMA, effort="high", max_output_tokens=32_000)
+    generated_by = {"provider": meta.provider, "model": meta.model}
     rationale = str(result.get("rationale") or "").strip()[:4000]
     needs_code, goal = bool(result.get("needs_code")), str(result.get("code_goal") or "").strip()[:4000]
     raw = str(result.get("pack_json") or "").strip()
     if not raw or raw in ("{}", "null"):
-        return None, rationale, needs_code, goal
+        return None, rationale, needs_code, goal, generated_by
     data = json.loads(raw)
     if not isinstance(data, dict):
         raise ValueError("pack_json is not an object")
@@ -119,11 +122,12 @@ async def claude_pack(hub: "Hub", tool: Tool, gaps: list[Gap], model: str) -> tu
             item.pop("base_url", None)
         elif item.get("base_url") and endpoint_of(item["base_url"]) != endpoint_of(known_base):
             item["base_url"] = known_base.rstrip("/")
-    return parse(data), rationale, needs_code, goal
+    return parse(data), rationale, needs_code, goal, generated_by
 
 
-async def claude_self_patch(hub: "Hub", goal: str, tool: Tool | None, model: str) -> tuple[str, str, list[FileChange]]:
-    """(title, rationale, changes) for a change to Atrium's own repository."""
+async def model_self_patch(hub: "Hub", goal: str, tool: Tool | None, agent_id: str = "patcher"
+                           ) -> tuple[str, str, list[FileChange], dict[str, str]]:
+    """(title, rationale, changes, generated_by {provider, model}) for a change to Atrium's own repository."""
     root = selfpatch.config(hub).root()
     if root is None:
         raise ValueError("Atrium does not run from a git checkout, so it cannot patch itself")
@@ -140,8 +144,8 @@ async def claude_self_patch(hub: "Hub", goal: str, tool: Tool | None, model: str
                                default=str)
     prompt = (f"<goal>{goal}</goal>\n" + (f"<tool>{described}</tool>\n" if described else "")
               + f"<file_tree>\n{tree}\n</file_tree>\n\n{files}")
-    result = await hub.llm.json(system=SELF_PATCH_INSTRUCTIONS, prompt=prompt, schema=SELF_PATCH_SCHEMA, model=model,
-                                effort="high", max_tokens=64_000)
+    result, meta = await hub.llm.json(agent_id, "code", system=SELF_PATCH_INSTRUCTIONS, prompt=prompt,
+                                      schema=SELF_PATCH_SCHEMA, effort="high", max_output_tokens=64_000)
     changes = []
     tracked = {n.lower() for n in names if n}
     seen = {n.lower() for n in shown}
@@ -150,8 +154,9 @@ async def claude_self_patch(hub: "Hub", goal: str, tool: Tool | None, model: str
         # and compared without case (a case-insensitive file system writes "HUB/x" to "hub/x")
         path = PurePosixPath(str(change.get("path") or "").replace("\\", "/").strip()).as_posix()
         if path.lower() in tracked and path.lower() not in seen:
-            raise ValueError(f"Claude tried to rewrite {path} without having seen it")
+            raise ValueError(f"The AI model tried to rewrite {path} without having seen it")
         changes.append(FileChange(path=path, content=str(change.get("content") or "")))
     if not changes:
-        raise ValueError("Claude proposed no changes")
-    return str(result.get("title") or "Change Atrium")[:120], str(result.get("rationale") or "")[:4000], changes
+        raise ValueError("The AI model proposed no changes")
+    return (str(result.get("title") or "Change Atrium")[:120], str(result.get("rationale") or "")[:4000], changes,
+            {"provider": meta.provider, "model": meta.model})

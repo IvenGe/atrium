@@ -98,6 +98,11 @@ export const ICONS = {
   switch: '<rect x="2.5" y="7" width="19" height="10" rx="1.5"/><path d="M6 11h1.5M9.5 11H11M13 11h1.5M16.5 11H18M6 14h12"/>',
   expand: '<path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/>',
   keyboard: '<rect x="2.5" y="6" width="19" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M8 14h8"/>',
+  more: '<circle cx="5" cy="12" r="1.3"/><circle cx="12" cy="12" r="1.3"/><circle cx="19" cy="12" r="1.3"/>',
+  grip: '<circle cx="9" cy="6" r="1.2"/><circle cx="15" cy="6" r="1.2"/><circle cx="9" cy="12" r="1.2"/><circle cx="15" cy="12" r="1.2"/><circle cx="9" cy="18" r="1.2"/><circle cx="15" cy="18" r="1.2"/>',
+  resize: '<path d="M20 11v9h-9M20 20 11 11M15 20l5-5"/>',
+  table: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 10h18M3 15h18M9 10v10"/>',
+  building: '<path d="M4 21V4.5a1 1 0 0 1 1-1h9a1 1 0 0 1 1 1V21"/><path d="M15 9h4a1 1 0 0 1 1 1v11M2.5 21h19M8 8h3M8 12h3M8 16h3"/>',
 };
 
 export function icon(name, extra = "") {
@@ -216,7 +221,7 @@ const TONES = {
   low: "", medium: "info", high: "warn", critical: "bad", manual: "", na: "",
   enabled: "ok", disabled: "", fixed: "ok", in_progress: "info", accepted: "", false_positive: "", info: "",
   running: "info", awaiting_approval: "warn", failing: "bad", available: "info", needs_decision: "warn",
-  needs_claude: "", unavailable: "", not_needed: "", withdrawn: "",
+  needs_model: "", needs_claude: "", unavailable: "", not_needed: "", withdrawn: "",
   suspended: "warn", terminated: "bad",
   merged: "ok", pull_request: "info", testing: "info", stale: "warn",
 };
@@ -282,13 +287,17 @@ export function diffView(diff) {
 
 // ---------- toasts ----------
 
-export function toast(message, tone = "info") {
+export function toast(message, tone = "info", link = null) {
   let box = document.querySelector(".toasts");
   if (!box) { box = document.createElement("div"); box.className = "toasts"; document.body.append(box); }
   const el = document.createElement("div");
   el.className = `toast ${tone}`;
   el.setAttribute("role", "status");
   el.textContent = message;
+  if (link?.href?.startsWith("#/")) { // an in-app link after the text ("Added to My dashboard. Open")
+    const a = Object.assign(document.createElement("a"), { href: link.href, textContent: link.text || "Open" });
+    el.append(" ", a);
+  }
   box.append(el);
   setTimeout(() => el.remove(), 4200);
 }

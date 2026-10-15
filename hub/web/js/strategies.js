@@ -10,7 +10,7 @@ export const STRATEGY_TITLES = {
 };
 const STATES = {
   active: ["active", "ok"], pending: ["pending", "warn"], failing: ["failing", "bad"], needs_decision: ["needs a decision", "warn"],
-  available: ["available", "info"], needs_claude: ["needs Claude", ""], unavailable: ["unavailable", ""], not_needed: ["not needed", ""],
+  available: ["available", "info"], needs_model: ["needs an AI model", ""], needs_claude: ["needs an AI model", ""], unavailable: ["unavailable", ""], not_needed: ["not needed", ""],
 };
 const ACTIONS = {
   approve: ["Review", "checkCircle"], choose_provider: ["Choose provider", "link"], connect_sso: ["Connect", "link"],
@@ -54,7 +54,7 @@ export function wireStrategies(root, { refresh, handlers = {} }) {
       try {
         if (d.action === "generate_connector") {
           const r = await post(`/tools/${encodeURIComponent(d.tool)}/connection/generate`);
-          toast(r.applied ? "Generated connector applied - an administrator enters the credentials" : "Claude proposed a connector - see Approvals", "ok");
+          toast(r.applied ? "Generated connector applied - an administrator enters the credentials" : "The AI model proposed a connector - see Approvals", "ok");
         } else if (d.action === "propose_patches") {
           const r = await post(`/tools/${encodeURIComponent(d.tool)}/patches`);
           toast(r.patches?.length ? `${r.patches.length} patch(es) proposed - see Approvals` : "No new patches needed", "ok");

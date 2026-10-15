@@ -1,0 +1,10 @@
+{
+  "atrium_url": "{{atrium_url}}",
+  "subsidiary_id": "{{subsidiary_id}}",
+  "tool_id": "{{tool_id}}",
+  "mode": "{{mode}}",
+  "bridge_url": "{{bridge_url}}",
+  "ca_file": "{{ca_file}}",
+  "atrium_cert_sha256": "{{atrium_cert_sha256}}",
+  "state_dir": "/var/lib/atrium-sidecar"
+}

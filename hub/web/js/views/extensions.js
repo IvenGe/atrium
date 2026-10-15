@@ -169,7 +169,7 @@ function askForChange(tools, sp, done) {
     wide: true,
     minRole: "admin",
     submit: "Ask the Patch Agent",
-    body: html`<p class="muted" style="margin-bottom:12px">Claude writes the change on a new branch <code>atrium/self-&lt;id&gt;</code> in a separate git worktree
+    body: html`<p class="muted" style="margin-bottom:12px">The AI model writes the change on a new branch <code>atrium/self-&lt;id&gt;</code> in a separate git worktree
         and runs Atrium's test suite there. It then waits in Approvals with the diff and the test result - your checkout is not touched before that.
         ${sp.via_pull_request ? "On approval it is pushed and opened as a pull request when the GitHub CLI is signed in and an origin remote exists, otherwise merged locally."
           : "On approval it is merged into the current branch (only with a clean working tree) and Atrium must be restarted."}</p>
@@ -302,7 +302,7 @@ function gapsView(data, admin) {
   const byTool = new Map();
   for (const g of data.gaps) byTool.set(g.tool_id, [...(byTool.get(g.tool_id) || []), g]);
   const waiting = new Map(data.extensions.filter((p) => p.status === "proposed" && p.source_tool).map((p) => [p.source_tool, p]));
-  const verdict = (g) => (!g.expressible ? badge("needs a change to Atrium's code", "warn") : g.needs_claude ? badge("needs Claude", "") : badge("template available", "info"));
+  const verdict = (g) => (!g.expressible ? badge("needs a change to Atrium's code", "warn") : (g.needs_model ?? g.needs_claude) ? badge("needs an AI model", "") : badge("template available", "info"));
   return html`<p class="muted" style="margin-bottom:14px">What Atrium itself lacks for imported tools - a place for their data, a connector, an SSO recipe.
       After an import the Hub Supervisor asks the Patch Agent to close them once per tool; ask again here.</p>
     ${byTool.size ? html`<div class="stack" style="gap:12px">${[...byTool.entries()].map(([toolId, gaps]) => html`<section class="card">
@@ -319,22 +319,23 @@ function gapsView(data, admin) {
 
 function selfPatchesView(data, patches) {
   const a = data.self_patching;
-  const ready = a.allowed && a.claude && a.git_checkout;
+  const model = a.model ?? a.claude;
+  const ready = a.allowed && model && a.git_checkout;
   const req = (ok, text, hint = "") => html`<div class="check-row"><div class="ico ${ok ? "pass" : "manual"}">${icon(ok ? "check" : "x")}</div>
     <div style="min-width:0"><div>${text}</div>${hint ? html`<div class="faint" style="font-size:12px;overflow-wrap:anywhere">${hint}</div>` : ""}</div></div>`;
   return html`<div class="grid split" style="margin-bottom:16px">
       <section class="card"><header><h2>Changes to Atrium's own code</h2>
           <button type="button" class="btn sm primary" data-act="ask" data-min-role="admin" ${ready ? "" : "disabled"}
-            title="${ready ? "Describe a change for the Patch Agent" : "Needs self-patching allowed, Claude and a git checkout"}">${icon("plus")}Ask for a change</button></header>
+            title="${ready ? "Describe a change for the Patch Agent" : "Needs self-patching allowed, an AI model and a git checkout"}">${icon("plus")}Ask for a change</button></header>
         <p class="muted" style="font-size:13px">When an extension pack cannot express what a tool needs - a GraphQL or gRPC API, new code - the Patch Agent writes a change with
-          Claude on a separate branch in a git worktree, runs the test suite there and asks an administrator. ${a.via_pull_request
+          the AI model on a separate branch in a git worktree, runs the test suite there and asks an administrator. ${a.via_pull_request
           ? "Approved changes become a pull request when the GitHub CLI is signed in and an origin remote exists; otherwise they are merged locally."
           : "Approved changes are merged into the current branch; Atrium must then be restarted."}</p>
         <div class="notice warn" style="margin-top:10px">${icon("alert")}<div class="muted" style="font-size:12.5px">The tests of a proposed change run before anyone approves it, as the same
           operating-system user as Atrium: credentials are stripped from their environment, but files and the network are not sandboxed. Switch off "Allow self-patching" in Settings to rule this out.</div></div></section>
       <section class="card"><header><h2>Can Atrium patch itself?</h2>${ready ? badge("ready", "ok") : badge("not available", "")}</header>
         ${req(a.allowed, "Self-patching allowed", "Guardrail \"Allow self-patching\"")}
-        ${req(a.claude, "Claude connected", a.claude ? "" : "Set ANTHROPIC_API_KEY and restart Atrium")}
+        ${req(model, "AI model connected", model ? "" : "Configure one in Settings > AI providers, or set ANTHROPIC_API_KEY and restart Atrium")}
         ${req(a.git_checkout, "Runs from a git checkout", a.repo || "Installed without git (or HUB_SELF_PATCH=off): nothing to patch")}
         ${req(a.requires_tests, "Tests must pass before approval")}
         ${req(a.requires_approval, "An administrator approves every change")}</section></div>
@@ -449,7 +450,7 @@ export async function render(el, ctx) {
       const p = find(d.id);
       if (p) openRemove(p, refresh);
     },
-    extend: (d) => openExtend({ id: d.tool, name: d.name }, { claude: data?.self_patching.claude, done: refresh }),
+    extend: (d) => openExtend({ id: d.tool, name: d.name }, { model: data?.self_patching.model ?? data?.self_patching.claude, done: refresh }),
     ask: () => askForChange(ctx.state.tools, data.self_patching, refresh),
     patch: (d) => openSelfPatch(d.id, data?.self_patching, toolNames(), refresh),
     async apply(d, btn) {

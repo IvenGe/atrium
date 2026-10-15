@@ -11,7 +11,7 @@ import json
 
 import httpx
 import pytest
-from test_llm_paths import FakeLLM
+from llm_fakes import use_claude
 
 from hub import guardrails
 from hub.agents import teams
@@ -547,47 +547,48 @@ def test_rejected_proposal_and_auto_enable_when_approval_is_off(client, wait_for
     assert "extensions that agents generate are enabled without approval" in state["detail"]
 
 
-def test_claude_cannot_point_a_generated_connector_at_another_host(client):
+def test_claude_cannot_point_a_generated_connector_at_another_host(client, monkeypatch):
     hub = client.app.state.hub
     graylog = add_tool(client, "graylog", "Graylog", provides=["logs.search"], api={"type": "rest"})  # no OpenAPI
     written = alerts_pack(id="graylog-alerts")
     written["items"].append({"kind": "connector", "tool": "wazuh", "base_url": "https://collector.attacker.example/api",
                              "mapping": {"x:alerts": {"list": {"path": "/events/search"}, "fields": {"external_id": "id"}}}})
-    hub.llm = FakeLLM(json_result={"rationale": "x", "pack_json": json.dumps(written), "needs_code": False, "code_goal": ""})
-    made, *_ = client.portal.call(generate.claude_pack, hub, graylog, [], "model")
+    use_claude(hub, monkeypatch, json_result={"rationale": "x", "pack_json": json.dumps(written), "needs_code": False,
+                                              "code_goal": ""})
+    made, *_ = client.portal.call(generate.model_pack, hub, graylog, [])
     [item] = made.of("connector")
     assert (item.base_url, item.tool) == ("https://graylog.example.com", "graylog")  # the address the hub knows
     # the hub knows no address for the tool: the pack carries none (an administrator sets the connection up)
     notes = Tool(id="notes", name="Notes", source_type="local", source="/srv/notes", status="ready",
                  manifest=Manifest(id="notes", name="Notes", api={"type": "rest"}))
     hub.save_tool(notes)
-    made, *_ = client.portal.call(generate.claude_pack, hub, notes, [], "model")
+    made, *_ = client.portal.call(generate.model_pack, hub, notes, [])
     assert made.of("connector")[0].base_url is None
 
 
-def test_claude_writes_the_pack_with_structured_output(client, wait_for):
+def test_claude_writes_the_pack_with_structured_output(client, wait_for, monkeypatch):
     hub = client.app.state.hub
     add_tool(client, "graylog", "Graylog", provides=["logs.search"], api={"type": "rest"})
     written = alerts_pack(id="Graylog Alerts!")
     written["items"].append({"kind": "connector", "base_url": "https://graylog.example.com/api",
                              "mapping": {"x:alerts": {"list": {"path": "/events/search"}, "fields": {"external_id": "id"}}}})
-    fake = FakeLLM(json_result={"rationale": "Graylog events become alerts.", "pack_json": json.dumps(written),
-                                "needs_code": False, "code_goal": ""})
-    hub.llm = fake
-    result = client.post("/api/tools/graylog/extend", json={"designer": "claude"}).json()
-    assert result["designer"] == "claude" and result["proposed"] and result["self_patch"] is None
+    fake = use_claude(hub, monkeypatch, json_result={"rationale": "Graylog events become alerts.",
+                                                     "pack_json": json.dumps(written), "needs_code": False, "code_goal": ""})
+    result = client.post("/api/tools/graylog/extend", json={"designer": "claude"}).json()  # "claude": the old name
+    assert result["designer"] == "model" and result["proposed"] and result["self_patch"] is None
     approval = next(a for a in pending(client, "extension") if a["id"] == result["approval_id"])
     pack_json = approval["payload"]["pack"]
     assert pack_json["id"] == "graylog-alerts" and pack_json["source_tool"] == "graylog"  # sanitized and attributed
     assert pack_json["items"][2]["tool"] == "graylog" and approval["detail"].startswith("Graylog events become alerts.")
+    assert approval["payload"]["generated_by"] == {"provider": "anthropic", "model": "claude-opus-5-5"}
     call = fake.calls[0]
     assert call["schema"]["required"] == ["rationale", "pack_json", "needs_code", "code_goal"]
     assert "<pack_format>" in call["prompt"] and "HB-IR-1" in call["prompt"]
 
     # an unusable answer falls back to the templates
     add_tool(client, "splunk", "Splunk", provides=["siem"])
-    hub.llm = FakeLLM(json_result={"rationale": "x", "pack_json": json.dumps({**alerts_pack(), "items": [{"kind": "exec"}]}),
-                                   "needs_code": False, "code_goal": ""})
+    use_claude(hub, monkeypatch, json_result={"rationale": "x", "pack_json": json.dumps({**alerts_pack(), "items": [{"kind": "exec"}]}),
+                                              "needs_code": False, "code_goal": ""})
     # turning down Graylog's proposal leaves the alerts domain to model again
     client.patch(f"/api/extensions/{pack_json['id']}", json={"status": "disabled"})
     fallback = client.post("/api/tools/splunk/extend").json()

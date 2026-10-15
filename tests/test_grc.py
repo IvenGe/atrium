@@ -145,3 +145,32 @@ def test_vulnerability_sla_control():
     assert failing.status == "fail" and "1 critical/high finding(s) past their SLA" in failing.detail
     assert vuln("critical", -1).overdue and not vuln("critical", -1, "accepted").overdue and not vuln("low", 1).overdue
     assert CONTROLS_BY_ID["HB-VM-3"].risk == ("Known critical vulnerabilities remain exploitable", 4, 5)
+
+
+def test_cloud_ai_providers_in_use_are_suppliers_of_hb_sc_1():
+    """HB-SC-1 counts the cloud AI providers agents use next to SaaS tools: each needs a supplier owner and a terms
+    review within 12 months."""
+    now = time.time()
+    saas = Tool(id="crm", name="CRM", source_type="saas", source="https://crm.example.com")
+    owned = Asset(id="1", name="CRM", source="tool:crm", owner="sales")
+
+    def ai(owner: str = "", reviewed: float | None = None) -> dict:
+        return {"id": "openai", "name": "OpenAI", "owner": owner, "reviewed_at": reviewed, "allow_cloud": True}
+
+    def sc1(**kw):
+        return by_id(evaluate_controls(snapshot(**kw), {}))["HB-SC-1"]
+
+    assert sc1().status == "na"  # neither SaaS nor a cloud AI provider in use
+    assert sc1(tools=[saas], assets=[owned]).detail == "All 1 SaaS services with an owner comply."  # unchanged
+    state = sc1(tools=[saas], assets=[owned], ai_providers=[ai()])
+    assert state.status == "partial" and "AI provider OpenAI has no supplier owner" in state.detail
+    assert "Missing: AI provider OpenAI" in state.detail
+    assert sc1(tools=[saas], ai_providers=[ai()]).status == "fail"  # neither the SaaS tool nor the provider owned
+    state = sc1(tools=[saas], assets=[owned], ai_providers=[ai("j.doe", now - 10 * 86400)])
+    assert state.status == "pass"
+    assert any(e.startswith("AI provider: OpenAI - owner j.doe, terms reviewed ") for e in state.evidence)
+    state = sc1(ai_providers=[ai("j.doe", now - 400 * 86400)])  # the review is too old
+    assert state.status == "fail" and "terms review is older than 12 months" in state.detail
+    state = sc1(ai_providers=[ai("j.doe")])
+    assert state.status == "fail" and "terms were never reviewed" in state.detail
+    assert "cloud AI model providers" in CONTROLS_BY_ID["HB-SC-1"].description

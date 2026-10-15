@@ -41,6 +41,7 @@ class ToolSupervisor(BaseAgent):
     role = "tool-supervisor"
     title = "Tool Supervisor"
     uses_llm = True
+    purposes = ("generate",)
     description = ("Responsible for one application: understands it, keeps its manifest current, watches its health, "
                    "starts and stops it, and reports integration problems to the Hub Supervisor.")
     default_instructions = (
@@ -80,12 +81,12 @@ class ToolSupervisor(BaseAgent):
             manifest, notes = await asyncio.to_thread(analyze_repo, Path(tool.path), tool.id, tool.name)
         if tool.manifest:  # keep hub-side decisions (applied patches, adopted manifest) across re-analysis
             manifest = self._carry_over(tool.manifest, manifest)
-        if self.hub.llm.available and not manifest.native and tool.path:
+        if self.hub.llm.ready(self.id, "generate") and not manifest.native and tool.path:
             try:
-                manifest = await self._enrich(manifest, Path(tool.path))
-                notes.append("Description and capabilities refined with Claude.")
+                manifest, label = await self._enrich(manifest, Path(tool.path))
+                notes.append(f"Description and capabilities refined with {label}.")
             except Exception as exc:
-                notes.append(f"LLM enrichment skipped: {exc}")
+                notes.append(f"AI model enrichment skipped: {exc}")
         tool = self._tool()
         tool.manifest, tool.notes, tool.status, tool.error = manifest, notes, "ready", None
         if manifest.native and manifest.name:
@@ -124,10 +125,10 @@ class ToolSupervisor(BaseAgent):
     # -- the tool's agent team ------------------------------------------------------------
 
     async def on_team_propose(self, body: dict[str, Any], msg: Message) -> dict[str, Any]:
-        """Propose an AI agent team for this tool, from the templates for what the tool is or designed by Claude.
-        `designer`: "auto" (Claude when available, else the templates), "templates" or "claude". Proposals the hub
-        makes by itself (`auto`) happen once per tool and always use the templates: no model cost behind a background
-        trigger."""
+        """Propose an AI agent team for this tool, from the templates for what the tool is or designed by the AI model.
+        `designer`: "auto" (the AI model when one is available, else the templates), "templates" or "model" ("claude"
+        is accepted for it). Proposals the hub makes by itself (`auto`) happen once per tool and always use the
+        templates: no model cost behind a background trigger."""
         tool = self._tool()
         auto = bool(body.get("auto"))
         if auto and teams.has_team_or_proposal(self.hub, tool.id):
@@ -138,20 +139,22 @@ class ToolSupervisor(BaseAgent):
             return {"proposed": False, "approval_id": pending, "created": [], "members": [], "skipped": [],
                     "detail": f"A team proposal for {tool.name} is already waiting for approval."}
         designer = "templates" if auto else str(body.get("designer") or "auto")
-        if designer not in ("auto", "templates", "claude"):
-            raise ValueError("designer is auto, templates or claude")
-        if designer == "claude" and not self.hub.llm.available:
-            raise ValueError("Designing a team with Claude needs ANTHROPIC_API_KEY; use the templates instead")
+        designer = "model" if designer == "claude" else designer
+        if designer not in ("auto", "templates", "model"):
+            raise ValueError("designer is auto, templates or model")
+        ready = self.hub.llm.ready(self.id, "generate")
+        if designer == "model" and not ready:
+            raise ValueError("Designing a team needs an AI model (Settings > AI providers); use the templates instead")
         category = teams.classify(self.hub, tool)
         space = teams.room(self.hub, tool.id)
-        members, rationale, used = None, "", "templates"
-        if designer != "templates" and self.hub.llm.available and space != 0:
+        members, rationale, used, generated_by = None, "", "templates", None
+        if designer != "templates" and ready and space != 0:
             try:
-                members, rationale = await teams.design_with_claude(self.hub, tool, category, self.model,
-                                                                     8 if space is None else space)
-                used = "claude"
+                members, rationale, generated_by = await teams.design_with_model(
+                    self.hub, tool, category, 8 if space is None else space, self.id)
+                used = "model"
             except Exception as exc:  # the templates always work
-                self.log("warn", f"Claude could not design a team for {tool.name}, using the templates: {exc}")
+                self.log("warn", f"The AI model could not design a team for {tool.name}, using the templates: {exc}")
         if members is None:
             members = teams.template_members(self.hub, tool, category)
             roles = ", ".join(m["title"].lower() for m in members)
@@ -163,13 +166,52 @@ class ToolSupervisor(BaseAgent):
             rationale += f" Requested by {asker.name}."
         result = teams.propose_members(self.hub, requested_by=self.id, parent=self.id, members=members, designer=used,
                                        rationale=rationale, tool_id=tool.id, category=category,
-                                       on_behalf_of=asker.id if asker else None)
+                                       on_behalf_of=asker.id if asker else None, generated_by=generated_by)
         if result["proposed"]:
             self.log("info", result["detail"], tool_id=tool.id)
         return result
 
     async def on_approval_decided(self, body: dict[str, Any], msg: Message) -> None:
-        teams.settle(self.hub, str(body.get("approval_id")), bool(body.get("approved")))
+        approval_id, approved = str(body.get("approval_id")), bool(body.get("approved"))
+        approval = self.hub.approvals.get(approval_id)
+        kind = approval.kind if approval is not None else None
+        if kind == "subsidiary_charter":  # it leads the tool's subsidiary: the charter comes into force
+            from ..subsidiary import charter
+
+            if approved:
+                await charter.settle(self.hub, approval_id)
+            else:
+                charter.rejected(self.hub, approval_id)
+            return
+        if kind == "subsidiary_action" and approval is not None:  # a grant, or (API-only) the write itself
+            from ..subsidiary import actions
+
+            await actions.decided(self.hub, approval, approved, self)
+            return
+        teams.settle(self.hub, approval_id, approved)
+
+    async def push_record(self, domain: str, record: dict[str, Any]) -> dict[str, Any]:
+        """An approved in-tool write of the tool's API-only subsidiary: one record pushed with the connection's own
+        credential (the subsidiary's sidecar only reads). {action, external_id, error} or {failure}."""
+        async def run(connector):
+            if "write" not in connector.domains().get(domain, []):
+                raise ConnectorError(f"{connector.title} cannot write {domain}")
+            items = [i for i in await connector.push(domain, [record], {}) if isinstance(i, dict)]
+            item = items[0] if items else {"action": "failed", "error": "the connector returned nothing"}
+            action = item.get("action") if item.get("action") in PUSH_ACTIONS else "failed"
+            return {"action": action, "external_id": item.get("external_id"),
+                    "error": redact(item["error"], connector.secrets)[:1000] if item.get("error") else None}
+
+        return await self._connector("push", run)
+
+    async def on_subsidiary_escalation(self, body: dict[str, Any], msg: Message) -> None:
+        """An escalation from the tool's subsidiary (its text stays in its report: untrusted, never in a prompt)."""
+        if msg.sender not in (f"subsidiary:{self.tool_id}", "hub"):
+            return
+        severity = str(body.get("severity") or "warning")
+        self.log("error" if severity == "critical" else "warn",
+                 f"The {self._tool().name} subsidiary escalated a matter ({severity}): see its reports",
+                 report_id=str(body.get("report_id") or ""), subsidiary_id=str(body.get("subsidiary_id") or ""))
 
     # -- the tool's own API (connector) ------------------------------------------------
     # Only this agent decrypts the tool's credentials. Failures come back as {"failure": {message, status, excerpt}}
@@ -466,7 +508,9 @@ class ToolSupervisor(BaseAgent):
         new.events.emits = sorted(set(new.events.emits) | set(old.events.emits))
         return new
 
-    async def _enrich(self, manifest: Manifest, root: Path) -> Manifest:
+    async def _enrich(self, manifest: Manifest, root: Path) -> tuple[Manifest, str]:
+        """The manifest with a description and capabilities the AI model read from the repository, and the model's
+        label."""
         files = "\n".join(f.as_posix() for f in list_files(root, 300))
         readme = ""
         for name in ("README.md", "readme.md", "README.rst", "README"):
@@ -478,12 +522,12 @@ class ToolSupervisor(BaseAgent):
             f"<inferred_manifest>\n{manifest.model_dump_json(include={'name', 'stack', 'provides', 'consumes', 'auth'})}\n"
             f"</inferred_manifest>\n<readme>\n{readme or readme_summary(root)}\n</readme>\n<files>\n{files}\n</files>"
         )
-        result = await self.hub.llm.json(system=self.instructions, prompt=prompt, schema=ENRICH_SCHEMA,
-                                         model=self.model, effort="low", max_tokens=4000)
+        result, meta = await self.hub.llm.json(self.id, "generate", system=self.instructions, prompt=prompt,
+                                               schema=ENRICH_SCHEMA, effort="low", max_output_tokens=4000)
         manifest.description = result["description"][:400] or manifest.description
         manifest.provides = sorted(set(manifest.provides) | {c for c in result["provides"] if c and len(c) < 40})
         manifest.consumes = sorted(set(manifest.consumes) | {c for c in result["consumes"] if c and len(c) < 40})
-        return manifest
+        return manifest, meta.provider_label
 
 
 def texts(connector: Any, values: Any, limit: int = 20) -> list[str]:

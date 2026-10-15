@@ -10,6 +10,7 @@ import * as home from "./views/home.js";
 import * as tools from "./views/tools.js";
 import * as integration from "./views/integration.js";
 import * as agents from "./views/agents.js";
+import * as subsidiaries from "./views/subsidiaries.js";
 import * as approvals from "./views/approvals.js";
 import * as operator from "./views/operator.js";
 import * as network from "./views/network.js";
@@ -29,6 +30,7 @@ export const APPS = [
   { route: "tools", name: "Apps", icon: "grid", color: "#7c3aed", view: tools },
   { route: "integration", name: "Integration hub", short: "Integration", icon: "plug", color: "#0ea5e9", view: integration },
   { route: "agents", name: "Agents", icon: "bot", color: "#9333ea", view: agents },
+  { route: "subsidiaries", name: "Subsidiaries", icon: "building", color: "#0891b2", view: subsidiaries }, // agent teams inside tools
   { route: "approvals", name: "Approvals", icon: "checkCircle", color: "#ca8a04", view: approvals },
   { route: "operator", name: "Operator", icon: "terminal", color: "#334155", view: operator },
   { route: "network", name: "Network", icon: "network", color: "#ea580c", view: network },
@@ -43,6 +45,7 @@ export const APPS = [
 const ROUTES = Object.fromEntries(APPS.map((a) => [a.route, a]));
 ROUTES.portal = { route: "portal", name: "Portal", view: portal };
 ROUTES.x = { route: "x", name: "Extension app", view: xdomain }; // #/x/<domain key>[/<record id>]
+ROUTES.d = { route: "d", name: "Home", view: home }; // #/d/<dashboard id>: one dashboard tab on Home
 
 const state = { overview: null, tools: [], activity: [], restart: null };
 const $ = (id) => document.getElementById(id);
@@ -154,7 +157,8 @@ function togglePopover(id, anchor) {
 }
 function closePopovers() {
   document.querySelectorAll(".popover.open").forEach((p) => p.classList.remove("open"));
-  document.querySelectorAll('[aria-expanded="true"]').forEach((b) => b.setAttribute("aria-expanded", "false"));
+  // only the top bar's own buttons: a page's menus (a widget's options) keep their state until they close
+  document.querySelectorAll('header.topbar [aria-expanded="true"]').forEach((b) => b.setAttribute("aria-expanded", "false"));
 }
 
 function renderPortals() {
@@ -228,6 +232,10 @@ async function openPalette() {
     { label: "Scan for vulnerabilities", kind: "Action", icon: "radar", go: "#/vulnerabilities" },
     { label: "Ask the Hub Supervisor", kind: "Action", icon: "chat", go: "#/agents" },
   ] : [];
+  const dashboardActions = [
+    { label: "Customize dashboard", kind: "Action", icon: "edit", run: () => home.customize(), sub: "Home" },
+    { label: "Add a widget", kind: "Action", icon: "plus", run: () => home.addWidget(), sub: "Home" },
+  ];
   const entries = [
     ...APPS.filter((a) => can(a.minRole)).map((a) => ({ label: a.name, kind: "Page", icon: a.icon, go: `#/${a.route}` })),
     { label: "Data flows", kind: "Page", icon: "flow", go: "#/integration", sub: "Integration hub" },
@@ -237,6 +245,7 @@ async function openPalette() {
     { label: "Configuration drift", kind: "Page", icon: "activity", go: "#/network/drift", sub: "Network" },
     { label: "Device changes", kind: "Page", icon: "flow", go: "#/network/changes", sub: "Network" },
     { label: "Network changes (guardrails, maintenance windows)", kind: "Page", icon: "sliders", go: "#/settings/network", sub: "Settings" },
+    { label: "AI models and providers", kind: "Page", icon: "bot", go: "#/settings/ai", sub: "Settings" },
     { label: "Frameworks (CyFun self-assessment)", kind: "Page", icon: "shield", go: "#/compliance/frameworks", sub: "Compliance hub" },
     { label: "Leavers", kind: "Page", icon: "alert", go: "#/people/leavers", sub: "People" },
     { label: "Accounts in tools", kind: "Page", icon: "key", go: "#/people/accounts", sub: "People" },
@@ -246,6 +255,7 @@ async function openPalette() {
     { label: "Self-patches", kind: "Page", icon: "branch", go: "#/extensions/self-patches", sub: "Extensions" },
     ...(can("admin") ? [{ label: "Upload an extension pack", kind: "Action", icon: "upload", run: () => { location.hash = "#/extensions"; setTimeout(() => extensions.openUpload(), 50); } }] : []),
     ...operatorActions,
+    ...dashboardActions,
     ...(session.user?.has_password ? [{ label: "Change password", kind: "Account", icon: "key", run: openChangePassword }] : []),
     { label: "Sessions", kind: "Account", icon: "monitor", run: openSessions },
     { label: "Sign out", kind: "Account", icon: "logout", run: signOut },
@@ -316,7 +326,7 @@ function getStarted() {
       ${step(5, "Check compliance", "The GRC Supervisor maps live evidence to ISO 27001, SOC 2 and NIS2 controls.", "compliance", "Open")}
       ${can("admin") ? step(6, "Invite your team", "Give people their own accounts as viewer, operator or admin, and create API tokens for integrations.", "users", "Open") : ""}
       ${llm && !llm.available ? html`<div class="notice" style="margin-top:14px">${icon("bot")}<div><b>Agents are in rules mode.</b>
-        <span class="muted">Set <code>ANTHROPIC_API_KEY</code> before starting the hub to let them plan in plain language and write code patches with Claude.</span></div></div>` : ""}`,
+        <span class="muted">Add an AI model provider - a local model server in Settings &gt; AI providers, or Claude with <code>ANTHROPIC_API_KEY</code> set before starting the hub - to let them plan in plain language and write code patches.</span></div></div>` : ""}`,
   });
   actions(m.el, {
     import: () => { m.close(); tools.openImport(); },
@@ -368,14 +378,29 @@ let cleanup = null;
 let currentApp = null;
 let currentCrumb = null;
 
-async function route() {
+// A page with unsaved changes (ctx.guardLeave) is asked before the hash moves on: false keeps the person there.
+let leaveGuard = null;
+
+async function route(e) {
   if (!signedIn) return;
+  if (leaveGuard && e?.type === "hashchange") {
+    const guard = leaveGuard;
+    if (!(await guard())) {
+      history.replaceState(null, "", new URL(e.oldURL).hash || "#/"); // back to the page, without a new route()
+      return;
+    }
+  }
+  leaveGuard = null;
   cleanup?.();
-  const [name = "", ...params] = location.hash.replace(/^#\/?/, "").split("/").map(decodeURIComponent);
+  // "#/vulnerabilities/findings?severity=high": the query of the last segment is ctx.query, not part of a param
+  const path = location.hash.replace(/^#\/?/, "");
+  const q = path.indexOf("?");
+  const query = new URLSearchParams(q < 0 ? "" : path.slice(q + 1));
+  const [name = "", ...params] = (q < 0 ? path : path.slice(0, q)).split("/").map(decodeURIComponent);
   const app = ROUTES[name] || ROUTES[""];
   currentApp = app;
   currentCrumb = null;
-  activeRoute = app.route === "portal" ? "tools" : app.route === "x" ? `x/${params[0] || ""}` : app.route;
+  activeRoute = app.route === "portal" ? "tools" : app.route === "x" ? `x/${params[0] || ""}` : app.route === "d" ? "" : app.route;
   markActive();
   $("sidebar").classList.remove("open");
   closePopovers();
@@ -389,9 +414,11 @@ async function route() {
   const disposers = [];
   const ctx = {
     params,
+    query,
     state,
     live(types, fn, wait = 350) { disposers.push(onEvent(types, debounce(fn, wait))); },
     onLeave(fn) { disposers.push(fn); }, // runs when the next page replaces this one
+    guardLeave(fn) { leaveGuard = fn; }, // async () => may the person leave (e.g. after confirming unsaved changes)?
     crumb(text) { currentCrumb = text; renderSubbar(app, text); document.title = `${text} - Atrium`; },
   };
   cleanup = () => disposers.forEach((off) => off());

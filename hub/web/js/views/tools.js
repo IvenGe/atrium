@@ -3,9 +3,11 @@ import { mountConnection } from "../connection.js";
 import { openExtend } from "../extensions.js";
 import { loadIdentity, openProviderPicker, runRegistration, statusBadge } from "../sso.js";
 import { strategyCards, wireStrategies } from "../strategies.js";
+import { statusInfo } from "../subsidiary-model.js";
 import {
   actions, appIcon, badge, confirmDialog, diffView, emptyState, field, html, icon, modal, ring, setHTML, timeAgo, toast,
 } from "../ui.js";
+import { openGiveTeam } from "./subsidiaries.js";
 
 const KIND_LABEL = { oss: "Source code", closed: "Closed source", saas: "SaaS" };
 const SOURCE_ICON = { github: "branch", local: "folder", saas: "cloud" };
@@ -160,7 +162,8 @@ async function renderDetail(el, ctx, id, initialTab) {
   let toolName = id;
   let connection = null; // the Connection tab's panel: kept across redraws so unsaved settings survive live updates
   const draw = async () => {
-    const [tool, identity] = await Promise.all([get(`/tools/${id}`), loadIdentity().catch(() => null)]);
+    const [tool, identity, group] = await Promise.all([get(`/tools/${id}`), loadIdentity().catch(() => null), get("/subsidiaries").catch(() => null)]);
+    const team = group?.subsidiaries.find((s) => s.tool_id === id); // its agent team inside the tool (a subsidiary), if any
     idp = identity;
     toolName = tool.name;
     const ssoRow = idp?.tools.find((t) => t.tool_id === id);
@@ -193,6 +196,10 @@ async function renderDetail(el, ctx, id, initialTab) {
           <button class="btn" data-act="analyze" data-min-role="operator" ${busy ? "disabled" : ""}>${icon("refresh")}Re-analyse</button>
           <button class="btn" data-act="patch" data-min-role="operator" ${!tool.report ? "disabled" : ""}>${icon("wrench")}Propose patches</button>
           <button class="btn" data-act="extend" data-min-role="admin" ${!m ? "disabled" : ""} title="Close what Atrium itself lacks for ${tool.name} with an extension pack">${icon("puzzle")}Extend Atrium</button>
+          ${team ? html`<a class="btn" href="#/subsidiaries/${encodeURIComponent(id)}" title="Its agent team inside the tool: ${statusInfo(team.status).text}">${icon("building")}Team inside
+              <span class="badge ${statusInfo(team.status).tone}">${statusInfo(team.status).text}</span></a>`
+            : html`<button class="btn" data-act="team-inside" data-min-role="operator" ${busy ? "disabled" : ""}
+              title="A team of AI agents that works inside ${tool.name}, from a sidecar next to it, governed by Atrium">${icon("building")}Give it a team inside</button>`}
           ${ssoRow?.applied?.can_register ? html`<button class="btn" data-act="sso-register" data-min-role="operator"
             title="Register ${tool.name} as a client at its identity provider">${icon("shield")}Run provider registration</button>` : ""}
           <span class="spacer"></span>
@@ -247,7 +254,8 @@ async function renderDetail(el, ctx, id, initialTab) {
       const r = await post(`/tools/${id}/patches`).catch((e) => toast(e.message, "bad"));
       if (r) toast(r.patches.length ? `${r.patches.length} patch(es) proposed - see Approvals` : "No new patches needed", "ok");
     },
-    extend: () => openExtend({ id, name: toolName }, { claude: ctx.state.overview?.llm?.available !== false }),
+    extend: () => openExtend({ id, name: toolName }, { model: ctx.state.overview?.llm?.available !== false }),
+    "team-inside": () => openGiveTeam({ toolId: id, toolName }),
     async "sso-connect"(d) {
       const r = await post(`/tools/${id}/sso`, { provider: d.provider }).catch((e) => toast(e.message, "bad"));
       if (r) toast(r.patches.length ? "Single sign-on patch proposed - see Approvals" : r.pending ? "A patch is already waiting for approval" : "Nothing to do", "ok");
@@ -271,7 +279,7 @@ async function renderDetail(el, ctx, id, initialTab) {
     handlers: { choose_provider: pickProvider, connect_sso: pickProvider, import_provider: () => openImport() },
   });
   await draw();
-  ctx.live(["tool", "patch", "approval"], draw, 500);
+  ctx.live(["tool", "patch", "approval", "subsidiary"], draw, 500);
   ctx.live(["message"], () => (tab === "supervisor" ? draw() : null), 800);
   ctx.live(["connection", "flow", "flow_removed"], () => connection?.refresh(), 500);
   ctx.live(["connection", "flow", "flow_removed"], () => (tab === "integration" ? draw() : null), 800);

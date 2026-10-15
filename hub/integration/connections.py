@@ -36,7 +36,7 @@ class Connection(BaseModel):
     config: dict[str, Any] = {}
     secrets: dict[str, str] = {}  # field name -> Fernet token
     endpoint: str = ""  # Connector.endpoint(config) the secrets were entered for
-    generated: bool = False  # a generic_rest mapping Claude generated from the tool's OpenAPI spec
+    generated: bool = False  # a generic_rest mapping an AI model generated from the tool's OpenAPI spec
     created_by: str = ""
     created_at: float = Field(default_factory=time.time)
     updated_by: str = ""

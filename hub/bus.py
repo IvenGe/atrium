@@ -3,7 +3,8 @@
 Every message is persisted to the ``messages`` stream and fanned out to UI
 subscribers (Server-Sent Events), so the conversation between agents is always
 visible and auditable. Bodies larger than ``LOG_BODY_LIMIT`` (e.g. records a data
-flow pulls from a tool) reach their recipient in full but are logged as a summary.
+flow pulls from a tool) reach their recipient in full but are logged as a summary;
+a person's chat with an agent (``PRIVATE_SUBJECTS``) is logged without its text.
 """
 
 from __future__ import annotations
@@ -11,7 +12,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from typing import Any, Literal
+from typing import Any, Callable, Literal
 
 from pydantic import BaseModel, Field
 
@@ -21,6 +22,29 @@ LOG_BODY_LIMIT = 32_000
 # The scheduler's routine pings (every 30-60 seconds, all day long) reach their agent but are not logged: they would
 # be most of the message log (review F38).
 ROUTINE = {("hub", "changes.tick"), ("hub", "health.sweep")}
+# A person's chat with an agent is theirs: the log and the event stream every signed-in account reads keep its
+# routing, never its text (review D7). Bus.reply copies the subject, so requests and replies both carry it.
+PRIVATE_SUBJECTS = {"chat", "chat.reset"}
+
+
+def redacted(record: dict[str, Any]) -> dict[str, Any]:
+    """`record` (a dumped Message) as the log and the event stream keep it: a private subject's body becomes its
+    size and the non-text facts of a reply (mode, model, provider)."""
+    if record.get("subject") not in PRIVATE_SUBJECTS:
+        return record
+    body = record.get("body") or {}
+    if body.get("redacted"):
+        return record
+    text = body.get("text", body.get("reply", ""))
+    out: dict[str, Any] = {"redacted": "chat", "chars": len(text) if isinstance(text, str) else 0}
+    if isinstance(body.get("mode"), str):
+        out["mode"] = body["mode"]
+    meta = body.get("meta")
+    if isinstance(meta, dict):
+        out["meta"] = {k: meta[k] for k in ("model", "provider") if k in meta}
+    if "error" in body:
+        out["failed"] = True
+    return {**record, "body": out}
 
 
 def loggable(record: dict[str, Any]) -> dict[str, Any]:
@@ -49,7 +73,12 @@ class Message(BaseModel):
 
 
 class AgentError(RuntimeError):
-    """Raised when an agent cannot be reached or answers a request with an error."""
+    """Raised when an agent cannot be reached or answers a request with an error. `code` / `retry_after`: what the
+    agent's error reply carried (a reached AI budget or rate limit: "budget_exceeded" / "rate_limited")."""
+
+    def __init__(self, message: str, *, code: str | None = None, retry_after: int | None = None):
+        super().__init__(message)
+        self.code, self.retry_after = code, retry_after
 
 
 class Bus:
@@ -58,6 +87,8 @@ class Bus:
         self._inboxes: dict[str, asyncio.Queue[Message]] = {}
         self._pending: dict[str, asyncio.Future[Message]] = {}
         self._subscribers: set[asyncio.Queue[dict[str, Any]]] = set()
+        self.generation: dict[str, int] = {}  # per event type, +1 on every publish (dashboard widget cache)
+        self._listeners: list[Callable[[str, Any], None]] = []
 
     # -- agents ----------------------------------------------------------------------
 
@@ -69,7 +100,7 @@ class Bus:
 
     async def send(self, msg: Message) -> None:
         if msg.kind != "event" or (msg.sender, msg.subject) not in ROUTINE:
-            record = self.store.append("messages", loggable(msg.model_dump(mode="json")))
+            record = self.store.append("messages", loggable(redacted(msg.model_dump(mode="json"))))
             self.publish("message", record)
         if msg.kind == "reply":
             fut = self._pending.get(msg.reply_to or "")
@@ -99,7 +130,8 @@ class Bus:
         finally:
             self._pending.pop(msg.id, None)
         if "error" in reply.body:
-            raise AgentError(str(reply.body["error"]))
+            raise AgentError(str(reply.body["error"]), code=reply.body.get("code"),
+                             retry_after=reply.body.get("retry_after"))
         return reply.body
 
     async def tell(self, sender: str, recipient: str, subject: str, body: dict[str, Any] | None = None) -> None:
@@ -120,13 +152,28 @@ class Bus:
 
     # -- UI fan-out ------------------------------------------------------------------
 
+    def listen(self, fn: Callable[[str, Any], None]) -> None:
+        """Call `fn(type, data)` for every published event, in process (e.g. to refresh a cache); it must be quick."""
+        self._listeners.append(fn)
+
     def publish(self, type_: str, data: Any) -> None:
+        self.generation[type_] = self.generation.get(type_, 0) + 1
         event = {"type": type_, "data": data}
+        for fn in list(self._listeners):
+            try:
+                fn(type_, data)
+            except Exception:  # a listener never stops the event
+                pass
         for queue in list(self._subscribers):
             try:
                 queue.put_nowait(event)
             except asyncio.QueueFull:
                 pass  # a slow browser tab must never stall the agents
+
+    def generations(self, types: tuple[str, ...] | list[str]) -> tuple[int, ...]:
+        """How often each event type was published: a cached result that depends on them is current while these stay
+        the same."""
+        return tuple(self.generation.get(t, 0) for t in types)
 
     def subscribe(self, maxsize: int = 500) -> asyncio.Queue[dict[str, Any]]:
         queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=maxsize)

@@ -134,6 +134,16 @@ class Store:
             ).fetchall()
         return [json.loads(r[0]) for r in rows]
 
+    def project(self, collection: str, fields: tuple[str, ...]) -> list[dict[str, Any]]:
+        """Only these fields of every document, read inside SQLite - several times cheaper than list() for counting
+        over a large collection. A dotted name reads inside an object ("fields.severity"). Scalars only: SQLite gives
+        booleans as 1/0, objects and arrays as JSON text; a missing field is None."""
+        columns = ", ".join(f"json_extract(data, '$.{'.'.join(_field(p) for p in f.split('.'))}')" for f in fields)
+        with self._lock:
+            rows = self._db.execute(f"SELECT {columns} FROM docs WHERE collection = ? ORDER BY rowid",
+                                    (collection,)).fetchall()
+        return [dict(zip(fields, r)) for r in rows]
+
     def delete_many(self, collection: str, doc_ids: list[str]) -> int:
         with self._lock, self._db:
             cur = self._db.executemany("DELETE FROM docs WHERE collection = ? AND id = ?",

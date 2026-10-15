@@ -6,7 +6,7 @@ import { badge, colorFor, dateTime, field, html, icon, modal, options, timeAgo, 
 export const SEVERITIES = ["critical", "high", "medium", "low", "info"];
 export const ITEM_ICON = { domain: "box", connector: "plug", sso: "shield", controls: "checkCircle", team: "users" };
 export const ITEM_LABEL = { domain: "data type", connector: "connector mapping", sso: "SSO recipe", controls: "compliance rules", team: "team template" };
-export const DESIGNER_LABEL = { templates: "templates", claude: "written by Claude" };
+export const DESIGNER_LABEL = { templates: "templates", model: "written by the AI model", claude: "written by Claude" };
 
 /** The enabled extension domains as last loaded (GET /x); the shell keeps it current. */
 export const xDomains = [];
@@ -167,18 +167,20 @@ export function downloadJson(value, name) {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-/** Ask the Patch Agent to close a tool's hub-side gaps with an extension pack. `claude`: whether Claude is available. */
-export function openExtend(tool, { claude = true, done } = {}) {
+/** Ask the Patch Agent to close a tool's hub-side gaps with an extension pack. `model`: whether an AI model is available
+(`claude` is the name before the provider layer). */
+export function openExtend(tool, { model, claude = true, done } = {}) {
+  const ready = model ?? claude;
   modal({
     title: `Extend Atrium for ${tool.name}`,
     minRole: "admin",
     submit: "Ask the Patch Agent",
     body: html`<p class="muted" style="margin-bottom:12px">The Patch Agent looks for what Atrium itself lacks for ${tool.name} - a place for its data,
         a connector, an SSO recipe - and writes an extension pack (data only, nothing is executed). It waits in Approvals unless the guardrail
-        "Generated extensions need approval" is off. When only a change to Atrium's code can close a gap, a self-patch is requested too (with Claude).</p>
-      ${field("Written by", html`<select name="designer">${options([["auto", claude ? "Claude, with the templates as fallback" : "Automatic (templates; Claude is not connected)"],
+        "Generated extensions need approval" is off. When only a change to Atrium's code can close a gap, a self-patch is requested too (by the AI model).</p>
+      ${field("Written by", html`<select name="designer">${options([["auto", ready ? "The AI model, with the templates as fallback" : "Automatic (templates; no AI model is connected)"],
         ["templates", "Templates only (SIEM alerts, service desk tickets, monitoring incidents)"],
-        ...(claude ? [["claude", "Claude only"]] : [])], "auto")}</select>`)}`,
+        ...(ready ? [["model", "The AI model only"]] : [])], "auto")}</select>`)}`,
     async onSubmit(data) {
       toast(`The Patch Agent is looking at ${tool.name}...`, "info");
       const r = await post(`/tools/${encodeURIComponent(tool.id)}/extend`, { designer: data.get("designer") });

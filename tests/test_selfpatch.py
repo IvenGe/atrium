@@ -1,7 +1,7 @@
 """Self-patching against a temporary git repository: the worktree on its own branch, the injected test command, the
 "self_patch" approval (admins only, unapprovable with failing tests), merge on a clean tree with "restart required",
 a dirty tree refused, pull request mode with a mocked GitHub CLI, path and secret checks, the guardrails, and the
-change Claude writes (a fake model). Nothing here runs the real test suite or reaches the network."""
+change the AI model writes (a fake Claude client behind the provider layer). Nothing here runs the real test suite or reaches the network."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from test_llm_paths import FakeLLM
+from llm_fakes import FakeClaude, use_claude
 
 from hub.execution.runner import CommandResult
 from hub.extensions import generate, selfpatch
@@ -266,10 +266,10 @@ def test_the_test_run_gets_no_credentials(client, repo, monkeypatch):
     assert env["HUB_LLM"] == "off" and env["PATH"]
 
 
-def test_claude_writes_the_change_through_the_api(client, repo, wait_for):
+def test_claude_writes_the_change_through_the_api(client, repo, wait_for, monkeypatch):
     hub = client.app.state.hub
-    assert client.post("/api/self-patches", json={"goal": "x"}).json()["detail"].startswith("Self-patches need Claude")
-    hub.llm = FakeLLM(json_result={"title": "Add an Acme connector", "rationale": "Acme only speaks GraphQL.",
+    assert client.post("/api/self-patches", json={"goal": "x"}).json()["detail"].startswith("Self-patches need an AI model")
+    fake = use_claude(hub, monkeypatch, json_result={"title": "Add an Acme connector", "rationale": "Acme only speaks GraphQL.",
                                    "changes": [{"path": "hub/acme.py", "content": "ACME = True\n"}]})
     refused = client.post("/api/self-patches", json={"goal": "x"})  # HUB_SELF_PATCH=off and no repo configured
     assert refused.status_code == 400 and "git checkout" in refused.json()["detail"]
@@ -280,12 +280,14 @@ def test_claude_writes_the_change_through_the_api(client, repo, wait_for):
                                       if a["kind"] == "self_patch"), None))
     patch = selfpatch.get(hub, approval["payload"]["self_patch_id"])
     assert patch.title == "Add an Acme connector" and patch.goal == "Read Acme's GraphQL API" and patch.files == ["hub/acme.py"]
-    prompt = hub.llm.calls[0]["prompt"]
+    assert patch.generated_by == {"provider": "anthropic", "model": "claude-opus-5-5"}
+    assert approval["payload"]["generated_by"] == patch.generated_by
+    prompt = fake.calls[0]["prompt"]
     assert "<goal>Read Acme's GraphQL API</goal>" in prompt and "hub/__init__.py" in prompt
-    assert hub.llm.calls[0]["schema"]["required"] == ["title", "rationale", "changes"]
+    assert fake.calls[0]["schema"]["required"] == ["title", "rationale", "changes"]
 
-    # Claude may only rewrite files it was shown
-    hub.llm = FakeLLM(json_result={"title": "x", "rationale": "y", "changes": [{"path": "README.md", "content": "pwned"}]})
+    # the model may only rewrite files it was shown
+    use_claude(hub, monkeypatch, json_result={"title": "x", "rationale": "y", "changes": [{"path": "README.md", "content": "pwned"}]})
     client.post("/api/self-patches", json={"goal": "Change the readme"})
     wait_for(lambda: any("without having seen it" in e["text"] for e in client.get("/api/activity").json()))
     assert (repo / "README.md").read_text() == "# Atrium\n"
@@ -293,39 +295,41 @@ def test_claude_writes_the_change_through_the_api(client, repo, wait_for):
 
 @pytest.mark.parametrize("path", ["hub/./__init__.py", "hub//__init__.py", "./README.md", "hub/.//__init__.py",
                                   "HUB/__init__.py"])
-def test_claude_cannot_reach_an_unshown_file_by_another_spelling(client, repo, path):
+def test_claude_cannot_reach_an_unshown_file_by_another_spelling(client, repo, path, monkeypatch):
     hub = client.app.state.hub
     configure(client, repo)
-    hub.llm = FakeLLM(json_result={"title": "x", "rationale": "y", "changes": [{"path": path, "content": "pwned"}]})
+    use_claude(hub, monkeypatch, json_result={"title": "x", "rationale": "y", "changes": [{"path": path, "content": "pwned"}]})
     with pytest.raises(ValueError, match="without having seen it"):
-        client.portal.call(generate.claude_self_patch, hub, "goal", None, "model")
-    hub.llm = FakeLLM(json_result={"title": "x", "rationale": "y", "changes": [{"path": "hub/./acme.py", "content": "A = 1\n"}]})
-    _, _, [change] = client.portal.call(generate.claude_self_patch, hub, "goal", None, "model")
+        client.portal.call(generate.model_self_patch, hub, "goal", None)
+    use_claude(hub, monkeypatch, json_result={"title": "x", "rationale": "y", "changes": [{"path": "hub/./acme.py", "content": "A = 1\n"}]})
+    _, _, [change], _ = client.portal.call(generate.model_self_patch, hub, "goal", None)
     assert change.path == "hub/acme.py"  # new files are fine, under the path check_path writes
 
 
-class ScriptedLLM(FakeLLM):
+class ScriptedClaude(FakeClaude):
+    """Answers the structured calls with `results`, in order."""
+
     def __init__(self, results: list[dict]):
         super().__init__()
         self.results = list(results)
 
-    async def json(self, **kwargs):
-        self.calls.append(kwargs)
-        return self.results.pop(0)
+    async def create(self, **kwargs):
+        self.json_result = self.results.pop(0)
+        return await super().create(**kwargs)
 
 
-def test_a_gap_only_code_can_close_requests_a_self_patch_once(client, repo, wait_for):
+def test_a_gap_only_code_can_close_requests_a_self_patch_once(client, repo, wait_for, monkeypatch):
     hub = client.app.state.hub
     configure(client, repo)
     tool = Tool(id="acme", name="Acme", source_type="saas", source="https://acme.example.com", status="ready",
                 manifest=Manifest(id="acme", name="Acme", kind="saas", api={"type": "grpc"}))
     hub.save_tool(tool)
     client.portal.call(hub.agents.ensure_tool_supervisor, tool)
-    hub.llm = ScriptedLLM([
+    use_claude(hub, monkeypatch, ScriptedClaude([
         {"rationale": "", "pack_json": "", "needs_code": True, "code_goal": "Add a gRPC connector for Acme"},
         {"title": "gRPC connector for Acme", "rationale": "A pack cannot call gRPC.",
          "changes": [{"path": "hub/acme_grpc.py", "content": "GRPC = True\n"}]},
-    ])
+    ]))
     result = client.post("/api/tools/acme/extend").json()
     assert result["self_patch"] == "requested" and not result["proposed"]
     assert [g["kind"] for g in result["gaps"]] == ["connector"] and result["gaps"][0]["expressible"] is False

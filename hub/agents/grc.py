@@ -50,8 +50,25 @@ class GrcSupervisor(FlowOwner):
             vulnerabilities=hub.all("vulnerabilities", Vulnerability), guardrails=hub.prefs["guardrails"],
             people=people.all_people(hub), accounts=people.all_accounts(hub),
             extension_results=extension_controls.evaluate(hub), network=self._network_facts(),
-            frameworks=self._framework_facts(),
+            frameworks=self._framework_facts(), ai_providers=self._ai_providers(),
+            subsidiaries=self._subsidiary_facts(),
         )
+
+    def _subsidiary_facts(self) -> dict[str, Any]:
+        try:
+            from ..subsidiary import governance
+
+            return governance.compliance_facts(self.hub)
+        except Exception as exc:  # the other controls must still be evaluated
+            self.log("warn", f"Subsidiary compliance facts unavailable: {exc.__class__.__name__}: {exc}")
+            return {}
+
+    def _ai_providers(self) -> list[dict[str, Any]]:
+        try:
+            return self.hub.llm.suppliers()
+        except Exception as exc:  # the other controls must still be evaluated
+            self.log("warn", f"AI provider facts unavailable: {exc.__class__.__name__}: {exc}")
+            return []
 
     def _framework_facts(self) -> list[dict[str, Any]]:
         try:

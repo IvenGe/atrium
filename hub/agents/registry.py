@@ -43,6 +43,10 @@ class AgentRegistry:
     def add_custom(self, defn: "AgentDef") -> BaseAgent:
         from .custom import CustomAgent
 
+        if defn.placement == "sidecar":  # a subsidiary's staff: a proxy for the agent running in its sidecar
+            from ..subsidiary.agent import SubsidiaryAgent
+
+            return self.add(SubsidiaryAgent(self.hub, defn))
         return self.add(CustomAgent(self.hub, defn))
 
     def add(self, agent: BaseAgent) -> BaseAgent:
@@ -90,16 +94,22 @@ class AgentRegistry:
             changes = {"enabled": None if paused is None else not paused, "model": model, "instructions": instructions}
             teams.update(self.hub, agent_id, changes, "system")
             return agent.record()
+        saved = self.hub.store.get("agents", agent_id) or {}
         if paused is not None:
             agent.set_paused(paused)
         if model is not None:
             agent.model_override = model.strip() or None
-        if instructions is not None:
+            # a model without a provider is one of the provider it already runs on, else (as before) Claude's
+            saved["provider"] = (saved.get("provider") or "anthropic") if agent.model_override else saved.get("provider")
+        if instructions is not None:  # the older route: a replacement of the built-in instructions (or back to them)
             agent.instructions_override = instructions.strip() or None
+            if agent.instructions_override:
+                saved["config"] = {**(saved.get("config") or {}), "instructions_mode": "replace"}
         self.hub.store.put("agents", {
-            "id": agent.id, "paused": agent.paused, "model": agent.model_override,
+            **saved, "id": agent.id, "paused": agent.paused, "model": agent.model_override,
             "instructions": agent.instructions_override,
         })
+        self.hub.llm.invalidate()
         record = agent.record()
         self.hub.bus.publish("agent", record)
         return record
@@ -109,6 +119,7 @@ class AgentRegistry:
         if agent:
             await agent.stop()
             self.hub.store.delete("agents", agent_id)
+            self.hub.llm.memory.forget_agent(agent_id)  # its conversations go with it
             self.hub.bus.publish("agent_removed", {"id": agent_id})
 
     async def stop_all(self) -> None:

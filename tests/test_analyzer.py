@@ -130,11 +130,11 @@ def test_symbolic_links_never_lead_the_hub_out_of_a_repository(tmp_path: Path):
 
     prompts: list[str] = []
 
-    async def fake_json(**kw):
+    async def fake_json(agent_id, purpose, **kw):
         prompts.append(kw["prompt"])
-        return {"description": "", "provides": [], "consumes": []}
+        return {"description": "", "provides": [], "consumes": []}, SimpleNamespace(provider_label="Fake")
 
-    fake = SimpleNamespace(instructions="", model="m", hub=SimpleNamespace(llm=SimpleNamespace(json=fake_json)))
+    fake = SimpleNamespace(id="tool:evil", instructions="", hub=SimpleNamespace(llm=SimpleNamespace(json=fake_json)))
     asyncio.run(ToolSupervisor._enrich(fake, Manifest(id="evil", name="Evil"), repo))
     assert prompts and secret not in prompts[0]
 

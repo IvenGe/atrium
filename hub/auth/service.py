@@ -313,6 +313,10 @@ class AuthService:
             raise AuthError(400, "You cannot delete your own account.")
         self._guard_last_admin(user)
         self.revoke_sessions(user.id)
+        from .. import dashboards
+
+        dashboards.forget_user(self.hub, user.id)  # their personal dashboards and dashboard preferences
+        self.hub.llm.memory.forget_user(user.id)  # their conversations with agents
         tokens = self.revoke_owned_tokens(user)
         self.store.delete("users", user.id)
         self.hub.activity(principal.actor, "info", f"Deleted account {user.username}"
@@ -623,6 +627,11 @@ class AuthService:
             return None
         if token.role == "integration":
             return "integration"
+        if token.role == "subsidiary":  # a sidecar's token: only while its owner is an enabled administrator (F2)
+            ok = owner.role == "admin" and bool(token.subsidiary_id) and bool(token.tool_id)
+            return "subsidiary" if ok else None
+        if token.role not in ROLE_RANK:  # a role this hub does not serve is refused
+            return None
         return token.role if ROLE_RANK[token.role] <= ROLE_RANK[owner.role] else owner.role
 
     def revoke_owned_tokens(self, user: User) -> int:
@@ -673,7 +682,8 @@ class AuthService:
             if token.last_used is None or now - token.last_used >= TOUCH_INTERVAL:
                 token.last_used = now
                 self.store.put("tokens", token.model_dump(mode="json"))
-            actor = f"token:{token.name}"
+            # a subsidiary's sidecar is never a person: its actor and bus id name the tool (approvals.person -> None)
+            actor = f"subsidiary:{token.tool_id}" if role == "subsidiary" else f"token:{token.name}"
             return Principal(kind="token", id=token.id, name=token.name, role=role, actor=actor, bus_id=actor,
                              owner_id=token.owner_id)
         return None

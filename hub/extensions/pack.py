@@ -37,6 +37,14 @@ A pack (JSON) has an id, a name, a version, a description, the tool it was made 
                "match": {"names": ["zammad"], "capabilities": ["ticketing"], "connector_kinds": []},
                "roles": [{"role": "ticket-triage", "title": "Ticket triage", "permissions": ["read"], ...}]}
               "{tool}" in a role's texts becomes the tool's name.
+``widget``    a dashboard widget declared as data (WidgetDecl; round4-dashboard-spec.md 6.6), compiled by the hub to a
+              built-in widget - a count, a breakdown, a list or a metric over a domain - never tool code or HTML:
+              {"kind": "widget", "key": "critical_alerts", "title": "Critical alerts", "view": "list",
+               "domain": "x:alerts", "where": [{"field": "severity", "op": "eq", "value": "critical"}],
+               "columns": ["title", "host", "detected"], "sort": "detected", "order": "desc", "limit": 8, "size": "m"}
+              views: count, breakdown (+ group_by), list (+ columns, sort, order, limit), metric; conditions use eq, ne
+              or in; titles and values are plain text (no markup, no URLs). A tool's manifest may declare the same
+              objects under ui.widgets (at most 10); those are always scoped to that tool.
 
 Unknown keys, unknown item kinds, control characters, unsafe URLs and paths are rejected.
 """
@@ -397,8 +405,116 @@ class TeamItem(Strict):
         return self
 
 
-Item = Annotated[Union[DomainItem, ConnectorItem, SsoItem, ControlsItem, TeamItem], Field(discriminator="kind")]
-KINDS = ("domain", "connector", "sso", "controls", "team")
+WIDGET_DOMAINS = ("assets", "vulnerabilities", "risks", "controls", "people", "accounts", "network")
+X_DOMAIN = re.compile(r"^x:[a-z][a-z0-9_]{1,31}$")
+MARKUP = re.compile(r"[<>]|://|\bwww\.|^\s*(javascript|data|vbscript):", re.IGNORECASE)
+WIDGET_SIZES = {"s": (3, 2), "m": (4, 3), "l": (6, 4)}
+RECORD_FIELDS = ("title", "source", "created_at", "updated_at")  # what every extension record has besides its fields
+
+
+def _plain(value: str, limit: int, *, required: bool = False) -> str:
+    """Single-line text without markup or URLs (a declared widget can never carry HTML, script or links)."""
+    value = _text(value, limit, required=required)
+    if MARKUP.search(value):
+        raise ValueError("must be plain text (no HTML, markup or URLs)")
+    return value
+
+
+class WidgetDecl(Strict):
+    """A dashboard widget declared as data by a pack or a tool's manifest (round4-dashboard-spec.md 6.6): the hub
+    compiles it to its own count, breakdown or list widget over a whitelisted domain."""
+
+    key: str
+    title: str
+    description: str = ""
+    view: Literal["count", "breakdown", "list", "metric"]
+    domain: str  # a built-in domain or "x:<key>"
+    where: list[Condition] = Field(default_factory=list, max_length=5)
+    group_by: str | None = None  # breakdown only
+    columns: list[str] = Field(default_factory=list, max_length=4)  # list only
+    sort: str | None = None  # list only
+    order: Literal["asc", "desc"] = "desc"
+    limit: int = Field(8, ge=1, le=25)
+    size: Literal["s", "m", "l"] = "m"  # s = 3x2, m = 4x3, l = 6x4 grid cells
+
+    _key = field_validator("key")(lambda cls, v: _match(KEY, v, "widget key (2-32 lowercase letters, digits and _)"))
+    _title = field_validator("title")(lambda cls, v: _plain(v, 60, required=True))
+    _description = field_validator("description")(lambda cls, v: _plain(v, 200))
+
+    @field_validator("domain")
+    @classmethod
+    def _domain(cls, v: str) -> str:
+        if v in WIDGET_DOMAINS or X_DOMAIN.match(v):
+            return v
+        raise ValueError(f"must be one of {', '.join(WIDGET_DOMAINS)} or x:<extension data type>")
+
+    @field_validator("group_by", "sort")
+    @classmethod
+    def _name(cls, v: str | None) -> str | None:
+        return _match(FIELD, v, "field name") if v is not None else None
+
+    @field_validator("columns")
+    @classmethod
+    def _columns(cls, v: list[str]) -> list[str]:
+        out = [_match(FIELD, x, "field name") for x in v]
+        if len(set(out)) != len(out):
+            raise ValueError("lists a column twice")
+        return out
+
+    @field_validator("where")
+    @classmethod
+    def _where(cls, v: list[Condition]) -> list[Condition]:
+        for c in v:
+            if c.op not in ("eq", "ne", "in"):
+                raise ValueError("widget conditions use eq, ne or in")
+            values = c.value if isinstance(c.value, list) else [c.value]
+            if c.value is None or (isinstance(c.value, list) and not 1 <= len(c.value) <= 20):
+                raise ValueError("a widget condition needs a value (in: 1 to 20 values)")
+            for x in values:
+                if isinstance(x, str):
+                    _plain(x, 120)
+        return v
+
+    @model_validator(mode="after")
+    def _shape(self) -> "WidgetDecl":
+        if (self.view == "breakdown") != (self.group_by is not None):
+            raise ValueError(f"widget '{self.key}': a breakdown needs group_by, and only a breakdown has one")
+        if self.view != "list" and (self.columns or self.sort is not None):
+            raise ValueError(f"widget '{self.key}': only a list has columns and sort")
+        return self
+
+    def fields_used(self) -> list[str]:
+        return [*(c.field for c in self.where), *([self.group_by] if self.group_by else []), *self.columns,
+                *([self.sort] if self.sort else [])]
+
+    def grid_size(self) -> tuple[int, int]:
+        return WIDGET_SIZES["s" if self.view == "metric" else self.size]
+
+
+class WidgetItem(WidgetDecl):
+    kind: Literal["widget"]
+
+
+def widget_decls(raw: Any, limit: int = 10) -> tuple[list[dict[str, Any]], list[str]]:
+    """A tool manifest's ``ui.widgets``: the valid declarations (at most `limit`) and a readable reason for each one
+    left out - one bad declaration never makes the whole manifest invalid."""
+    if not isinstance(raw, list):
+        return [], ["ui.widgets is not a list"] if raw is not None else []
+    valid, problems = [], []
+    for n, item in enumerate(raw, 1):
+        if len(valid) >= limit:
+            problems.append(f"ui.widgets: only the first {limit} widgets are used")
+            break
+        try:
+            valid.append(WidgetDecl.model_validate(item).model_dump(mode="json"))
+        except ValidationError as exc:
+            problems.append(f"ui.widgets {n}: {describe_errors(exc, 3)}")
+    return valid, problems
+
+
+Item = Annotated[Union[DomainItem, ConnectorItem, SsoItem, ControlsItem, TeamItem, WidgetItem],
+                 Field(discriminator="kind")]
+KINDS = ("domain", "connector", "sso", "controls", "team", "widget")
 
 
 # --------------------------------------------------------------------------------------
@@ -430,7 +546,7 @@ class ExtensionPack(Strict):
 
     @model_validator(mode="after")
     def _consistent(self) -> "ExtensionPack":
-        for kind, attr in (("domain", "key"), ("sso", "key"), ("team", "category")):
+        for kind, attr in (("domain", "key"), ("sso", "key"), ("team", "category"), ("widget", "key")):
             keys = [getattr(i, attr) for i in self.items if i.kind == kind]
             if len(set(keys)) != len(keys):
                 raise ValueError(f"the pack defines the same {kind} {attr} twice")
@@ -446,6 +562,13 @@ class ExtensionPack(Strict):
                     raise ValueError(f"control rule '{rule.title}': '{name}' is not a field of '{rule.domain}'")
             if rule.age_field and domain.field(rule.age_field).type != "date":  # type: ignore[union-attr]
                 raise ValueError(f"control rule '{rule.title}': age_field must be a date field")
+        for widget in self.of("widget"):
+            domain = next((d for d in self.of("domain") if f"x:{d.key}" == widget.domain), None)
+            if domain is None:
+                continue  # a built-in domain (whitelisted when compiled) or another pack's (checked when enabled)
+            for name in widget.fields_used():
+                if domain.field(name) is None and name not in RECORD_FIELDS:
+                    raise ValueError(f"widget '{widget.key}': '{name}' is not a field of '{domain.key}'")
         return self
 
     def of(self, kind: str) -> list[Any]:
@@ -462,7 +585,8 @@ class ExtensionPack(Strict):
                 "connectors": [c.tool or self.source_tool for c in self.of("connector")],
                 "sso": [s.name for s in self.of("sso")],
                 "controls": sorted({r.control for c in self.of("controls") for r in c.rules}),
-                "teams": [t.category for t in self.of("team")]}
+                "teams": [t.category for t in self.of("team")],
+                "widgets": [w.key for w in self.of("widget")]}
 
 
 def describe_errors(exc: ValidationError, limit: int = 5) -> str:

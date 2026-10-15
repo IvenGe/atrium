@@ -4,7 +4,11 @@ Atrium connects the tools of a suite in three ways:
 
 - **Identity**: every tool signs in through the suite's identity provider ([Single sign-on](#single-sign-on-to-the-suites-identity-provider)).
 - **Data**: tools exchange records through the hub's built-in apps ([connections](#connections) and [data flows](#data-flows)).
-- **Events**: tools publish events to the hub and receive the ones they listen to ([MANIFEST.md](MANIFEST.md#events)).
+- **Events**: tools publish events to the hub and receive the ones they listen to ([MANIFEST.md](MANIFEST.md#events));
+  a tool with an Atrium bridge publishes through its subsidiary's sidecar ([below](#bridge-events-on-the-tool-bus)).
+
+A tool can also host an agent team of its own, a *subsidiary*, that works inside it through an Atrium bridge in its
+code or through its API connection, governed by Atrium ([SUBSIDIARIES.md](SUBSIDIARIES.md)).
 
 The built-in apps are the canonical data model. A record from one tool lands in a hub app first and goes on to other
 tools from there; tools never talk to each other directly.
@@ -521,6 +525,25 @@ and `launch.env_keys` (the key names) instead of `launch.env`. The stored manife
 
 Layouts hold only the shared arrangement (order in a lane and, for integration tools, a Sources/Destinations lane
 override). Camera, hidden items, collapsed zones and filters stay in each viewer's browser.
+
+## Bridge events on the tool bus
+
+A tool with an Atrium bridge ([SUBSIDIARIES.md](SUBSIDIARIES.md)) announces events by calling the bridge's `emit()`:
+the bridge keeps them in its outbox (at most 1000 for 24 hours, 16 KiB each, only names its `atrium-bridge.json`
+declares), and the subsidiary's sidecar relays them to Atrium (`POST /api/subsidiary/v1/events`, at most 100 per
+batch). No integration token is involved.
+
+- Only while the subsidiary's charter relays events (`events.relay`, on when the bridge declares events) and the
+  subsidiary is working; otherwise 403 `relay_off` or 423.
+- Only names declared in the **approved** bridge manifest and starting with `<tool id>.`; the others are refused and
+  counted. The tool cannot announce another tool's events.
+- Each accepted event is published on the tool bus with `source` = the tool id and `by` = `subsidiary:<tool id>`, and
+  delivered to the tools whose `events.listens` match, like any other event. Its payload is sanitized like data-flow
+  samples (the values of secret-looking keys become `***`; long strings and lists are cut short). An event caused by a granted in-tool change carries
+  `atrium_cause: {"jti": ...}`, the grant that caused it.
+- The subsidiary's audit trail records each batch with counts per name (`events.batch`), never the payloads. Events do
+  not start the team's runs.
+- API-only subsidiaries have no bridge and relay no events.
 
 ## Vulnerabilities and scans
 

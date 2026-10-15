@@ -23,6 +23,7 @@ export async function api(path, { method = "GET", body } = {}) {
     const err = new Error(message || `${res.status} ${res.statusText}`);
     err.status = res.status;
     err.code = code;
+    err.retryAfter = data?.retry_after ?? detail?.retry_after ?? null; // a 429: seconds until a call may start again
     throw err;
   }
   return data;

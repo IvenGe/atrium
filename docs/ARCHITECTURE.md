@@ -7,7 +7,7 @@ live in the workspace directory under the data directory (`HUB_DATA_DIR`, defaul
 ```mermaid
 flowchart TB
   subgraph Browser
-    ui[Web UI - Portals, Apps, Integration with its maps, Agents, Approvals, Operator, Network, Assets, People, Vulnerabilities, Compliance, Extensions]
+    ui[Web UI - Home dashboards, Portals, Apps, Integration with its maps, Agents, Approvals, Operator, Network, Assets, People, Vulnerabilities, Compliance, Extensions]
   end
   subgraph Hub process
     guard[Host check, X-Hub-Request, sign-in, role policy]
@@ -27,6 +27,7 @@ flowchart TB
     appr[Approval queue]
     proc[Process manager]
     tbus[Tool event bus]
+    subs[Subsidiaries: charters, model gateway, grants, audit]
   end
   ui -- session cookie --> guard
   guard --> api
@@ -45,6 +46,9 @@ flowchart TB
   guard --> tbus
   op -- SSH --> hosts[(Remote hosts)]
   team -- through the toolkit --> bus
+  sidecar[(Subsidiary sidecars)] -- "HTTPS /api/subsidiary/v1 (subsidiary token)" --> guard
+  guard --> subs
+  sidecar -- "signed calls with a ticket (+ grant)" --> tools
 ```
 
 | Page | Covers |
@@ -55,6 +59,8 @@ flowchart TB
 | [PEOPLE.md](PEOPLE.md) | the People app: directories, merging, accounts, links to assets, leavers |
 | [NETWORK.md](NETWORK.md) | the Network app: device connectors, the read model, drift, backups, the segmentation map, guarded device changes |
 | [COMPLIANCE.md](COMPLIANCE.md) | the control baseline with its references, CyFun frameworks and self-assessments, the audit pack, CISO Assistant framework sync |
+| [DASHBOARD.md](DASHBOARD.md) | Home dashboards: tabs, drag and drop with keyboard and click alternatives, the widget catalog, widgets from every tool, the AI models and settings widgets, widgets declared by packs and manifests |
+| [SUBSIDIARIES.md](SUBSIDIARIES.md) | agent teams inside a tool: the bridge patch, the sidecar, the charter, in-tool actions and grants, governance, the bridge contract `atrium-bridge/1` |
 | [MANIFEST.md](MANIFEST.md) | the hub manifest of a tool |
 
 ## Authentication and authorization
@@ -88,12 +94,13 @@ flowchart LR
    `{kind: "user" | "token", id, name, role, actor, bus_id}`.
 4. **Policy** (`auth/policy.py`): `required_role(method, path)` returns `None` for the public endpoints (health,
    `GET /api/auth/me`, login, setup, the two OIDC endpoints), `viewer` for the self-service endpoints (logout,
-   password, sessions), `admin` for `/api/users` and `/api/tokens` (and everything below them, matched on a `/`
+   password, sessions, and a person's own Home dashboards and tabs: `SELF_SERVICE_ROUTES`, whose handlers refuse API
+   tokens and scope every write to the caller's account), `admin` for `/api/users` and `/api/tokens` (and everything below them, matched on a `/`
    boundary) and for these single routes:
    - settings and guardrails: `PATCH /api/settings`, `PATCH /api/settings/guardrails`;
    - agent definitions: `POST /api/agents`, `PATCH` / `DELETE /api/agents/{id}`;
    - AI model providers (they may hold API keys): `POST /api/llm/providers`, `PATCH` / `DELETE /api/llm/providers/{id}`,
-     `POST /api/llm/providers/{id}/test`;
+     `POST /api/llm/providers/{id}/test`, `POST /api/llm/providers/{id}/probe`; the AI price table: `PUT /api/llm/prices`;
    - identity providers: `PUT /api/identity-providers/default`, `PATCH /api/identity-providers/{id}`,
      `POST /api/identity-providers/{id}/atrium`;
    - tool credentials: `PUT` / `DELETE /api/tools/{id}/connection`;
@@ -108,16 +115,26 @@ flowchart LR
    - device changes: `POST /api/segmentation/changes/{id}/emergency`, and `POST`, `PATCH` and `DELETE` of
      `/api/network/maintenance-windows[/{id}]`;
    - compliance frameworks: `DELETE /api/frameworks/{id}/assessments/{aid}`.
+   - Home dashboards: shared dashboards and the default, `POST /api/dashboards/shared`,
+     `PUT` / `DELETE /api/dashboards/shared/{id}`, `PUT /api/dashboards/default`.
+   - subsidiaries: `PUT /api/subsidiaries/{id}/charter`, `PUT` / `DELETE /api/subsidiaries/{id}/credential`,
+     `POST /api/subsidiaries/{id}/enrollment`, `/conformance`, `/rotate-key`, `/resume`, `/stop`, and
+     `DELETE /api/subsidiaries/{id}` (enrollment, resume and stop also need a signed-in person).
 
    It returns `operator` for `GET /api/tools/{id}/connection/options/{field}` (a read that uses the stored
    credentials), `viewer` for every other `GET`/`HEAD`, and `operator` for everything else. `authorize` then refuses:
    no principal on a protected path (401), an `integration` token outside `POST /api/bus/publish` and
-   `GET /api/health` (403), an account that must change its password outside me/logout/password (403,
+   `GET /api/health` (403), a `subsidiary` token outside `/api/subsidiary/v1/*` and anyone else on it (403; only
+   `POST /api/subsidiary/v1/enroll` is public, with a one-time code), an account that must change its password outside me/logout/password (403,
    `code: password_change_required`), or a role below the required one (403).
 5. **Per kind**: `POST /api/approvals/{id}` needs operator. Some kinds are decided by admins only, and the route
    answers 403 for anyone else:
    - `extension` and `self_patch` (changes to Atrium itself) and `agent_team`;
-   - `firewall` (device changes), with `code: admin_required`.
+   - `firewall` (device changes), with `code: admin_required`;
+   - a subsidiary's `subsidiary_charter`, its bridge patch (`patch` with `payload.strategy == "atrium_bridge"`) and its
+     `subsidiary_action`s of `admin` risk or with an external effect (`code: admin_required`; operators decide the
+     other `subsidiary_action`s). Approving any of these needs a person (`code: person_required` for a token), and
+     their proposer never approves them, whatever the second-person guardrail says (`code: same_person`).
 
    **Second person** (`Approvals.check_second_person`): the person who proposed an approval cannot
    approve it while its second-person guardrail is on (403, `code: same_person`); they can still reject it. The
@@ -150,7 +167,7 @@ re-checks its session or token every 15 seconds and closes when it is no longer 
 **Who did it.** Route handlers take the principal and use it everywhere they act for someone:
 
 - bus messages sent on behalf of a request use `principal.bus_id` as the sender: `user:<username>`
-  for people, `token:<name>` for API tokens;
+  for people, `token:<name>` for API tokens, `subsidiary:<tool>` for a subsidiary's sidecar (never a person);
 - activity log entries use `principal.actor` (the username, or `token:<name>`);
 - approval decisions store `decided_by`.
 
@@ -180,9 +197,9 @@ recipient in full but are logged as a summary.
 
 | Agent | Id | Responsibilities |
 | --- | --- | --- |
-| Hub Supervisor | `supervisor` | Imports tools, assigns Tool Supervisors, scores the suite (`integration/compatibility.py`), sends gaps to the Patch Agent, plans data flows, looks for hub-side gaps after an import (extensions), runs health sweeps, chat (Claude tool use, or rules). |
-| Tool Supervisor | `tool:<id>` | One per tool. Analyses it into a manifest, health checks, start/stop via the Operator, describes it to others, proposes its agent team. The only agent that decrypts the tool's credentials: it builds the tool's connector for `connector.test`, `connector.options`, `connector.pull`, `connector.push` and `connector.action`. Side-effecting actions (OpenVAS `scan`) run only for a person or the agent that owns their approval path. For network devices it serves `network.backup` and the change subjects `network.preview`, `network.apply`, `network.confirm`, `network.rollback` and `network.restore`, only for the Network Supervisor, re-checking the change and its approval from the store each time. |
-| Patch Agent | `patcher` | Turns gaps into patches (`integration/patches.py`) or, with Claude, source-code patches; submits them for approval; applies approved ones. Repairs failing data flows (`integration.repair`), generates generic REST connectors from OpenAPI specs (`connector.generate`), writes extension packs (`extension.propose`) and self-patches (`self_patch.propose`). |
+| Hub Supervisor | `supervisor` | Imports tools, assigns Tool Supervisors, scores the suite (`integration/compatibility.py`), sends gaps to the Patch Agent, plans data flows, looks for hub-side gaps after an import (extensions), runs health sweeps, chat (tool use on its AI model, or rules). |
+| Tool Supervisor | `tool:<id>` | One per tool. Analyses it into a manifest, health checks, start/stop via the Operator, describes it to others, proposes its agent team, and is the managing director of its subsidiary (it requests the subsidiary's approvals, carries out API-only in-tool changes after approval, receives escalations; [SUBSIDIARIES.md](SUBSIDIARIES.md)). The only agent that decrypts the tool's credentials: it builds the tool's connector for `connector.test`, `connector.options`, `connector.pull`, `connector.push` and `connector.action`. Side-effecting actions (OpenVAS `scan`) run only for a person or the agent that owns their approval path. For network devices it serves `network.backup` and the change subjects `network.preview`, `network.apply`, `network.confirm`, `network.rollback` and `network.restore`, only for the Network Supervisor, re-checking the change and its approval from the store each time. |
+| Patch Agent | `patcher` | Turns gaps into patches (`integration/patches.py`) or, with an AI model, source-code patches; submits them for approval; applies approved ones. Repairs failing data flows (`integration.repair`), generates generic REST connectors from OpenAPI specs (`connector.generate`), writes extension packs (`extension.propose`) and self-patches (`self_patch.propose`). |
 | Operator Agent | `operator` | Runs commands locally or over SSH under the command policy (`execution/policy.py`); launches tool processes. |
 | Asset Supervisor | `module:assets` | Syncs tools/hosts into the asset register, runs read-only discovery on hosts, sets vulnerability-scan scope, runs the asset data flows. |
 | Vulnerability Supervisor | `module:vulns` | The Vulnerabilities app: scan flows (with approval), findings, SLA deadlines, "fixed" after a clean rescan, risks for overdue critical findings, vulnerability data flows. |
@@ -190,19 +207,30 @@ recipient in full but are logged as a summary.
 | Network Supervisor | `module:network` | The Network app: runs the `network` pull flows, stores snapshots, history and drift, takes scheduled and pre-change backups (stored encrypted by the tool's supervisor), feeds the segmentation map and the network controls, and is the only agent that applies approved device changes ([NETWORK.md](NETWORK.md)). |
 | People Supervisor | `module:people` | The People app: people and accounts flows, re-linking people to accounts and assets after every pull, leaver findings ([PEOPLE.md](PEOPLE.md)). |
 | Extensions Supervisor | `module:extensions` | The apps extension packs add: their data flows, typing records by the domain's fields, links to assets and people ([AGENTS.md](AGENTS.md#extensions)). |
-| Team agents | `agent:<slug>` | Custom agents people or other agents create: a role, instructions, a model provider (Claude, a local model or rules), permissions, a team and an optional schedule with a standing task ([AGENTS.md](AGENTS.md#team-agents)). |
+| Team agents | `agent:<slug>` | Custom agents people or other agents create: a role, instructions, a model provider (the hub's choice by default, Claude, a local model or rules), permissions, a team and an optional schedule with a standing task ([AGENTS.md](AGENTS.md#team-agents)). A subsidiary's staff are team agents with `placement="sidecar"`: they run in the sidecar next to their tool, through the `SubsidiaryAgent` proxy, and only an approved charter creates them ([SUBSIDIARIES.md](SUBSIDIARIES.md)). |
 
 `AgentRegistry.start_core` starts the nine core agents (Tool Supervisors are added per tool) and `start_custom` the
 team agents. Admins can pause core agents and give them a different model or custom instructions from the UI;
 settings are stored in the `agents` collection. Core agents cannot be removed.
 
 Every agent declares its **permissions** (`read`, `tool_api`, `commands`, `patches`, `flows`, `assets_write`,
-`grc_write`, `agents`). Agents that run on a model act through the shared **toolkit** (`agents/toolkit.py`): every tool
+`grc_write`, `agents`, `tool_actions`; sidecar staff are clamped to `read`, `tool_actions` and `patches`). Agents that run on a model act through the shared **toolkit** (`agents/toolkit.py`): every tool
 is tagged with the permission it needs, a team agent only gets the tools its effective permissions allow, and tools
 go through the other agents (commands through the Operator, patches through the Patch Agent's approval flow, scans
 through the Vulnerability Supervisor), never around them. Team agents' permissions are clamped to their parent's while
-the guardrail `limit_to_parent_permissions` is on. Teams, local model providers (`llm_providers.py`) and the
-guardrails (`guardrails.py`) are described in [AGENTS.md](AGENTS.md).
+the guardrail `limit_to_parent_permissions` is on. Every model call goes through the provider layer `hub/llm/`
+(the gateway `hub.llm`): it resolves the provider and model per agent and purpose (`resolve.py`: the agent's own
+choice, its team's, the task's and the suite's from `selection.py`, the fallback chain, local-only and the
+`allow_cloud_llm` guardrail; per-agent settings - model parameters, instructions, language, allowed tools, budgets,
+rate limits, memory, with a history - in `agents/settings.py`, their extra routes and the playground in
+`agent_settings_api.py`; escalation, failed-run pauses and notifications in `agents/notify.py`; what settings add to
+a prompt in `prompting.py`), runs the
+provider-neutral tool loop (`loop.py`) and structured answers (`structured.py`) on adapters for Claude, OpenAI and
+Azure OpenAI (Responses API) and OpenAI-compatible servers (`adapters/`), learns what a model refuses, masks the hub's secrets in everything it sends (`masking.py`), meters each
+call and enforces budgets and rate limits before it (`usage.py`), and keeps chat memory per agent and person - off,
+for the session, or stored encrypted with a retention (`memory.py`). Teams, the model providers
+(`llm_providers.py` stores their records) and the guardrails (`guardrails.py`) are described in
+[AGENTS.md](AGENTS.md).
 
 ## Import flow
 
@@ -247,7 +275,9 @@ before this rule keep their stored address, but it is shown, logged and pushed w
 | `manifest` | Hub-side decisions (port reassignment) | The tool's manifest in the hub database |
 
 Patch paths are validated (no absolute paths, no `..`), and Claude may only rewrite files it
-was shown. Changes to Atrium itself are not patches: they are extension packs or self-patches on a branch
+was shown. The strategy `atrium_bridge` (a subsidiary's bridge patch) makes its branch and runs the tool's tests in a
+container when it is proposed, binds the approval to that commit and is never applied automatically
+([SUBSIDIARIES.md](SUBSIDIARIES.md#the-bridge-patch)). Changes to Atrium itself are not patches: they are extension packs or self-patches on a branch
 `atrium/self-<id>` in `workspace/self-patches/` ([AGENTS.md](AGENTS.md#self-patching)).
 
 ## Single sign-on for tools
@@ -367,6 +397,43 @@ running process; collection `extensions`), `records.py` (records of extension do
 worktree, tested, approved by an admin, then a pull request or a local merge). Details in
 [AGENTS.md](AGENTS.md#extensions).
 
+## Subsidiaries
+
+`hub/subsidiary/` lets an agent team work *inside* one tool, with Atrium as the parent company
+([SUBSIDIARIES.md](SUBSIDIARIES.md)). Three parts, three trust levels:
+
+- **Atrium** (trusted): `governance.py` (statuses, enrollment, tickets, pause / resume / stop, the kill switch, the
+  tick), `charter.py` (drafts, approval, amendments), `gateway.py` (the model gateway: Atrium composes every prompt and
+  tool list, delimits tool data and books budgets, through the provider layer `hub/llm`), `actions.py` (the decision
+  table, grants, results, reconciliation), `hubrequest.py` (the relay to five hub tools), `agent.py` (`SubsidiaryAgent`,
+  the hub-side proxy of each staff member), `conformance.py`, `audit.py` (a hash-chained log per subsidiary),
+  `keys.py` (per-subsidiary Ed25519 keys, encrypted), `bridgegen.py` and `bridgepatch.py` (the Patch Agent's bridge
+  patch), `routes.py` (people's routes and the sidecar API `/api/subsidiary/v1/*`), `contract.py` (the contract
+  `atrium-bridge/1` and its reference implementation).
+- **The sidecar** (semi-trusted, `hub/subsidiary/sidecar/`, the `atrium-sidecar` command and the Dockerfile's `sidecar`
+  target): outbound only; it runs the staff's tool loop (`hub/agents/loops.py`) over Atrium's gateway, carries out
+  granted changes with exactly the approved bytes, relays panel questions and tool events.
+- **The bridge** (in the tool, untrusted at runtime): a vendored core per language (`hub/subsidiary/templates/`) and
+  glue written for the tool; it holds no secret and verifies Atrium's signed tickets, the sidecar's request signatures
+  and single-use grants.
+
+```mermaid
+sequenceDiagram
+  participant S as Sidecar
+  participant A as Atrium
+  participant P as Person (operator)
+  participant B as Bridge (in the tool)
+  S->>A: POST /model (run, messages)
+  A-->>S: a turn: call act__tickets-set_priority
+  S->>A: POST /actions/request (params)
+  A-->>P: approval kind subsidiary_action (exact params, provenance, flags)
+  P->>A: approve
+  A->>S: inbox grant (bound to the body's SHA-256) + the body bytes
+  S->>B: POST /.atrium/v1/call/tickets.set_priority (ticket, signature, grant, the same bytes)
+  B-->>S: 200, receipt
+  S->>A: POST /actions/{approval}/result
+```
+
 ## Command policy
 
 `execution/policy.py` classifies a command as `blocked`, `read_only` or `change`:
@@ -406,15 +473,27 @@ autonomy level or a guardrail says otherwise. Each approval records who asked an
 | `extension` (admins only) | Patch Agent | enables the extension pack |
 | `self_patch` (admins only) | Patch Agent | opens a pull request or merges the change into Atrium's checkout (bound to the worktree's commit, expires after `approval_expiry_hours`) |
 | `firewall` (admins only, never the proposer) | Network Supervisor, for a person's proposal | applies the device change in the next maintenance window (bound to the device revision and the operations' hash; expires) |
+| `patch`, strategy `atrium_bridge` (admins only, in person, never the proposer) | Patch Agent, for an operator's request | keeps the bridge branch as reviewed (bound to its commit), writes `bridge.env` and the sidecar bundle; never applied automatically |
+| `subsidiary_charter` (admins only, in person, never the proposer) | a Tool Supervisor, for its subsidiary | creates the staff, puts the charter in force and activates the subsidiary (bound to the charter's SHA-256; expires) |
+| `subsidiary_action` (in person, never the proposer; admins for `admin` risk or an external effect) | a Tool Supervisor, for a staff member's request | a single-use grant for the exact approved bytes (bridge), or the Tool Supervisor carries out the upsert (API only); the result completes the approval |
 
 Flows drawn on the Integration map record their proposer (`payload.proposed_by`), so the second-person rule applies
 to them while `approvals_need_second_person` is on.
 
+The Approvals page shows a card per kind. The three subsidiary cards show the facts Atrium computed, never only what
+a model wrote: the *bridge patch* card (the action table with raised and left-out actions, the static checks, the
+tool's tests - passed, failed or not run with the reason -, a vendored or AI-written core, the setup steps, the diff),
+the *charter* card (every change against the charter in force with the widening reasons highlighted, conformance, the
+model routing warning, the staff it creates) and the *in-tool action* card (the exact parameters, how the run started
+- **panel: user-steered** when a tool user's question led to it -, what the run read, injection flags, the team's
+reason as untrusted text, the expiry). Approve is shown only to the roles that may approve, never to the proposer.
+
 ## Compliance
 
-`grc/baseline.py` defines the Hub Security Baseline - 29 controls: asset inventory and ownership (HB-AM-1, HB-AM-2),
+`grc/baseline.py` defines the Hub Security Baseline - 30 controls: asset inventory and ownership (HB-AM-1, HB-AM-2),
 SSO for tools (HB-AC-1), approval of agent actions (HB-AC-2), SSH hardening (HB-AC-3), authenticated role-based access
-to the hub (HB-AC-4), dormant hub accounts (HB-AC-5), AI agent guardrails (HB-AC-6), leavers (HB-AC-7), configuration
+to the hub (HB-AC-4), dormant hub accounts (HB-AC-5), AI agent guardrails (HB-AC-6), leavers (HB-AC-7), AI agent
+teams inside tools (HB-AC-8), configuration
 as code (HB-CM-1), change review (HB-CM-2), network device changes (HB-CM-3), health monitoring (HB-OP-1), audit
 logging (HB-OP-2), software versions (HB-VM-1), vulnerability scan coverage (HB-VM-2) and remediation within SLA
 (HB-VM-3), network segmentation, drift, management exposure, device backups and firewall rule hygiene (HB-NW-1 to
@@ -424,7 +503,8 @@ CyFun 2023 references (analyst mappings; the table and their caveats are in [COM
 
 Automated checks are pure functions over a `Snapshot` of hub state: tools, hosts, assets, risks, policies, patches,
 the autonomy level, the hub's own accounts, whether OIDC is configured, vulnerabilities, the guardrails, people and
-accounts, the network facts (`network.compliance_facts`: ids and counts only, never device text), the framework
+accounts, the network facts (`network.compliance_facts`: ids and counts only, never device text), the subsidiaries'
+facts (`governance.compliance_facts`: ids, statuses, flags and counts, never tool text), the framework
 self-assessments, and the results of extension packs' control rules. The GRC Supervisor re-evaluates after account,
 guardrail, flow, extension, network (snapshot, drift, baseline, backup, change) and assessment changes. People can override any control with a justification. Controls with a risk template raise
 a risk when they fail and close it when they pass again.
@@ -435,7 +515,11 @@ teams; HB-AC-2 fails in autonomous mode and is partial while `scans_need_approva
 HB-CM-2 fails while `self_patch_requires_approval` or `self_patch_requires_tests` is off and is partial while
 `extensions_need_approval` is off (or in autonomous mode); HB-CM-3 fails while `device_changes_need_second_person` or
 `device_changes_need_backup` is off and is partial while `device_changes_need_maintenance_window` is off, and for 90
-days after a change its own proposer approved or one applied without a backup. HB-AC-7 fails while a leaver still has an enabled Atrium
+days after a change its own proposer approved or one applied without a backup. HB-AC-8 fails while
+`subsidiary_bridge_requires_conformance` is off and is partial while `subsidiary_panel_actions` is on,
+`subsidiary_separate_credential` off or `subsidiary_ticket_minutes` above 10; `subsidiary_tool_writes_need_approval`
+off makes HB-AC-2 partial and `subsidiary_bridge_requires_tests` off makes HB-CM-2 fail
+([COMPLIANCE.md](COMPLIANCE.md#hb-ac-8-ai-agent-teams-inside-tools-are-governed)). HB-AC-7 fails while a leaver still has an enabled Atrium
 account or an active tool account, and is partial when they only still have assets. Extension control rules can make
 any control worse, never better, and add their evidence ([AGENTS.md](AGENTS.md#what-a-pack-can-contain)).
 
@@ -448,15 +532,18 @@ any control worse, never better, and add their evidence ([AGENTS.md](AGENTS.md#w
 | `people`, `accounts` | the People app |
 | `connections`, `flows`, `sync_links` | the integration fabric (connection secrets encrypted) |
 | `canvas_layouts` | the shared arrangement of the integration and segmentation maps |
+| `dashboards`, `dashboard_prefs` | Home dashboards: shared ones (`shared:<id>`) and each person's own (`u:<user id>:<id>`), each person's tab order, hidden tabs and home; the default dashboard is the `settings` document `dashboards` |
 | `network_snapshots`, `network_snapshot_history`, `network_drift`, `network_baselines`, `device_backups` | the Network app (backup content encrypted) |
 | `segmentation_zones`, `segmentation_placements` | zone role overrides and manual asset placements (the policy is in `settings`) |
 | `firewall_changes`, `device_change_tokens`, `maintenance_windows` | device changes, the connectors' opaque change tokens (never returned), maintenance windows |
 | `framework_assessments`, `external_frameworks` | CyFun self-assessments, frameworks read from CISO Assistant |
-| `agents`, `agent_defs`, `llm_providers` | core agent settings, team agents, local model providers (API keys encrypted) |
+| `agents`, `agent_defs`, `llm_providers` | core agent settings, team agents, AI model providers - the built-in Claude and OpenAI records, Azure OpenAI resources and local servers (API keys encrypted; per-model capabilities) |
+| `llm_usage` (stream), `llm_usage_daily` | one record per model call (counts and estimated cost, never text), daily aggregates per UTC day, agent, provider and model |
 | `extensions`, `x:<key>`, `self_patches` | extension packs with their versions, records of extension apps, self-patches |
 | `settings` | preferences (autonomy, model, SLA days, guardrails, identity provider choices), the Sign-in & SSO settings, the network settings and the segmentation policy |
 | `users`, `sessions`, `tokens` | accounts and credentials (hashes only) |
-| `messages`, `activity`, `toolbus` | logs: agent messages, the activity log, tool events |
+| `subsidiaries`, `subsidiary_keys`, `subsidiary_grants`, `subsidiary_runs`, `subsidiary_usage`, `subsidiary_reports`, `subsidiary_inbox`, `subsidiary_charters`, `subsidiary_chain_heads`, `subsidiary_transcripts` | agent teams inside tools: the subsidiaries with their charters and sidecars (never the enrollment code; the dedicated credential encrypted), their signing keys (private parts encrypted), grants, runs, daily usage, reports, the sidecar's inbox, charter versions, audit chain heads, and transcripts (off by default; encrypted) |
+| `messages`, `activity`, `toolbus`, `subsidiary_audit:<id>` | logs: agent messages, the activity log, tool events, each subsidiary's hash-chained audit trail (never pruned) |
 
 | Path under the data directory | Holds |
 | --- | --- |
@@ -464,7 +551,7 @@ any control worse, never better, and add their evidence ([AGENTS.md](AGENTS.md#w
 | `secret.key` | the encryption key for stored credentials and device configuration backups, unless `HUB_SECRET_KEY` is set (back it up separately; mode `0600`) |
 | `workspace/tools/` | cloned repositories |
 | `workspace/patches/<id>/` | worktrees of patches to tools |
-| `workspace/adapters/<tool id>/` | adapters: health probes, SSO configuration and provider registration, event pollers |
+| `workspace/adapters/<tool id>/` | adapters: health probes, SSO configuration and provider registration, event pollers; `subsidiary/` holds a subsidiary's public `bridge.env` and its sidecar bundle (no secret) |
 | `workspace/secrets/sso/` | client secrets the hub generated for single sign-on (owner-only files) |
 | `workspace/identity/atrium/<provider>/` | Atrium's own sign-in client at a provider |
 | `workspace/self-patches/<id>/` | worktrees of self-patches |
@@ -496,6 +583,23 @@ Round 3 added these events. None carries secrets, backup content, webhook URLs o
 | `external_framework`, `external_framework_removed` | `{id, tool_id}` | a framework read from CISO Assistant changed or disappeared |
 | `toolbus` (changed) | `{seq, ts, source, event, deliveries}` | a tool event was delivered; no longer carries the payload (F24) |
 
+Round 4 added these for Home dashboards ([DASHBOARD.md](DASHBOARD.md#endpoints)). A person's own dashboards and tab
+preferences are never published: the stream reaches every signed-in principal.
+
+| Event | Payload | Sent when |
+| --- | --- | --- |
+| `dashboard` | `{id, scope: "shared", version, updated_by, removed}` | a shared dashboard was created, published or deleted |
+| `dashboard_settings` | `{version}` | the default dashboard changed |
+| `settings` | `{keys}` (the changed key names, never values; `guardrails` for any guardrail) | `PATCH /api/settings` or `PATCH /api/settings/guardrails` succeeded |
+
+Round 4 also added these for subsidiaries ([SUBSIDIARIES.md](SUBSIDIARIES.md)); none carries text from the tool or
+the team.
+
+| Event | Payload | Sent when |
+| --- | --- | --- |
+| `subsidiary` | the group dashboard's summary: ids, mode, status, flags, charter version, staff count, last seen, conformance state, today's usage, counts of pending approvals and open reports | a subsidiary changed (status, flags, charter, sidecar facts) |
+| `subsidiary_report` | `{id, subsidiary_id, kind?, severity?, status}` | the team filed a report or an escalation, or a person closed one |
+
 ## Endpoints
 
 The REST API is documented live at `/api/docs`. Every route is classified in `auth/policy.py`: `GET` needs viewer,
@@ -514,6 +618,8 @@ tests check every route.
 | Compliance: controls, risks, policies, frameworks, audit packs | `/api/grc*`, `/api/frameworks*` | [COMPLIANCE.md](COMPLIANCE.md#endpoints) |
 | Agents, teams, chat, local models, settings, guardrails | `/api/agents*`, `/api/llm/providers*`, `/api/settings*` | [AGENTS.md](AGENTS.md) |
 | Extensions, extension records, self-patches | `/api/extensions*`, `/api/x*`, `/api/self-patches*` | [AGENTS.md](AGENTS.md#extensions) |
+| Home dashboards and widgets | `/api/dashboards*`, `/api/widgets/*` | [DASHBOARD.md](DASHBOARD.md#endpoints) |
+| Subsidiaries (agent teams inside tools) and their sidecars | `/api/subsidiaries*`, `POST /api/tools/{id}/subsidiary`, `/api/subsidiary/v1/*` (subsidiary tokens) | [SUBSIDIARIES.md](SUBSIDIARIES.md#peoples-routes) |
 | Approvals | `/api/approvals*` | [above](#approvals) |
 | Tool events published by tools | `POST /api/bus/publish` (integration tokens) | [MANIFEST.md](MANIFEST.md#events) |
 | Assets, hosts, commands, chat, overview, logs, events | `/api/assets*`, `/api/hosts*`, `/api/commands*`, `/api/chat*`, `/api/overview`, `/api/activity`, `/api/messages`, `/api/events` | `/api/docs` |
@@ -536,6 +642,13 @@ tests check every route.
   to `auth/policy.py` for a public or admin-only route and to the permission-matrix tests, mark mutation controls in
   the view with `data-min-role`, and send bus messages as `principal.bus_id`.
 - **New control**: add a `Control` to `CONTROLS` and, if automated, a check to `CHECKS`.
+- **New dashboard widget type**: `registry.register(WidgetType(...))` in a module of `hub/dashboards/` (imported by its
+  `__init__.py`) with a strict config model, size bounds, a minimum role, the events that make its data stale, a cache
+  time-to-live and a resolver that builds its data from named fields only (it gets no principal: results are shared by
+  every viewer); add a renderer to `RENDERERS` in `hub/web/js/dashboard/widgets.js` and a valid config to
+  `every_type_configs()` in `tests/test_dashboards.py`, whose secret walk refuses a type it does not cover. A new data
+  type needs no widget code: extension data types and connectors feed the record widgets
+  ([DASHBOARD.md](DASHBOARD.md#records-from-every-tool)).
 - **New connector**: subclass `connectors.base.Connector` (fields, capabilities, actions, `detect`, the operations it
   supports, records in the canonical shapes) and add one line to `connectors.REGISTRY`; the planner, the flows and
   the UI pick it up from there. List actions that change something in `side_effect_actions`.

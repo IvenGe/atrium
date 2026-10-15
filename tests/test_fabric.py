@@ -618,8 +618,8 @@ def test_repairs_explain_credential_and_validation_failures(client, remote, wait
     assert TOKEN not in client.get("/api/messages?limit=2000").text + client.get("/api/activity?limit=2000").text
 
 
-def test_claude_repairs_a_generic_rest_mapping_but_never_redirects_secrets(client, wait_for):
-    from test_llm_paths import FakeLLM
+def test_claude_repairs_a_generic_rest_mapping_but_never_redirects_secrets(client, wait_for, monkeypatch):
+    from llm_fakes import use_claude
 
     hub = client.app.state.hub
     served = []
@@ -641,8 +641,9 @@ def test_claude_repairs_a_generic_rest_mapping_but_never_redirects_secrets(clien
     [flow] = flows_of(client, "nas")
     client.patch(f"/api/flows/{flow['id']}", json={"status": "enabled"})
 
-    # Claude proposing another host is refused: the rules take over (and find no working base path)
-    hub.llm = FakeLLM(json_result={"diagnosis": "x", "rationale": "Move it.", "config_json": json.dumps({"base_url": "https://evil.example/api"})})
+    # the model proposing another host is refused: the rules take over (and find no working base path)
+    use_claude(hub, monkeypatch, json_result={"diagnosis": "x", "rationale": "Move it.",
+                                              "config_json": json.dumps({"base_url": "https://evil.example/api"})})
     for _ in range(3):
         run(client, flow["id"])
     refused = repair_approval(client, wait_for, "nas")
@@ -652,8 +653,8 @@ def test_claude_repairs_a_generic_rest_mapping_but_never_redirects_secrets(clien
     wait_for(lambda: flows_of(client, "nas")[0]["repair"] is None)
 
     fixed = {"assets": {**mapping["assets"], "list": {"path": "/devices"}}}
-    fake = hub.llm = FakeLLM(json_result={"diagnosis": "wrong list path", "rationale": "The API lists devices at /devices.",
-                                          "config_json": json.dumps({"mapping": fixed})})
+    fake = use_claude(hub, monkeypatch, json_result={"diagnosis": "wrong list path", "rationale": "The API lists devices at /devices.",
+                                                     "config_json": json.dumps({"mapping": fixed})})
     for _ in range(3):
         run(client, flow["id"])
     approval = repair_approval(client, wait_for, "nas")
@@ -666,8 +667,8 @@ def test_claude_repairs_a_generic_rest_mapping_but_never_redirects_secrets(clien
     assert [a["name"] for a in client.get("/api/assets").json() if a["source"] == "sync:nas"] == ["nas-1"]
 
 
-def test_generated_connector_from_an_openapi_spec(client, wait_for, tmp_path):
-    from test_llm_paths import FakeLLM
+def test_generated_connector_from_an_openapi_spec(client, wait_for, tmp_path, monkeypatch):
+    from llm_fakes import use_claude
 
     hub = client.app.state.hub
     root = tmp_path / "cmdb"
@@ -679,10 +680,10 @@ def test_generated_connector_from_an_openapi_spec(client, wait_for, tmp_path):
                 manifest=Manifest(id="cmdb", name="CMDB", api={"type": "rest", "spec": "openapi.json", "base_url": "http://localhost:9000"}))
     hub.save_tool(tool)
     client.portal.call(hub.agents.ensure_tool_supervisor, tool)
-    assert client.post("/api/tools/cmdb/connection/generate").status_code == 400  # needs Claude
+    assert client.post("/api/tools/cmdb/connection/generate").status_code == 400  # needs an AI model
     mapping = {"assets": {"list": {"path": "/api/cis", "items": "items"}, "fields": {"external_id": "id", "name": "name"}}}
-    fake = hub.llm = FakeLLM(json_result={"rationale": "Reads configuration items as assets.", "base_url": "http://evil.example",
-                                          "auth": "token", "auth_header": "", "mapping_json": json.dumps(mapping)})
+    fake = use_claude(hub, monkeypatch, json_result={"rationale": "Reads configuration items as assets.", "base_url": "http://evil.example",
+                                                     "auth": "token", "auth_header": "", "mapping_json": json.dumps(mapping)})
     assert client.get("/api/tools/cmdb/connection").json()["can_generate"]
     result = client.post("/api/tools/cmdb/connection/generate")
     assert result.status_code == 202, result.text

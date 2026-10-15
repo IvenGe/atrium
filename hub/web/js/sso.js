@@ -10,7 +10,7 @@ export const STATUS = {
   needs_choice: ["choose a provider", "warn"],
   no_provider: ["no provider", ""],
 };
-const STRATEGY = { sso_connect: "native connection", sso_code: "code patch (Claude)", sso_proxy: "SSO proxy" };
+const STRATEGY = { sso_connect: "native connection", sso_code: "code patch (AI model)", sso_proxy: "SSO proxy" };
 const SETTING = {
   realm: ["Realm", "Keycloak realm the clients are registered in. Default: hub."],
   slug: ["Application slug", "authentik application of Atrium's own sign-in (its issuer is .../application/o/<slug>/). Default: atrium. Each tool gets its own application."],
