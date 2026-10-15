@@ -34,10 +34,20 @@ BASE_URL = "https://api.anthropic.com"
 # Server-side refusal fallback: if a request is declined, the API re-runs it on a fallback model.
 FALLBACK_BETA = "server-side-fallback-2026-07-01"
 FALLBACK_MODELS = {"claude-fable-5-1", "claude-opus-5-5", "claude-opus-5", "claude-sonnet-5-5"}
+# Claude rejects a request with more than this many tools marked strict (HTTP 400: "Too many strict tools").
+STRICT_TOOL_LIMIT = 20
 EFFORTS = ("low", "medium", "high", "xhigh", "max")
 ENV_KEYS = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")
 STOP = {"end_turn": "end", "stop_sequence": "end", "tool_use": "tool_calls", "max_tokens": "max_tokens",
         "pause_turn": "pause", "refusal": "refusal", "model_context_window_exceeded": "context_exceeded"}
+
+
+def _tools_for_api(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Claude accepts at most STRICT_TOOL_LIMIT tools marked strict. Above that, send them unstrict: the hub checks
+    every tool's arguments itself (toolkit.validate_args) before it runs."""
+    if sum(1 for tool in tools if tool.get("strict")) <= STRICT_TOOL_LIMIT:
+        return tools
+    return [{**tool, "strict": False} if tool.get("strict") else tool for tool in tools]
 
 
 def _get(obj: Any, name: str, default: Any = None) -> Any:
@@ -214,7 +224,7 @@ class AnthropicAdapter:
         if output_config:
             kwargs["output_config"] = output_config
         if req.tools:
-            kwargs["tools"] = req.tools
+            kwargs["tools"] = _tools_for_api(req.tools)
         if req.model in FALLBACK_MODELS:
             kwargs["betas"] = [FALLBACK_BETA]
             kwargs["fallbacks"] = "default"
