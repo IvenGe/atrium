@@ -10,7 +10,10 @@ A conversation longer than `max_turns` messages from the person starts afresh, w
 A conversation is bound to the provider and model it ran on; when that changes, the next message starts a fresh
 conversation (a model never sees another provider's raw output). The person is the account's user id, or for an API
 token the account that owns it - so renaming an account keeps its conversations and deleting it
-(AuthService.delete_user -> forget_user) drops them, also the stored ones."""
+(AuthService.delete_user -> forget_user) drops them, also the stored ones.
+
+A turn of a person's private chat thread (hub/bus.py) tells the thread the person's earlier turns the model reads
+(Private.learn), so the agents' messages that quote them are logged without them, like quotes of this turn."""
 
 from __future__ import annotations
 
@@ -21,6 +24,7 @@ import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, AsyncIterator
 
+from ..bus import TRACE
 from ..models import MemoryConfig
 from .types import Msg
 
@@ -115,6 +119,10 @@ class Memory:
             notice = None
             if config.mode != "off" and (conv.turns >= config.max_turns or len(conv.messages) > MAX_MESSAGES):
                 conv.messages, notice = [], LIMIT_NOTICE
+            trace = TRACE.get()
+            if trace is not None and trace.private is not None and trace.private.owner == person:
+                # the model reads the person's earlier turns too: a quote of them is as private as one of this turn
+                trace.private.learn(m.text for m in conv.messages if m.role == "user")
             before = len(conv.messages)
             try:
                 yield Turn(conv, notice)

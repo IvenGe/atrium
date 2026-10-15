@@ -347,13 +347,30 @@ email or an account id.
 else JSON mode, else the schema in the prompt. The hub validates every answer against the schema, gives the model one
 repair round with what was wrong, and otherwise the caller falls back to its templates or rules. When a provider
 refuses a mode, the hub remembers it for that model (`capabilities` on the provider record, an activity entry) and
-starts with the next mode from then on. The same learning applies to a temperature, a reasoning effort or tool
-definitions a model refuses (HTTP 400 saying the parameter is not supported): the call is repeated once without it,
-and later calls leave it out.
+starts with the next mode from then on (Claude: its JSON-schema output, then the schema in the prompt); a refusal of
+the schema itself ("Schema is too complex for compilation") moves on to the next mode without remembering anything.
+The same learning applies to a temperature, a reasoning effort, strict tool schemas or tool definitions a model
+refuses - an HTTP 400 naming the parameter as not supported, not permitted ("output_config.effort: Extra inputs are
+not permitted"), unknown or unrecognized: the call is repeated once without it, and later calls leave it out (a refused
+effort level whose refusal lists the levels the model takes keeps those). Claude gets strict tool schemas only within
+its structured-output limits per request (20 strict tools, 24 optional and 16 union-typed parameters across them);
+otherwise its tools go without `strict` - the hub validates every tool call's arguments itself.
+
+**When a call fails** (after the fallback chain), the person sees the provider's own message - "Claude answered HTTP
+400: ...", every hub secret and credential-looking pair masked, the provider's text cut at about 200 characters - in
+the Hub Supervisor's note above its built-in answer, a team agent's error, or the playground. The activity log gets it
+once per provider, model and message (again only after a call to that model worked), and the agent's errors record it
+(code `llm_<kind>`, e.g. `llm_http_400`). The model status every signed-in account reads (`llm.last_error` in
+`GET /api/overview` and `GET /api/llm/providers`) says the HTTP status only ("Claude answered HTTP 400"): the
+provider's message may quote the request, a person's chat.
 
 **Capabilities.** What a model supports - tools, JSON-schema output, JSON mode, temperature, effort levels, output and
-context sizes - comes from the provider's model list (Claude's lists them), OpenAI's models pages (for `gpt-6-luna`,
-`gpt-6-astra` and `gpt-6.1-sol`), what the hub learned from a refusal, or **Check tools and JSON**
+context sizes - comes from the provider's model list (Claude's lists them; an effort entry that says "not supported"
+means no effort is ever sent), OpenAI's models pages (for `gpt-6-luna`, `gpt-6-astra` and `gpt-6.1-sol`), Claude's
+model families as the Claude API reference describes them (`KNOWN_MODELS` in `hub/llm/adapters/anthropic.py`, matched
+by family so dated snapshots and Bedrock / Google Cloud ids count: no effort parameter on Claude Haiku 4.5, Sonnet 4.5
+and older, `low`-`high` on Opus 4.5, no `xhigh` on the 4.6 models; used only where nothing else is known, so the first
+call to such a model is already right), what the hub learned from a refusal, or **Check tools and JSON**
 (`POST /api/llm/providers/{id}/probe {model}`): two tiny calls - one asking for a call of a dummy tool, one asking for
 a one-field JSON answer, at most 256 output tokens each (reasoning models count their reasoning toward that limit) -
 whose result is stored with the source `probe` and logged with the tokens used.
@@ -473,7 +490,61 @@ counts only.
 Chat text never reaches other accounts: the message log and the event stream every signed-in account reads keep a
 chat's routing (sender, recipient, subject) and the length of its text (`{"redacted": "chat", "chars": n}`) - never
 the text. `GET /api/messages` and `GET /api/agents/{id}/messages` redact older rows on the way out as well. The person
-who asked gets the reply in the answer to their request.
+who asked gets the reply in the answer to their request. A chat message is at most 20,000 characters.
+
+### Conversations and errors
+
+The **Agent bus** page shows the agents' conversations: everything one chat message, one person's action or one
+scheduled run caused on the bus, grouped by its root message ([ARCHITECTURE.md](ARCHITECTURE.md#the-agent-bus)), with
+its errors. Viewers read routing, subjects, status and error texts; operators and administrators read message bodies
+too (hub secrets masked, bodies over 32 KB as the log keeps them). The plain message log follows the same rule:
+`GET /api/messages`, `GET /api/agents/{id}/messages` and the live `message` event give viewers a body of
+`{"redacted": "role"}` (plus `failed` and `error` for a reply with an error), and the log itself is stored with every
+hub secret masked. A person's chat stays theirs: others see the chat messages' size only, other messages of that
+conversation with every string that quotes the person's words - this turn's or, when the agent remembers them, an
+earlier one's - replaced by `[private: quotes a person's chat]`, and no error text for the chat itself; the person
+reads it all (also the title of the conversation: their first words) while their account exists. The same holds for
+the activity log and the command history (and their live events): what an agent writes there while it works on a
+person's chat - "Ran on local: ...", "Awaiting approval: ...", "Recorded risk: ..." - is stored without the strings
+that quote the chat, and its person reads the original. An approval an agent asks for in a chat keeps the chat's
+conversation: once an administrator decides it, the agents carry it out there, under the same rule.
+
+Every failure of an agent is recorded - an exception, an error reply, a request nobody answered in time or no agent
+could receive, a failed AI model call - with whom it was for and in which conversation; an error reply is not
+recorded again when the exception or model failure behind it was. The Agents page's error count
+opens them; operators acknowledge them, administrators clear an agent's (which also resets its errors since start).
+
+**The page** (`#/bus`: in the sidebar after Agents, in Portals, and in the Ctrl K palette with the shortcuts
+"Conversations with errors" and "My chats with agents"). On the left, the conversations, latest activity first and
+live: who started it (a person, an agent, or **Scheduled** for the hub's own background work), its title (the subject
+of its first message; your own chat shows your first words, someone else's reads "Private chat with <agent>"), the
+agents taking part as icons, a status chip (**working** while a request waits for its answer or an agent works on it,
+**answered**, **failed** when its first request got an error or no answer), its errors and the time. Filter by agent,
+status, **Errors only** and **My chats** (the ones you started), or search; the filters stay in the address
+(`#/bus?agent=supervisor&status=failed&errors=1&mine=1&q=...`), and Up and Down move through the list. On the right,
+one conversation (`#/bus/<id>`, a link to share) as a transcript: one numbered bubble per message with sender ->
+recipient, subject and kind, indented under the message whose handling sent it; a request paired with its answer
+("answered in #4 after 1.2 s", "waiting for the answer", "no answer"); the body under a one-line preview, pretty-printed
+when opened - or "hidden: your role" and "private chat" - and failures in red with their error text and
+**Acknowledge**. The open conversation updates while the agents work. On a narrow screen the list and the conversation
+take turns (**All conversations** goes back).
+
+The other ways in: on the Agents page an agent's error count is a button (red "2 errors" while some are not
+acknowledged, grey "2 errors, acknowledged" otherwise) that opens its errors in a drawer - newest first, each with its
+subject, who asked, the error text, the time and **Open conversation**; **Acknowledge** and **Acknowledge all**
+(operators), **Clear all** (administrators), **Not acknowledged only**, and a link to the agent's conversations with
+errors. Every row of the page's **Agent conversations** stream opens its conversation, and the chat panel links **Show
+how the agents worked on this** while the agent is thinking and under each answer. A notification about an agent's
+failure (the bell) opens the conversation it happened in.
+
+| Endpoint | Role | Purpose |
+| --- | --- | --- |
+| `GET /api/bus/threads` | viewer | conversations, latest activity first: `{threads, total, next_before}`; filters `agent`, `subject`, `errors_only`, `person_only` (the caller's own), `status` (`open`, `answered`, `failed`), `q` (subjects, participants, the caller's own chat words, and - for operators and administrators - bodies as they read them), `limit` (1-200, 50), `before` (the previous page's `next_before`) |
+| `GET /api/bus/threads/{id}` | viewer | one conversation: `{thread, messages (oldest first, the last `limit`, 1-2000, 500), errors, truncated}`; 404 when unknown |
+| `GET /api/agents/{id}/errors` | viewer | the agent's recorded failures, newest first: `{agent, errors, total, unacknowledged, since_start, next_before}`; `unacknowledged=true`, `limit` (1-500, 100), `before` (a record's `ts`) |
+| `POST /api/agents/{id}/errors/{error_id}/ack` | operator | acknowledge one -> the record |
+| `POST /api/agents/{id}/errors/ack` | operator | acknowledge all of the agent's -> `{acknowledged, unacknowledged}` (logged) |
+| `DELETE /api/agents/{id}/errors` | admin | delete the agent's records -> `{cleared}` (logged) |
 
 ### Escalation and notifications
 

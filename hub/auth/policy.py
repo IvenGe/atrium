@@ -53,6 +53,7 @@ ADMIN_ROUTES = (
     ("POST", re.compile(r"/api/agents/[^/]+/playground")),  # spends tokens; may act (approvals apply) when asked
     ("POST", re.compile(r"/api/agents/[^/]+/budget/override")),  # lifts today's budget stop of an agent
     ("POST", re.compile(r"/api/agents/[^/]+/schedule/resume")),  # runs a schedule paused after failed runs again
+    ("DELETE", re.compile(r"/api/agents/[^/]+/errors")),  # clears an agent's recorded errors (operators acknowledge)
     ("PUT", re.compile(r"/api/identity-providers/default")),
     ("PATCH", re.compile(r"/api/identity-providers/[^/]+")),
     ("POST", re.compile(r"/api/identity-providers/[^/]+/atrium")),

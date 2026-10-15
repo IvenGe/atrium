@@ -13,13 +13,21 @@ Two rules hold for every decision:
   Device changes and self-patches set it (guardrail ``approval_expiry_hours``); their owners also bind the approval
   to what was reviewed (the device revision and the operations' hash, the self-patch's commit) and check it again
   before acting.
+
+An approval asked for in a person's private chat thread (hub/bus.py) keeps that thread: its decision - the activity
+entry, the "approval.decided" message and so everything the requester does about it (run the command, tell who
+asked) - happens in that conversation, so quotes of the person's chat stay theirs (``resumed``). What that needs (the
+thread and the person's texts) is kept encrypted for the hub until the approval is decided ("p:<approval id>",
+hub/conversations.py).
 """
 
 from __future__ import annotations
 
+import contextlib
 import time
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any, Callable, Iterator
 
+from .bus import TRACE, Private, Trace, conversation
 from .models import Approval
 from .store import new_id
 
@@ -94,10 +102,41 @@ class Approvals:
         approval = Approval(id=new_id("ap_"), kind=kind, title=title, detail=detail, payload=payload,  # type: ignore[arg-type]
                             requested_by=requested_by)
         self._save(approval)
+        self._keep_thread(approval)
         from .agents import notify  # "Awaiting approval: ..." - a notification when the agent that asks wants one
 
         notify.approval_requested(self.hub, approval)
         return approval
+
+    def _keep_thread(self, approval: Approval) -> None:
+        """Asked for in a person's private chat thread: keep what resuming the work there needs (``resumed``)."""
+        trace = TRACE.get()
+        if trace is None or trace.private is None:
+            return
+        self.hub.conversations.copies.keep(
+            f"p:{approval.id}", trace.private.owner, trace.thread,
+            {"thread": trace.thread, "parent": trace.parent, "origin": trace.origin, "texts": trace.private.material()},
+            whole=True)
+
+    @contextlib.contextmanager
+    def resumed(self, approval: Approval) -> Iterator[Trace | None]:
+        """Run the block in the private chat thread `approval` was asked for in, if it was: what the block logs and
+        sends - and what the agents do about it - joins that conversation, quotes of the person's chat kept from
+        everyone else (hub/bus.py)."""
+        kept = self.hub.conversations.copies.load(f"p:{approval.id}")
+        value = kept[2] if kept is not None else None
+        if not isinstance(value, dict):
+            yield None
+            return
+        texts = tuple(t for t in value.get("texts") or () if isinstance(t, str))
+        trace = Trace(thread=value.get("thread") or kept[1], parent=value.get("parent"), origin=value.get("origin"),
+                      private=Private(kept[0], texts))
+        with conversation(trace):
+            yield trace
+
+    def _settled(self, approval: Approval) -> None:
+        """No longer pending: what resuming its private thread needed is not kept any longer."""
+        self.hub.conversations.copies.drop([f"p:{approval.id}"])
 
     def get(self, approval_id: str) -> Approval | None:
         doc = self.hub.store.get("approvals", approval_id)
@@ -128,9 +167,11 @@ class Approvals:
         approval.decided_by = actor
         self._save(approval)
         verb = "Approved" if approve else "Rejected"
-        self.hub.activity(actor, "info", f"{verb}: {approval.title}", approval_id=approval.id)
-        await self.hub.bus.tell(sender or actor, approval.requested_by, "approval.decided",
-                                {"approval_id": approval.id, "approved": approve, "note": note, "decided_by": actor})
+        with self.resumed(approval):  # asked for in a private chat: the decision and its work stay in that thread
+            self.hub.activity(actor, "info", f"{verb}: {approval.title}", approval_id=approval.id)
+            await self.hub.bus.tell(sender or actor, approval.requested_by, "approval.decided",
+                                    {"approval_id": approval.id, "approved": approve, "note": note, "decided_by": actor})
+        self._settled(approval)
         return approval
 
     def second_person_required(self, approval: Approval) -> bool:
@@ -178,7 +219,10 @@ class Approvals:
         approval.status, approval.note = "approved", note
         approval.decided_at, approval.decided_by = time.time(), actor
         self._save(approval)
-        self.hub.activity(actor, "warn", f"Approved automatically: {approval.title} - {note}", approval_id=approval.id)
+        with self.resumed(approval):
+            self.hub.activity(actor, "warn", f"Approved automatically: {approval.title} - {note}",
+                              approval_id=approval.id)
+        self._settled(approval)
         return approval
 
     def withdraw(self, approval_id: str, note: str, actor: str, verb: str = "Superseded") -> Approval | None:
@@ -190,7 +234,9 @@ class Approvals:
         approval.status, approval.note = "rejected", note
         approval.decided_at, approval.decided_by = time.time(), actor
         self._save(approval)
-        self.hub.activity(actor, "info", f"{verb}: {approval.title}", approval_id=approval.id)
+        with self.resumed(approval):
+            self.hub.activity(actor, "info", f"{verb}: {approval.title}", approval_id=approval.id)
+        self._settled(approval)
         return approval
 
     def complete(self, approval_id: str, ok: bool, result: dict[str, Any]) -> None:

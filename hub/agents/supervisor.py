@@ -20,6 +20,15 @@ from . import notify, teams, toolkit
 from . import settings as agent_settings
 from .base import BaseAgent
 
+
+def fallback_note(label: str, why: str) -> str:
+    """The note above a rules answer when the model failed: the provider's own words ("Claude answered HTTP 400:
+    ...") or "<label> unavailable: <cause>" when they do not name it."""
+    why = why.rstrip(". ")
+    said = why if why.startswith(label) else f"{label} unavailable: {why}"
+    return f"{said}. Falling back to built-in commands."
+
+
 HELP = (
     "I coordinate the agents in this hub. Things I understand without an LLM:\n"
     "- `status` - suite overview\n"
@@ -282,9 +291,8 @@ class HubSupervisor(BaseAgent):
                         "meta": meta.model_dump(mode="json")}
             except Limited:
                 raise  # a person asked: they see why (HTTP 429), not a rules answer
-            except Exception as exc:  # fall back to rules on any provider failure (the cause, never its text)
-                cause = getattr(exc.__cause__, "kind", None) or exc.__class__.__name__
-                note = f"({res.provider_label} unavailable: {cause}. Falling back to built-in commands.)\n\n"
+            except Exception as exc:  # fall back to rules on any provider failure, saying why
+                note = f"({fallback_note(res.provider_label, self.hub.llm.explain(exc))})\n\n"
                 return {"reply": note + await self._rules_chat(text, person), "mode": "rules"}
         return {"reply": await self._rules_chat(text, person), "mode": "rules"}
 

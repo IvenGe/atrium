@@ -177,6 +177,43 @@ class Store:
             ).fetchall()
         return [{**json.loads(data), "seq": seq} for seq, data in reversed(rows)]
 
+    def project_stream(self, stream: str, fields: tuple[str, ...], after: int = 0,
+                       limit: int = -1) -> list[dict[str, Any]]:
+        """seq, ts and only these fields (two or more; a dotted name reads inside an object) of the entries after seq
+        `after` (at most `limit`), oldest first - each entry's JSON is parsed once, inside SQLite, and only the fields
+        come back."""
+        paths = ", ".join(f"'$.{'.'.join(_field(p) for p in f.split('.'))}'" for f in fields)
+        with self._lock:
+            rows = self._db.execute(f"SELECT seq, ts, json_extract(data, {paths}) FROM log WHERE stream = ? AND seq > ? "
+                                    "ORDER BY seq LIMIT ?", (stream, after, limit)).fetchall()
+        return [{"seq": r[0], "ts": r[1], **dict(zip(fields, json.loads(r[2])))} for r in rows]
+
+    def entries(self, stream: str, seqs: list[int]) -> list[dict[str, Any]]:
+        """The entries of a stream with these seqs, oldest first."""
+        out: list[dict[str, Any]] = []
+        with self._lock:
+            for start in range(0, len(seqs), 500):
+                chunk = seqs[start:start + 500]
+                marks = ",".join("?" * len(chunk))
+                out += [{**json.loads(data), "seq": seq} for seq, data in self._db.execute(
+                    f"SELECT seq, data FROM log WHERE stream = ? AND seq IN ({marks})", (stream, *chunk)).fetchall()]
+        return sorted(out, key=lambda e: e["seq"])
+
+    def search_stream(self, stream: str, needle: str, limit: int = 20_000) -> list[int]:
+        """The seqs (newest first) of entries whose stored JSON text contains `needle` (case-insensitive for ASCII);
+        the caller checks what it may show."""
+        pattern = "%" + needle.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+        with self._lock:
+            rows = self._db.execute("SELECT seq FROM log WHERE stream = ? AND data LIKE ? ESCAPE '\\' "
+                                    "ORDER BY seq DESC LIMIT ?", (stream, pattern, limit)).fetchall()
+        return [r[0] for r in rows]
+
+    def oldest(self, stream: str) -> tuple[int, float] | None:
+        """(seq, ts) of a stream's oldest entry, or None when it is empty."""
+        with self._lock:
+            row = self._db.execute("SELECT seq, ts FROM log WHERE stream = ? ORDER BY seq LIMIT 1", (stream,)).fetchone()
+        return (row[0], row[1]) if row else None
+
     def prune(self, stream: str, keep: int) -> int:
         """Delete all but the newest `keep` entries of a stream; returns how many went."""
         with self._lock, self._db:

@@ -24,31 +24,74 @@ BUILTINS: dict[str, dict[str, Any]] = {
 }
 # 5 failed calls (unreachable, timed out, HTTP 429 or 5xx) in 5 minutes open the circuit for 60 seconds
 FAILURES, WINDOW, OPEN_FOR = 5, 300.0, 60.0
-UNSUPPORTED = ("unsupported", "not supported", "does not support", "not available for", "not allowed")
-LEARNABLE = frozenset({"temperature", "effort", "tools"})
+# How providers word an HTTP 400 for a parameter the model does not take. Anthropic (field-path validation errors):
+# "output_config.effort: Extra inputs are not permitted", "... is not supported for this model", "This model does not
+# support ...", "Input should be 'low', 'medium' or 'high'"; OpenAI: "Unsupported parameter: 'temperature' is not
+# supported with this model.", "Unsupported value: 'reasoning.effort' does not support 'medium' ...", "Unknown
+# parameter: 'reasoning'."; OpenAI-compatible servers: "Unrecognized request argument supplied: ...", "... does not
+# support tools".
+UNSUPPORTED = ("unsupported", "not supported", "does not support", "doesn't support", "do not support",
+               "not available for", "not allowed", "not permitted", "extra inputs", "extra_forbidden",
+               "unknown parameter", "unrecognized request argument", "unrecognized argument", "unexpected keyword",
+               "unknown field", "unknown name", "input should be", "requires a model that supports",
+               "no longer supported", "deprecated for this model", "has been removed", "is not compatible with")
+EFFORT_ORDER = ("none", "minimal", "low", "medium", "high", "xhigh", "max")  # every provider's levels, lowest first
+LEARNABLE = frozenset({"temperature", "effort", "tools", "strict"})
+_FORMAT = re.compile(r"output_config\.format|text\.format|response_format|json_schema|json_object|output_format")
+_TOOLS_WORD = r"(?:tools?|tool use|tool calling|tool calls?|function calling|function calls?)"
+_TOOLS = re.compile(
+    rf"(?:does not|doesn't|do not|don't) support (?:the )?(?:use of )?{_TOOLS_WORD}\b"
+    rf"|\b{_TOOLS_WORD}\W{{0,3}} (?:is|are) not (?:supported|available|allowed|permitted)"
+    r"|(?:^|[\s'\"`(])tools'?\s*:\s*extra inputs|(?:parameter|argument)(?: supplied)?:? '?tools\b"
+    r"|\btools? (?:param|parameter)s? (?:is|are) not supported|tool_choice\W{0,3} (?:is|are) not supported")
+_STRICT = re.compile(r"\bstrict\b")
 
 
 def refused_feature(message: str) -> str | None:
-    """The optional request feature a provider's HTTP 400 says the model does not support: "temperature", "effort"
-    (reasoning effort) or "tools" - None when the refusal is about something else."""
+    """The optional request feature a provider's HTTP 400 says the model does not take: "temperature", "effort"
+    (reasoning effort), "strict" (strict tool schemas) or "tools" - None when the refusal is about something else,
+    including the structured-output mode (structured.names_mode: the JSON ladder handles that one)."""
     low = (message or "").lower()
     if not any(w in low for w in UNSUPPORTED):
         return None
-    if "temperature" in low:
+    if _STRICT.search(low) and ("tool" in low or "function" in low):
+        return "strict"
+    if "temperature" in low or "top_p" in low or "top_k" in low:
         return "temperature"
-    if "reasoning" in low or "effort" in low:
+    if "effort" in low or "reasoning" in low:
         return "effort"
-    if re.search(r"\btools?\b|function call", low):
+    if _FORMAT.search(low):
+        return None
+    if re.search(r"\boutput_config\b", low):  # the whole block: on a request with an effort, the effort is new
+        return "effort"
+    if _TOOLS.search(low):
         return "tools"
     return None
 
 
-def supported_efforts(message: str) -> list[str]:
-    """The effort levels a refusal lists as supported ("Supported values are: 'low', 'medium' and 'high'"), if any."""
-    from .adapters.openai import EFFORTS
+def refused_level(message: str, level: str) -> bool:
+    """Whether a refusal names the one effort level it was sent ("'xhigh' is not supported") rather than effort."""
+    return bool(level) and bool(re.search(rf"['\"`]{re.escape(level)}['\"`]", (message or "").lower()))
 
-    tail = re.split(r"supported values (?:are|include)", message or "", flags=re.IGNORECASE)
-    return [e for e in re.findall(r"'([a-z]+)'", tail[1]) if e in EFFORTS] if len(tail) > 1 else []
+
+def supported_efforts(message: str) -> list[str]:
+    """The effort levels a refusal lists as supported ("Supported values are: 'low', 'medium' and 'high'", "Input
+    should be 'low', 'medium' or 'high'"), if any."""
+    tail = re.split(r"supported values (?:are|include)|input should be|must be one of|expected one of", message or "",
+                    flags=re.IGNORECASE)
+    return [e for e in re.findall(r"'([a-z]+)'", tail[1]) if e in EFFORT_ORDER] if len(tail) > 1 else []
+
+
+def efforts_after_refusal(message: str, sent: str, known: list[str] | None) -> list[str]:
+    """The effort levels a model takes after it refused the level `sent`: the ones the refusal lists; when it names
+    only the level it was sent ("'xhigh' is not supported"), the others it may take (`known`, else every level); else
+    none (the model takes no effort parameter at all)."""
+    listed = supported_efforts(message)
+    if listed:
+        return [e for e in listed if e != sent]
+    if refused_level(message, sent):
+        return [e for e in (known if known is not None else EFFORT_ORDER) if e != sent]
+    return []
 
 
 def location_of(base_url: str) -> str:

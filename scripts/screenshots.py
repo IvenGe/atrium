@@ -11,10 +11,11 @@ sidecar included), and then:
    390 px; dashboard-edit holds a widget halfway through a drag) - every PNG there is removed first, so screens that no
    longer exist leave no picture behind. With Pillow (in this Python or in ``python3`` on the PATH) the pictures are
    stored as 256-colour PNGs;
-2. checks the UI in a real browser: every page and tab - dashboards, agent settings and subsidiaries included - as an
-   administrator, an operator and a viewer, and the administrator's pages at phone width. It reports console errors,
-   page errors, failed API calls (other than 403 for the lower roles) and content wider than its card or the window,
-   and exits with status 1 when it found any.
+2. checks the UI in a real browser: every page and tab - dashboards, agent settings, subsidiaries and the Agent bus
+   included - as an administrator, an operator and a viewer, and the administrator's pages at phone width; also the
+   Agents page's errors drawer, and that only ava reads her own chat on the Agent bus. It reports console errors, page
+   errors, failed API calls (other than 403 for the lower roles), content wider than its card, the drawer or the
+   window, and another person's chat text shown, and exits with status 1 when it found any.
 
 The fake tools and the sidecar are stopped, then the hub by its PID, and the data directory is removed afterwards.
 """
@@ -43,12 +44,12 @@ LOADED = "#main:not(:has(.empty.faint))"  # the page's "Loading..." placeholder 
 SHOT_NAMES = ("home", "apps", "integration-overview", "integration-map", "segmentation-map", "network", "network-device",
               "approvals", "compliance-frameworks", "compliance-controls", "people", "person", "vulnerabilities",
               "agents", "settings-guardrails", "users", "home-dark", "home-phone", "home-dashboard", "dashboard-edit",
-              "ai-models", "agent-settings", "subsidiaries", "subsidiary-approval")
+              "ai-models", "agent-settings", "subsidiaries", "subsidiary-approval", "agent-bus", "agent-errors")
 AGENT_TABS = ("overview", "model", "behaviour", "tools", "limits", "escalation", "playground", "history")
 SUBSIDIARY_TABS = ("charter", "activity", "reports", "setup")
 
-# content sticking out of a card (outside its own scroll box) or the window
-OVERFLOW = """() => {
+# content sticking out of a card (outside its own scroll box) or the window; `boxes`: other containers to check
+OVERFLOW = """(boxes = '#main .card') => {
   const out = [];
   if (document.documentElement.scrollWidth > innerWidth + 1)
     out.push(`the page scrolls sideways: ${document.documentElement.scrollWidth} px in a ${innerWidth} px window`);
@@ -57,7 +58,7 @@ OVERFLOW = """() => {
       if (/(auto|scroll|hidden)/.test(getComputedStyle(p).overflowX)) return p;
     return null;
   };
-  for (const card of document.querySelectorAll('#main .card')) {
+  for (const card of document.querySelectorAll(boxes)) {
     const right = card.getBoundingClientRect().right;
     for (const el of card.querySelectorAll('*')) {
       const r = el.getBoundingClientRect();
@@ -143,6 +144,8 @@ def routes(info: dict[str, Any], user: str = "ava") -> list[str]:
     sub = info["subsidiary_tool"]
     out += ["#/subsidiaries", f"#/subsidiaries/{sub}", *(f"#/subsidiaries/{sub}/{tab}" for tab in SUBSIDIARY_TABS),
             f"#/tools/{sub}"]
+    out += ["#/bus", "#/bus?errors=1", "#/bus?mine=1", *([f"#/bus/{info['conversation']}"] if info.get("conversation")
+                                                        else [])]
     out += ["#/approvals", "#/operator", "#/network", "#/network/drift", "#/network/changes", f"#/network/{fw}"]
     out += [f"#/network/{fw}/{tab}" for tab in ("interfaces", "history", "drift", "backups", "changes")]
     out += ["#/assets", "#/people", "#/people/leavers", "#/people/accounts", f"#/people/{info['person_id']}",
@@ -170,11 +173,44 @@ def check(b: Browser, info: dict[str, Any]) -> list[tuple[str, ...]]:
                 events.append((route, "did not load", str(exc).splitlines()[0][:200]))
                 continue
             events += [(route, "layout", issue) for issue in page.evaluate(OVERFLOW)]
+        events[0] = "#/agents (the Operator Agent's errors drawer)"
+        try:
+            events += [(events[0], "layout", issue) for issue in errors_drawer(page)]
+        except Exception as exc:
+            events.append((events[0], "did not open", str(exc).splitlines()[0][:200]))
+        if info.get("conversation"):
+            events[0] = f"#/bus/{info['conversation']} (privacy)"
+            events += [(events[0], "privacy", issue) for issue in own_chat(page, info["conversation"], user)]
         context.close()
         found = [e for e in events[1:] if not (role != "admin" and e[1] == "HTTP 403")]  # expected for lower roles
         print(f"  {label}: {len(pages)} pages, {len(found)} problem(s)")
         problems += [(label, *e) for e in found]
     return problems
+
+
+def errors_drawer(page, agent: str = "operator") -> list[str]:
+    """The Agents page's error count of `agent` opens its errors in a drawer (the seeded failure listed, nothing
+    sticking out of it) and Escape closes it again: what is wrong, else []."""
+    Browser.go(page, "#/agents")
+    page.click(f'.err-chip[data-id="{agent}"]')
+    page.wait_for_selector(".modal.drawer .errs-list, .modal.drawer .errs .empty")
+    page.wait_for_load_state("networkidle")
+    issues = page.evaluate(OVERFLOW, ".modal.drawer")
+    if not page.locator(".modal.drawer .errs-item").count():
+        issues.append(f"the errors drawer of {agent} lists no error")
+    page.keyboard.press("Escape")
+    page.wait_for_selector(".modal.drawer", state="detached")
+    return issues
+
+
+def own_chat(page, conversation: str, user: str) -> list[str]:
+    """ava's audit chat on the Agent bus: she reads her own words, nobody else does (review D7)."""
+    Browser.go(page, f"#/bus/{conversation}")
+    page.wait_for_selector("#bus-thread-title")
+    shown = demo_hub.AUDIT_QUESTION[:60] in " ".join(page.inner_text("#main").split())
+    if shown == (user == "ava"):
+        return []
+    return [f"ava's chat text is {'shown to' if shown else 'hidden from'} {user}"]
 
 
 # -- 2. the screenshots ------------------------------------------------------------------------------------------------
@@ -237,6 +273,7 @@ def take(b: Browser, info: dict[str, Any], out: Path) -> list[Path]:
     b.go(page, "#/users")
     taken.append(shot(page, out, "users"))
     taken += take_round4(b, page, info, out)
+    taken += take_bus(b, page, info, out)
     context.close()
 
     context, page = b.session("ava", DESKTOP, theme="dark")
@@ -293,6 +330,27 @@ def take_round4(b: Browser, page, info: dict[str, Any], out: Path) -> list[Path]
     b.go(page, "#/approvals")  # the in-tool change the subsidiary's clerk asked for, with its buttons
     scroll_to(page, f'#main section.card:has([data-act="approve"][data-id="{info["subsidiary_approval"]}"])', 70)
     taken.append(shot(page, out, "subsidiary-approval"))
+    return taken
+
+
+def take_bus(b: Browser, page, info: dict[str, Any], out: Path) -> list[Path]:
+    """ava's audit chat on the Agent bus - the transcript scrolled to the agents' requests and the Operator Agent's
+    failure, the launch request's body open - and the Operator Agent's errors drawer on the Agents page."""
+    b.go(page, f"#/bus/{info['conversation']}")
+    page.wait_for_selector('#bus-scroll .bus-msg[data-n="6"]')
+    page.click('.bus-msg[data-n="6"] details.bus-body > summary')
+    page.evaluate("""() => { const s = document.querySelector('#bus-scroll');
+      const m = s.querySelector('.bus-msg[data-n="5"]');
+      s.scrollTop += m.getBoundingClientRect().top - s.getBoundingClientRect().top - 10; }""")
+    page.wait_for_timeout(300)
+    taken = [shot(page, out, "agent-bus")]
+    b.go(page, "#/agents")
+    page.click('.err-chip[data-id="operator"]')
+    page.wait_for_selector(".modal.drawer .errs-list")
+    page.wait_for_timeout(400)
+    taken.append(shot(page, out, "agent-errors"))
+    page.keyboard.press("Escape")
+    page.wait_for_selector(".modal.drawer", state="detached")
     return taken
 
 

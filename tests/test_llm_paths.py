@@ -14,6 +14,7 @@ def test_supervisor_chat_uses_tools_then_answers(client, monkeypatch):
     ])
     reply = client.post("/api/chat", json={"text": "how is the suite doing?"}).json()
     meta = reply.pop("meta")  # which model answered (shown under the reply)
+    assert reply.pop("thread").startswith("m_")  # the conversation on the agent bus
     assert reply == {"reply": "The suite is empty.", "mode": "llm"}
     assert (meta["provider"], meta["model"], meta["source"]) == ("anthropic", "claude-opus-5-5", "suite")
     second = fake.calls[1]["messages"]
@@ -32,8 +33,8 @@ def test_supervisor_chat_falls_back_to_rules_on_api_failure(client, monkeypatch)
 
     use_claude(client.app.state.hub, monkeypatch, Broken())
     reply = client.post("/api/chat", json={"text": "help"}).json()
-    assert reply["mode"] == "rules" and "Claude unavailable: RuntimeError" in reply["reply"]
-    assert "network down" not in reply["reply"]  # the cause, never the provider's text
+    assert reply["mode"] == "rules" and "(Claude failed (RuntimeError). Falling back" in reply["reply"]
+    assert "network down" not in reply["reply"]  # not an API answer: the error class, never an exception's text
 
 
 def test_patch_agent_code_patch_is_validated(client, wait_for, plain_repo: Path, monkeypatch):

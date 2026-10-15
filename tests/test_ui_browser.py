@@ -210,3 +210,50 @@ def test_wide_content_stays_inside_its_card_and_the_window(page):
     page.evaluate("location.hash = '#/compliance/frameworks'")
     page.wait_for_selector(".fw-verdicts .sr-only")
     assert page.evaluate("() => document.documentElement.scrollWidth") <= 390
+
+
+SEND = """(calls) => { const send = ([path, body]) => fetch(path, { method: 'POST', body: body ? JSON.stringify(body) : undefined,
+  headers: { 'Content-Type': 'application/json', 'X-Hub-Request': '1' } }).then((r) => r.status);
+  return calls.reduce((done, call) => done.then((out) => send(call).then((s) => [...out, s])), Promise.resolve([])); }"""
+
+
+def test_the_agent_bus_keeps_an_older_page_while_live_updates_come_in(page):
+    """Review: a live refresh that started while "Show older conversations" loaded dropped the older page."""
+    sign_in(page)
+    page.evaluate(SEND, [["/api/chat", {"text": "status"}]] * 55)
+    page.evaluate("location.hash = '#/bus'")
+    page.wait_for_selector("[data-act=more]")
+    first = page.locator(".bus-thread").count()
+    held = []
+    page.route(lambda url: "/api/bus/threads" in url and "before=" in url, lambda route: held.append(route))
+    page.click("[data-act=more]")
+    for _ in range(100):
+        if held:
+            break
+        page.wait_for_timeout(50)
+    assert held, "the older page was not asked for"
+    page.evaluate(SEND, [["/api/chat", {"text": "status"}]])  # a live event while the older page loads
+    page.wait_for_timeout(2000)  # a refresh is due after 800 ms
+    held[0].continue_()
+    page.wait_for_function(f"() => document.querySelectorAll('.bus-thread').length > {first}")
+    page.wait_for_timeout(1500)  # the refresh held back meanwhile lands too
+    assert page.locator(".bus-thread").count() > first == 50
+
+
+def test_an_errors_drawer_reloads_when_another_agents_error_follows_its_own(page):
+    """Review: the drawer gathered every agent's events and then looked only at the last one."""
+    sign_in(page)
+    ids = page.evaluate("""async () => { const ids = [];
+      for (const name of ['Quiet One', 'Quiet Two']) {
+        const r = await fetch('/api/agents', { method: 'POST', body: JSON.stringify({ name, provider: 'rules' }),
+          headers: { 'Content-Type': 'application/json', 'X-Hub-Request': '1' } });
+        ids.push((await r.json()).id);
+      }
+      return ids; }""")
+    assert page.evaluate(SEND, [[f"/api/agents/{ids[0]}/run", None]]) == [400]  # no standing task: an error
+    page.evaluate("location.hash = '#/agents'")
+    page.click(f"button[data-act=errors][data-id='{ids[0]}']")
+    page.wait_for_selector(".errs-item")
+    assert page.locator(".errs-item").count() == 1
+    page.evaluate(SEND, [[f"/api/agents/{ids[0]}/run", None], [f"/api/agents/{ids[1]}/run", None]])  # its, then another's
+    page.wait_for_function("() => document.querySelectorAll('.errs-item').length === 2", timeout=5_000)

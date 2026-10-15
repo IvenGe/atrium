@@ -317,6 +317,7 @@ class AuthService:
 
         dashboards.forget_user(self.hub, user.id)  # their personal dashboards and dashboard preferences
         self.hub.llm.memory.forget_user(user.id)  # their conversations with agents
+        self.hub.conversations.forget_user(user.id)  # and what of their private chat threads only they read
         tokens = self.revoke_owned_tokens(user)
         self.store.delete("users", user.id)
         self.hub.activity(principal.actor, "info", f"Deleted account {user.username}"

@@ -10,6 +10,7 @@ import * as home from "./views/home.js";
 import * as tools from "./views/tools.js";
 import * as integration from "./views/integration.js";
 import * as agents from "./views/agents.js";
+import * as bus from "./views/bus.js";
 import * as subsidiaries from "./views/subsidiaries.js";
 import * as approvals from "./views/approvals.js";
 import * as operator from "./views/operator.js";
@@ -30,6 +31,7 @@ export const APPS = [
   { route: "tools", name: "Apps", icon: "grid", color: "#7c3aed", view: tools },
   { route: "integration", name: "Integration hub", short: "Integration", icon: "plug", color: "#0ea5e9", view: integration },
   { route: "agents", name: "Agents", icon: "bot", color: "#9333ea", view: agents },
+  { route: "bus", name: "Agent bus", icon: "messages", color: "#6d28d9", view: bus }, // every conversation between agents and people
   { route: "subsidiaries", name: "Subsidiaries", icon: "building", color: "#0891b2", view: subsidiaries }, // agent teams inside tools
   { route: "approvals", name: "Approvals", icon: "checkCircle", color: "#ca8a04", view: approvals },
   { route: "operator", name: "Operator", icon: "terminal", color: "#334155", view: operator },
@@ -184,7 +186,7 @@ function renderNotifications() {
     <h4>Notifications</h4>
     <div class="notif-list">
       ${pending ? html`<a class="notif" href="#/approvals">${icon("checkCircle")}<div><b>${pending} agent action${pending > 1 ? "s" : ""} awaiting approval</b><div class="muted">Review commands and patches</div></div></a>` : ""}
-      ${items.map((a) => html`<a class="notif" href="#/agents"><span class="dot ${a.level === "error" ? "bad" : "warn"}" style="margin-top:7px"></span>
+      ${items.map((a) => html`<a class="notif" href="${a.data?.thread ? `#/bus/${encodeURIComponent(a.data.thread)}` : "#/agents"}"><span class="dot ${a.level === "error" ? "bad" : "warn"}" style="margin-top:7px"></span>
         <div><div>${a.text}</div><div class="faint">${a.actor} - ${timeAgo(a.ts)}</div></div></a>`)}
       ${!pending && !items.length ? emptyState("bell", "All quiet", "Warnings and approvals show up here.") : ""}
     </div>`);
@@ -241,6 +243,8 @@ async function openPalette() {
     { label: "Data flows", kind: "Page", icon: "flow", go: "#/integration", sub: "Integration hub" },
     { label: "Integration map", kind: "Page", icon: "plug", go: "#/integration/map", sub: "Integration hub" },
     { label: "Network segmentation", kind: "Page", icon: "network", go: "#/integration/segmentation", sub: "Integration hub" },
+    { label: "Conversations with errors", kind: "Page", icon: "alert", go: "#/bus?errors=1", sub: "Agent bus" },
+    { label: "My chats with agents", kind: "Page", icon: "chat", go: "#/bus?mine=1", sub: "Agent bus" },
     { label: "Scan scope", kind: "Page", icon: "radar", go: "#/vulnerabilities/scope", sub: "Vulnerabilities" },
     { label: "Configuration drift", kind: "Page", icon: "activity", go: "#/network/drift", sub: "Network" },
     { label: "Device changes", kind: "Page", icon: "flow", go: "#/network/changes", sub: "Network" },

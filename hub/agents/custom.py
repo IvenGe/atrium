@@ -12,6 +12,7 @@ from __future__ import annotations
 import time
 from typing import Any
 
+from ..agent_errors import recorded
 from ..approvals import sender_person
 from ..bus import Message
 from ..integration import flows
@@ -129,6 +130,10 @@ class CustomAgent(BaseAgent):
         except Exception as exc:  # recorded like any result; the scheduler must not stop
             reply = str(exc) if isinstance(exc, ValueError) else f"{exc.__class__.__name__}: {exc}"
             mode, ok = self.hub.llm.mode(self.hub.llm.resolve(self.id, "chat").provider), False
+            if not isinstance(exc, LLMUnavailable) and not recorded(exc):  # a model's failure: recorded by hub.llm
+                self.hub.agent_errors.record(self.id, subject=msg.subject, sender=msg.sender, message=msg.id,
+                                             thread=msg.thread, text=reply, error_class=exc.__class__.__name__,
+                                             kind="exception", private=msg.private)
         now = time.time()
         result = {"ok": ok, "reply": reply[:4000], "mode": mode, "trigger": trigger, "at": now,
                   "duration": round(now - started, 2), **({"skipped": True} if skipped else {})}

@@ -28,6 +28,7 @@ from fnmatch import fnmatch
 from typing import TYPE_CHECKING, Any
 from urllib.parse import quote
 
+from ..bus import TRACE
 from ..llm.usage import day_of
 from ..models import AgentConfig, Approval
 from . import teams
@@ -150,8 +151,12 @@ def emit(hub: "Hub", agent_id: str, event: str, /, *, level: str, text: str, act
 
 def toolbus_payload(hub: "Hub", agent_id: str, event: str, severity: str, summary: str) -> dict[str, Any]:
     agent = hub.agents.get(agent_id)
+    text = hub.llm.mask.text(str(summary or ""))
+    trace = TRACE.get()
+    if trace is not None and trace.private is not None:  # asked in a person's private chat: no quote of it leaves
+        text = trace.private.quotes.scrub(text)
     return {"agent_id": agent_id, "agent_name": agent.name if agent else agent_id, "event": event,
-            "severity": severity, "summary": hub.llm.mask.text(str(summary or ""))[:TOOLBUS_SUMMARY],
+            "severity": severity, "summary": text[:TOOLBUS_SUMMARY],
             "link": f"{hub.settings.public_url}/#/agents/{quote(agent_id, safe='')}/settings", "at": time.time()}
 
 

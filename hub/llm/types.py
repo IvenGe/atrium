@@ -17,11 +17,13 @@ Location = Literal["self_hosted", "third_party"]
 
 class ProviderError(RuntimeError):
     """A provider problem with a message safe to show (secrets masked). `kind`: a short machine-readable cause
-    (the exception class it came from, "http_<status>", "timeout"...); `status`: the HTTP status, when there was one."""
+    (the exception class it came from, "http_<status>", "timeout"...); `status`: the HTTP status, when there was one;
+    `provider` / `model`: the call that failed (set by the gateway, hub.llm)."""
 
-    def __init__(self, message: str, *, kind: str = "provider_error", status: int | None = None):
+    def __init__(self, message: str, *, kind: str = "provider_error", status: int | None = None,
+                 provider: str | None = None, model: str | None = None):
         super().__init__(message)
-        self.kind, self.status = kind, status
+        self.kind, self.status, self.provider, self.model = kind, status, provider, model
 
 
 class LLMUnavailable(RuntimeError):

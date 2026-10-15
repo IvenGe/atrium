@@ -1,11 +1,15 @@
-import { del, get, patch, post } from "../api.js";
+import { del, get, onEvent, patch, post } from "../api.js";
+import { session } from "../auth.js";
+import { agentIcon, busHref, chatThreadOf, errorsLabel } from "../bus-model.js";
 import { scheduleLabel } from "../flows.js";
 import { attentionText, blockedText, effectiveText, memoryText, modelLabel, retryText, severityTone } from "../llm.js";
 import { actions, badge, builtinIcon, can, colorFor, confirmDialog, field, html, icon, md, modal, options, setHTML, timeAgo, timeIn, toast } from "../ui.js";
 import { render as renderSettings } from "./agent-settings.js";
+import { openErrors } from "./bus.js";
 
 // Chat transcripts (one per agent) survive navigation inside the app; redraw belongs to the Agents page currently shown.
-const chat = { agent: "supervisor", logs: {}, busy: new Set(), redraw: null, memory: {} };
+// waiting: agent id -> the conversation its pending chat turn started (the Agent bus shows it live).
+const chat = { agent: "supervisor", logs: {}, busy: new Set(), redraw: null, memory: {}, waiting: {} };
 
 /** Forget the transcripts, e.g. on sign-out, so the next person starts fresh. */
 export function resetChat() {
@@ -13,6 +17,29 @@ export function resetChat() {
   chat.logs = {};
   chat.busy = new Set();
   chat.memory = {};
+  chat.waiting = {};
+}
+
+// While a chat turn waits for its answer, its conversation is known from the live message event of the request.
+onEvent("message", (e) => {
+  const me = session.user ? `user:${session.user.username}` : "";
+  for (const id of chat.busy) {
+    const thread = !chat.waiting[id] && chatThreadOf(e, me, id);
+    if (thread) {
+      chat.waiting[id] = thread;
+      if (chat.agent === id) chat.redraw?.();
+    }
+  }
+});
+
+/** The link from a chat turn to its conversation on the Agent bus. */
+const traceLink = (thread) => html`<a class="chat-trace" href="${busHref(thread)}">${icon("messages")}Show how the agents worked on this</a>`;
+
+/** The agent's errors as a button that opens them (red while some are not acknowledged); "" when it has none. */
+function errorsButton(a) {
+  const label = errorsLabel(a);
+  return label ? html`<button type="button" class="err-chip ${label.tone}" data-act="errors" data-id="${a.id}" title="${label.title}"
+    aria-label="${label.text} of ${a.name}: show them">${icon("alert")}${label.text}</button>` : "";
 }
 
 const GROUPS = [
@@ -20,9 +47,6 @@ const GROUPS = [
   ["Specialists", (a) => a.role === "patcher" || a.role === "operator"],
   ["App supervisors - built-in apps", (a) => a.role === "module-supervisor"],
 ];
-const ROLE_ICON = { supervisor: "bot", patcher: "wrench", operator: "terminal", "module-supervisor": "shield", "tool-supervisor": "grid", "team-agent": "bot" };
-const MODULE_ICON = { "module:assets": "box", "module:people": "contact", "module:vulns": "bug" };
-const agentIcon = (a) => MODULE_ICON[a.id] || ROLE_ICON[a.role] || "bot";
 const PROVIDER_ICON = { anthropic: "bot", openai: "bot", local: "server", rules: "sliders" };
 const MODE = { llm: "AI model", local: "local model", rules: "rules", sidecar: "the team's sidecar" };
 const DESIGNERS = [
@@ -90,7 +114,7 @@ function agentCard(a) {
       <div style="flex:1;min-width:0"><b>${a.name}</b><div class="faint" style="font-size:12px">${a.title}</div></div>
       <span class="row" style="gap:6px;font-size:12px"><span class="dot ${tone}"></span>${a.status}</span></div>
     <div class="desc">${a.description}</div>
-    <div class="meta"><span>${a.handled} handled</span>${a.errors ? html`<span style="color:var(--bad)">${a.errors} errors</span>` : ""}
+    <div class="meta"><span>${a.handled} handled</span>${errorsButton(a)}
       ${a.queued ? html`<span>${a.queued} queued</span>` : ""}<span>${a.last_active ? `active ${timeAgo(a.last_active)}` : "not active yet"}</span></div>
     <div class="row" style="justify-content:space-between">
       <span class="row" style="gap:6px;min-width:0">${providerBadge(a)}${budgetBadge(a)}
@@ -111,7 +135,7 @@ function leadRow(a) {
   return html`<div class="team-lead">
     ${builtinIcon(agentIcon(a), a.role === "tool-supervisor" ? colorFor(a.scope) : "#7c3aed", "sm")}
     <div style="flex:1 1 150px;min-width:0"><div class="row" style="gap:6px"><b>${a.name}</b>${badge("lead", "accent")}</div>
-      <div class="faint" style="font-size:12px"><span class="dot ${tone}"></span> ${a.status} - ${a.handled} handled${a.last_active ? ` - active ${timeAgo(a.last_active)}` : ""}</div></div>
+      <div class="faint" style="font-size:12px"><span class="dot ${tone}"></span> ${a.status} - ${a.handled} handled${a.last_active ? ` - active ${timeAgo(a.last_active)}` : ""} ${errorsButton(a)}</div></div>
     ${a.id === "supervisor" ? html`<button class="icon-btn sm" data-act="chat-with" data-id="${a.id}" title="Chat with ${a.name}" aria-label="Chat with ${a.name}" data-min-role="operator">${icon("chat")}</button>` : ""}
     ${coreButtons(a)}</div>`;
 }
@@ -140,7 +164,7 @@ function memberRow(a, leadId) {
       ${notGranted.length ? html`<span class="badge warn" title="Not granted: the parent does not have these (guardrail limit_to_parent_permissions)">not granted: ${notGranted.join(", ").replace(/_/g, " ")}</span>` : ""}</div>
     <div class="meta">${schedule}
       ${r ? html`<button type="button" class="chip-link" data-act="result" data-id="${a.id}">${r.ok ? "last run ok" : "last run failed"} ${timeAgo(r.at)}</button>` : html`<span>never run</span>`}
-      ${a.parent && a.parent !== leadId ? html`<span>reports to ${a.parent}</span>` : ""}</div>
+      ${a.parent && a.parent !== leadId ? html`<span>reports to ${a.parent}</span>` : ""}${errorsButton(a)}</div>
     ${a.outside_guardrails ? html`<div class="notice warn">${icon("alert")}<div style="font-size:12.5px;min-width:0">${sidecar(a) ? "Held" : "May not act"}: ${a.outside_guardrails}</div></div>` : ""}
   </div>`;
 }
@@ -209,18 +233,21 @@ function chatView(agents) {
     <div class="msgs" id="chat-msgs">${log.length ? html`${log.map((m) => html`<div class="bubble ${m.me ? "me" : "bot"}">${m.me ? m.text
         : m.untrusted ? html`<div class="sub-untrusted-label">${m.untrusted}</div><div class="sub-untrusted-text">${m.text}</div>` : md(m.text)}
         ${!m.me && (m.meta || m.mode) ? html`<div class="faint" style="font-size:11px;margin-top:4px">via ${m.meta?.model ? modelLabel({ id: m.meta.provider, label: m.meta.provider_label }, m.meta.model) : MODE[m.mode] || m.mode}${m.meta?.fallback_from ? " (fallback)" : ""}</div>` : ""}
-        ${m.limited ? html`<div class="faint" style="font-size:11px;margin-top:4px">${m.limited}</div>` : ""}</div>`)}
-        ${busy ? html`<div class="bubble bot faint">Thinking${a.id === "supervisor" ? " and asking the other agents" : ""}...</div>` : ""}`
+        ${m.limited ? html`<div class="faint" style="font-size:11px;margin-top:4px">${m.limited}</div>` : ""}
+        ${!m.me && m.thread ? traceLink(m.thread) : ""}</div>`)}
+        ${busy ? html`<div class="bubble bot"><span class="faint">Thinking${a.id === "supervisor" ? " and asking the other agents" : ""}...</span>
+          ${chat.waiting[a.id] ? traceLink(chat.waiting[a.id]) : ""}</div>` : ""}`
       : html`<div class="bubble bot">${md(greeting(a))}</div>`}</div>
     <form id="chat-form" data-min-role="operator"><input name="text" placeholder="Message ${a?.name || "the agent"}..." autocomplete="off" aria-label="Message" ${busy || off ? "disabled" : ""}>
       <button class="btn primary" ${busy || off ? "disabled" : ""} aria-label="Send">${icon("send")}</button></form>
     ${can("operator") ? "" : html`<p class="faint" style="font-size:12.5px">Chatting with agents needs the operator role.</p>`}`;
 }
 
+/** The latest messages; each opens its conversation on the Agent bus. */
 function streamView(messages) {
-  return html`${messages.slice().reverse().map((m) => html`<div class="msg-line">
+  return html`${messages.slice().reverse().map((m) => html`<a class="msg-line" href="${busHref(m.thread || m.id)}" title="Open the conversation">
     <span class="route">${m.sender} &rarr; ${m.recipient}</span><span><span class="subj">${m.subject}</span> <span class="faint">${m.kind}</span></span>
-    <span class="faint">${timeAgo(m.ts)}</span></div>`)}`;
+    <span class="faint">${timeAgo(m.ts)}</span></a>`)}`;
 }
 
 function resultModal(a, r) {
@@ -248,7 +275,8 @@ export async function render(el, ctx) {
       <div class="stack" id="agent-groups"></div>
       <div class="stack">
         <section class="card chat" id="chat-card"></section>
-        <section class="card"><header><h2>Agent conversations</h2><span class="faint" style="font-size:12px">live</span></header>
+        <section class="card"><header><h2>Agent conversations</h2><span class="row" style="gap:8px;font-size:12px"><span class="faint">live</span>
+            <a class="btn sm" href="#/bus">${icon("messages")}Open the Agent bus</a></span></header>
           <div class="scroll" style="max-height:360px" id="msg-stream"></div></section>
       </div>
     </div>`);
@@ -298,15 +326,18 @@ export async function render(el, ctx) {
     busy.add(id);
     input.value = "";
     drawChat();
+    const waiting = chat.waiting;
     try {
       const reply = await post(`/agents/${enc(id)}/chat`, { text });
-      log.push({ me: false, text: reply.reply, mode: reply.mode, meta: reply.meta, untrusted: reply.untrusted });
+      log.push({ me: false, text: reply.reply, mode: reply.mode, meta: reply.meta, untrusted: reply.untrusted, thread: reply.thread || waiting[id] });
     } catch (err) {
+      const thread = err.thread || waiting[id];
       if (err.status === 429) { // a budget or rate limit: say why, and when to try again
         const retry = retryText(err.retryAfter);
-        log.push({ me: false, text: err.message, limited: [err.code === "budget_exceeded" ? "Budget reached" : "Too many requests", retry].filter(Boolean).join(" - ") });
-      } else log.push({ me: false, text: `Error: ${err.message}` });
+        log.push({ me: false, text: err.message, thread, limited: [err.code === "budget_exceeded" ? "Budget reached" : "Too many requests", retry].filter(Boolean).join(" - ") });
+      } else log.push({ me: false, text: `Error: ${err.message}`, thread });
     } finally {
+      delete waiting[id];
       busy.delete(id);
       if (logs === chat.logs && chat.agent === id) chat.redraw?.();
     }
@@ -360,6 +391,10 @@ export async function render(el, ctx) {
       } catch (err) {
         toast(err.message, "bad");
       }
+    },
+    errors(d) {
+      const a = find(d.id);
+      if (a) openErrors(a, agents);
     },
     "chat-with"(d) {
       chat.agent = d.id;

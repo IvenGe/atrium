@@ -143,6 +143,12 @@ def test_password_policy(password, message):
     # escalation and notifications (R4-LLM stage 5): resuming a paused schedule is admin, the strip is a read
     ("POST", "/api/agents/x/schedule/resume", "admin"), ("POST", "/api/agents/agent:x/schedule/resume", "admin"),
     ("POST", "/api/agents/x/schedule/resumex", "operator"), ("GET", "/api/agents/attention", "viewer"),
+    # the Agent bus page: conversations and agents' errors (viewers read, operators acknowledge, admins clear)
+    ("GET", "/api/bus/threads", "viewer"), ("GET", "/api/bus/threads/m_0123456789", "viewer"),
+    ("GET", "/api/agents/x/errors", "viewer"), ("GET", "/api/agents/tool:x/errors", "viewer"),
+    ("POST", "/api/agents/x/errors/ae_1/ack", "operator"), ("POST", "/api/agents/x/errors/ack", "operator"),
+    ("DELETE", "/api/agents/x/errors", "admin"), ("DELETE", "/api/agents/tool:x/errors", "admin"),
+    ("DELETE", "/api/agents/x/errorsx", "operator"), ("DELETE", "/api/agents/x/y/errors", "operator"),
     ("GET", "/api/auth/sso", "admin"), ("PUT", "/api/auth/sso", "admin"), ("DELETE", "/api/auth/sso", "admin"),
     ("POST", "/api/auth/sso/test", "admin"), ("GET", "/api/auth/sso/test", "viewer"),
     ("GET", "/api/people", "viewer"), ("GET", "/api/people/p_1", "viewer"), ("GET", "/api/people/leavers", "viewer"),
@@ -263,6 +269,9 @@ def contract_role(method: str, path: str) -> str | None:
         return "admin"
     if (method, path) == ("GET", "/api/agents/{agent_id}/conversation"):
         return "operator"
+    # an agent's recorded errors: anyone reads them, operators acknowledge them, administrators clear them
+    if (method, path) == ("DELETE", "/api/agents/{agent_id}/errors"):
+        return "admin"
     # Atrium's own sign-in settings (they hold its client secret) - reading them too
     if (method, path) in {("GET", "/api/auth/sso"), ("PUT", "/api/auth/sso"), ("DELETE", "/api/auth/sso"),
                           ("POST", "/api/auth/sso/test")}:

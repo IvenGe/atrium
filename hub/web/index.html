@@ -45,6 +45,34 @@
     </div>
   </div>
 
+  <script>
+    // If the app never starts (a script failed to load or to run, e.g. a mix of old cached and new files after an
+    // update), say so instead of leaving a blank page. Inline styles: the stylesheet may be what failed.
+    (function () {
+      var shown = false;
+      function started() {
+        var loading = document.querySelector("#auth .auth-loading");
+        return document.body.classList.contains("signed-in") || !loading;
+      }
+      function show(detail) {
+        if (shown || started()) return;
+        shown = true;
+        var box = document.createElement("div");
+        box.setAttribute("role", "alert");
+        box.style.cssText = "position:fixed;inset:0;display:flex;align-items:center;justify-content:center;padding:24px;" +
+          "background:#0f172a;color:#e2e8f0;font:15px/1.5 system-ui,sans-serif;z-index:2147483647";
+        box.innerHTML = '<div style="max-width:560px"><h1 style="font-size:20px;margin:0 0 8px">Atrium could not start</h1>' +
+          "<p>Reload without the browser cache: <b>Ctrl+Shift+R</b> (Mac: <b>Cmd+Shift+R</b>). If the page stays like this, " +
+          "check the terminal where Atrium runs for errors and that the hub is still running.</p>" +
+          '<p style="opacity:.7;font-size:13px" id="boot-detail"></p></div>';
+        document.body.appendChild(box);
+        if (detail) document.getElementById("boot-detail").textContent = String(detail).slice(0, 300);
+        var watch = setInterval(function () { if (started()) { clearInterval(watch); box.remove(); } }, 1000);
+      }
+      window.addEventListener("error", function (e) { if (!started()) show(e.message || "A script failed to load."); }, true);
+      setTimeout(function () { show("The app did not start within 15 seconds."); }, 15000);
+    })();
+  </script>
   <script type="module" src="/js/app.js"></script>
 </body>
 </html>

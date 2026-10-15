@@ -41,7 +41,7 @@ class FakeClaude:
         self.json_result = json_result
         self.calls: list[dict[str, Any]] = []
         self.models_listed: list[dict[str, Any]] = []
-        self.beta = SimpleNamespace(messages=SimpleNamespace(create=self.create))
+        self.beta = SimpleNamespace(messages=SimpleNamespace(create=self.create, stream=self.stream))
         self.models = SimpleNamespace(list=self._list_models)
 
     async def create(self, **kwargs: Any) -> Any:
@@ -58,6 +58,22 @@ class FakeClaude:
         if not self.responses:
             raise AssertionError("FakeClaude has no scripted response left")
         return self.responses.pop(0)
+
+    def stream(self, **kwargs: Any) -> Any:
+        """client.beta.messages.stream(...): an async context manager whose get_final_message() is the answer
+        create() would give (the call is recorded with "stream": True)."""
+        fake = self
+
+        class Stream:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc: Any) -> None:
+                return None
+
+            async def get_final_message(self) -> Any:
+                return await fake.create(**kwargs, stream=True)
+        return Stream()
 
     def _list_models(self, **kwargs: Any) -> Any:
         self.calls.append({"models.list": kwargs})

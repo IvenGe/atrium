@@ -235,7 +235,9 @@ class OperatorAgent(BaseAgent):
                 result = CommandResult(-1, f"SSH error: {exc}", 0.0)
         result.output = mask_output(self.hub, result.output)
         record = {"target": target, "command": command, "origin": request.get("origin"), **result.as_dict()}
-        entry = self.hub.store.append("commands", {**record, "output": result.output[-4000:]})
+        # the command history and its event are everyone's: in a person's private chat thread, without quotes of it
+        entry = self.hub.shared_append("commands", {**record, "output": result.output[-4000:]},
+                                       ("target", "command", "output"), "c")
         self.hub.bus.publish("command", entry)
         level = "info" if result.exit_code == 0 else "warn"
         self.log(level, f"Ran on {target}: {command} (exit {result.exit_code}, {result.duration:.1f}s)")
