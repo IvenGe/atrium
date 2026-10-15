@@ -223,6 +223,7 @@ kbd { font-size: 10.5px; border: 1px solid var(--border-strong); border-bottom-w
   border: 1px solid var(--border-strong); color: var(--text); font-size: 12.5px; background: var(--surface);
 }
 .chip-link:hover { text-decoration: none; border-color: var(--accent-2); }
+.chip-link.bad { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 45%, transparent); }
 .chip-link .pulse { width: 8px; height: 8px; border-radius: 50%; background: var(--warn); box-shadow: 0 0 0 0 rgba(245,158,11,.6); animation: pulse 1.8s infinite; }
 @keyframes pulse { 70% { box-shadow: 0 0 0 7px rgba(245,158,11,0); } 100% { box-shadow: 0 0 0 0 rgba(245,158,11,0); } }
 .hub-link { color: var(--link); font-size: 13.5px; white-space: nowrap; }

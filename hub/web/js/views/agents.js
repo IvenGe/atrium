@@ -1,7 +1,7 @@
 import { del, get, patch, post } from "../api.js";
 import { scheduleLabel } from "../flows.js";
 import { attentionText, blockedText, effectiveText, memoryText, modelLabel, retryText, severityTone } from "../llm.js";
-import { actions, badge, builtinIcon, can, colorFor, confirmDialog, field, html, icon, md, modal, options, setHTML, timeAgo, timeIn, toast } from "../ui.js";
+import { actions, badge, builtinIcon, can, colorFor, confirmDialog, dateTime, field, html, icon, md, modal, options, setHTML, timeAgo, timeIn, toast } from "../ui.js";
 import { render as renderSettings } from "./agent-settings.js";
 
 // Chat transcripts (one per agent) survive navigation inside the app; redraw belongs to the Agents page currently shown.
@@ -32,6 +32,16 @@ const DESIGNERS = [
 ];
 const enc = encodeURIComponent;
 const chatty = (a) => a.id === "supervisor" || a.kind === "custom";
+
+/** "1 error" / "2 errors": the count on an agent card. */
+export function errorCountLabel(n) {
+  return `${n} ${n === 1 ? "error" : "errors"}`;
+}
+
+/** Error lines one agent wrote to the activity log, oldest first (the same order the log is stored in). */
+export function agentErrorLines(entries, agentId) {
+  return (entries || []).filter((e) => e && e.actor === agentId && e.level === "error");
+}
 
 /** The effective model badge: "<model> · <where it comes from>" (amber with the reason when no model can run). The
  * title and a visually hidden text hold the levels that were skipped. */
@@ -90,7 +100,7 @@ function agentCard(a) {
       <div style="flex:1;min-width:0"><b>${a.name}</b><div class="faint" style="font-size:12px">${a.title}</div></div>
       <span class="row" style="gap:6px;font-size:12px"><span class="dot ${tone}"></span>${a.status}</span></div>
     <div class="desc">${a.description}</div>
-    <div class="meta"><span>${a.handled} handled</span>${a.errors ? html`<span style="color:var(--bad)">${a.errors} errors</span>` : ""}
+    <div class="meta"><span>${a.handled} handled</span>${a.errors ? html`<button type="button" class="chip-link bad" data-act="errors" data-id="${a.id}" aria-label="Show the errors of ${a.name}">${errorCountLabel(a.errors)}</button>` : ""}
       ${a.queued ? html`<span>${a.queued} queued</span>` : ""}<span>${a.last_active ? `active ${timeAgo(a.last_active)}` : "not active yet"}</span></div>
     <div class="row" style="justify-content:space-between">
       <span class="row" style="gap:6px;min-width:0">${providerBadge(a)}${budgetBadge(a)}
@@ -221,6 +231,17 @@ function streamView(messages) {
   return html`${messages.slice().reverse().map((m) => html`<div class="msg-line">
     <span class="route">${m.sender} &rarr; ${m.recipient}</span><span><span class="subj">${m.subject}</span> <span class="faint">${m.kind}</span></span>
     <span class="faint">${timeAgo(m.ts)}</span></div>`)}`;
+}
+
+function errorsModal(a, entries) {
+  const lines = agentErrorLines(entries, a.id).slice().reverse();
+  modal({
+    title: `${a.name}: ${errorCountLabel(a.errors)}`, wide: true, submit: null, cancel: "Close",
+    body: lines.length ? html`<p class="muted" style="margin-bottom:10px">Failures since this hub started.</p>
+        <div class="feed scroll">${lines.map((e) => html`<div class="feed-item"><span class="dot bad" style="margin-top:7px"></span>
+          <div><span class="muted">${e.text}</span></div><span class="when" title="${dateTime(e.ts)}">${timeAgo(e.ts)}</span></div>`)}</div>`
+      : html`<p class="muted">${errorCountLabel(a.errors)} since this hub started. Their text is no longer in the recent activity log.</p>`,
+  });
 }
 
 function resultModal(a, r) {
@@ -373,6 +394,15 @@ export async function render(el, ctx) {
     result(d) {
       const a = find(d.id);
       if (a?.last_result) resultModal(a, a.last_result);
+    },
+    async errors(d) {
+      const a = find(d.id);
+      if (!a) return;
+      try {
+        errorsModal(a, await get("/activity?limit=500"));
+      } catch (err) {
+        toast(err.message, "bad");
+      }
     },
     propose(d) {
       const t = overview.teams.find((x) => x.team === d.team);
