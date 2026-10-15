@@ -7,6 +7,7 @@ directly.
 from __future__ import annotations
 
 import importlib
+import os
 from typing import TYPE_CHECKING, Any
 
 import httpx
@@ -20,8 +21,21 @@ REGISTRY: dict[str, str | type[Connector]] = {
     "snipeit": "hub.connectors.snipeit:SnipeItConnector",
     "ciso_assistant": "hub.connectors.ciso_assistant:CisoAssistantConnector",
     "openvas": "hub.connectors.openvas:OpenVasConnector",
+    "okta": "hub.connectors.okta:OktaConnector",
+    "keycloak": "hub.connectors.keycloak:KeycloakConnector",
+    "scim": "hub.connectors.scim:ScimConnector",
     "generic_rest": "hub.connectors.generic_rest:GenericRestConnector",
+    "opnsense": "hub.connectors.opnsense:OpnsenseConnector",
+    "pfsense": "hub.connectors.pfsense:PfsenseConnector",
+    "mikrotik": "hub.connectors.mikrotik:MikrotikConnector",
+    "fortigate": "hub.connectors.fortigate:FortigateConnector",
+    "panos": "hub.connectors.panos:PanosConnector",
+    "hostfw": "hub.connectors.hostfw:HostFirewallConnector",
+    "windows_firewall": "hub.connectors.windows_firewall:WindowsFirewallConnector",
+    "cisco_iosxe": "hub.connectors.cisco_iosxe:CiscoIosXeConnector",
 }
+if os.environ.get("HUB_DEV_FAKE_DEVICES") == "1":  # an in-memory firewall to try the Network app (never in production)
+    REGISTRY["fake_firewall"] = "hub.connectors.fake_firewall:FakeFirewallConnector"
 
 __all__ = ["REGISTRY", "Connector", "ConnectorError", "ConnectorField", "build", "catalog", "connector_class", "detect"]
 

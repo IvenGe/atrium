@@ -1,19 +1,29 @@
 // App shell: sign-in, top bar, Portals launcher, notifications, account menu, command palette, router.
 import { connectEvents, disconnectEvents, get, onEvent, post } from "./api.js";
 import { avatar, openChangePassword, openSessions, roleBadge, session, showAuth, showUnreachable } from "./auth.js";
-import { actions, appIcon, builtinIcon, can, debounce, emptyState, html, icon, modal, setHTML, timeAgo, toggleTheme } from "./ui.js";
+import { xColor, xDomains, xHref } from "./extensions.js";
+import {
+  actions, addLayer, appIcon, builtinIcon, can, closeDialogs, debounce, dialogKeys, dropLayer, emptyState, focusOrigin, html, icon, modal,
+  restoreFocus, setHTML, timeAgo, toggleTheme,
+} from "./ui.js";
 import * as home from "./views/home.js";
 import * as tools from "./views/tools.js";
 import * as integration from "./views/integration.js";
 import * as agents from "./views/agents.js";
+import * as bus from "./views/bus.js";
+import * as subsidiaries from "./views/subsidiaries.js";
 import * as approvals from "./views/approvals.js";
 import * as operator from "./views/operator.js";
+import * as network from "./views/network.js";
 import * as assets from "./views/assets.js";
+import * as people from "./views/people.js";
 import * as vulnerabilities from "./views/vulnerabilities.js";
 import * as compliance from "./views/compliance.js";
 import * as settings from "./views/settings.js";
 import * as users from "./views/users.js";
 import * as portal from "./views/portal.js";
+import * as extensions from "./views/extensions.js";
+import * as xdomain from "./views/xdomain.js";
 
 // Built-in apps of the suite (shown in the sidebar and the Portals launcher). minRole hides an app from lower roles.
 export const APPS = [
@@ -21,20 +31,28 @@ export const APPS = [
   { route: "tools", name: "Apps", icon: "grid", color: "#7c3aed", view: tools },
   { route: "integration", name: "Integration hub", short: "Integration", icon: "plug", color: "#0ea5e9", view: integration },
   { route: "agents", name: "Agents", icon: "bot", color: "#9333ea", view: agents },
+  { route: "bus", name: "Agent bus", icon: "messages", color: "#6d28d9", view: bus }, // every conversation between agents and people
+  { route: "subsidiaries", name: "Subsidiaries", icon: "building", color: "#0891b2", view: subsidiaries }, // agent teams inside tools
   { route: "approvals", name: "Approvals", icon: "checkCircle", color: "#ca8a04", view: approvals },
   { route: "operator", name: "Operator", icon: "terminal", color: "#334155", view: operator },
+  { route: "network", name: "Network", icon: "network", color: "#ea580c", view: network },
   { route: "assets", name: "Assets", icon: "box", color: "#0d9488", view: assets },
+  { route: "people", name: "People", icon: "contact", color: "#e11d48", view: people },
   { route: "vulnerabilities", name: "Vulnerabilities", icon: "bug", color: "#dc2626", view: vulnerabilities },
   { route: "compliance", name: "Compliance hub", short: "Compliance", icon: "shield", color: "#16a34a", view: compliance },
+  { route: "extensions", name: "Extensions", icon: "puzzle", color: "#c026d3", view: extensions },
   { route: "settings", name: "Settings", icon: "sliders", color: "#64748b", view: settings },
   { route: "users", name: "Users & access", short: "Users", icon: "users", color: "#db2777", view: users, minRole: "admin" },
 ];
 const ROUTES = Object.fromEntries(APPS.map((a) => [a.route, a]));
 ROUTES.portal = { route: "portal", name: "Portal", view: portal };
+ROUTES.x = { route: "x", name: "Extension app", view: xdomain }; // #/x/<domain key>[/<record id>]
+ROUTES.d = { route: "d", name: "Home", view: home }; // #/d/<dashboard id>: one dashboard tab on Home
 
-const state = { overview: null, tools: [], activity: [] };
+const state = { overview: null, tools: [], activity: [], restart: null };
 const $ = (id) => document.getElementById(id);
 let signedIn = false;
+let restartHidden = null; // the merge commit whose "restart required" banner was hidden on this page load
 
 // ---------- static chrome ----------
 function chrome() {
@@ -46,16 +64,13 @@ function chrome() {
   setHTML($("search-btn"), html`${icon("search")}<span class="label">Search...</span><kbd>Ctrl K</kbd>`);
   setHTML($("start-btn"), html`${icon("rocket")}<span class="txt">Get Started</span>`);
 
-  const nav = [
-    ...APPS.slice(0, 2),
-    { section: "Run the suite" }, ...APPS.slice(2, 6),
-    { section: "Govern" }, ...APPS.slice(6, 9),
-    { section: "" }, ...APPS.slice(9),
-  ];
-  setHTML($("nav"), nav.map((a) => a.section !== undefined
-    ? html`<div class="section">${a.section}</div>`
-    : html`<a href="#/${a.route}" data-route="${a.route}" ${a.minRole ? html`data-min-role="${a.minRole}"` : ""}>${icon(a.icon)}<span>${a.name}</span>${a.route === "approvals" ? html`<span class="count" id="nav-approvals" hidden></span>` : ""}</a>`));
+  renderNav();
 
+  $("restart-banner").addEventListener("click", (e) => {
+    if (!e.target.closest("[data-dismiss]")) return;
+    restartHidden = state.restart?.commit || null;
+    renderRestart();
+  });
   $("theme-switch").addEventListener("click", toggleTheme);
   $("menu-btn").addEventListener("click", () => $("sidebar").classList.toggle("open"));
   $("portals-btn").addEventListener("click", (e) => { e.stopPropagation(); togglePopover("portals", $("portals-btn")); });
@@ -78,6 +93,54 @@ function chrome() {
   });
 }
 
+// ---------- sidebar, extension apps, restart banner ----------
+const xApp = (d) => ({ route: `x/${d.key}`, name: d.title, icon: d.icon, color: xColor(d.key), href: xHref(d.key) });
+
+/** The sidebar: built-in apps, then one app per enabled extension domain (group "Extensions"). */
+function renderNav() {
+  const at = (route) => APPS.findIndex((a) => a.route === route); // groups by route, so adding an app keeps them right
+  const nav = [
+    ...APPS.slice(0, at("integration")),
+    { section: "Run the suite" }, ...APPS.slice(at("integration"), at("assets")),
+    { section: "Govern" }, ...APPS.slice(at("assets"), at("extensions")),
+    ...(xDomains.length ? [{ section: "Extensions" }, ...xDomains.map(xApp)] : []),
+    { section: "" }, ...APPS.slice(at("extensions")),
+  ];
+  setHTML($("nav"), nav.map((a) => a.section !== undefined
+    ? html`<div class="section">${a.section}</div>`
+    : html`<a href="${a.href || `#/${a.route}`}" data-route="${a.route}" ${a.minRole ? html`data-min-role="${a.minRole}"` : ""}>${icon(a.icon)}<span>${a.name}</span>${a.route === "approvals" ? html`<span class="count" id="nav-approvals" hidden></span>` : ""}</a>`));
+  markActive();
+}
+
+let activeRoute = "";
+function markActive() {
+  document.querySelectorAll("#nav a").forEach((a) => a.classList.toggle("active", a.dataset.route === activeRoute));
+}
+
+/** Adopt a fresh list of extension domains; the sidebar is rebuilt only when the apps changed. */
+function setXDomains(list) {
+  const sig = (l) => JSON.stringify(l.map((d) => [d.key, d.title, d.icon]));
+  if (sig(list) === sig(xDomains)) return;
+  xDomains.splice(0, xDomains.length, ...list);
+  renderNav();
+  updateBadges();
+}
+
+function renderRestart() {
+  const r = state.restart;
+  const el = $("restart-banner");
+  if (!r || !signedIn || restartHidden === r.commit) {
+    el.hidden = true;
+    return;
+  }
+  el.hidden = false;
+  setHTML(el, html`${icon("refresh")}<div style="flex:1;min-width:0"><b>Restart required.</b>
+      <span class="muted">The self-patch "${r.title}" was merged into ${r.branch || "the current branch"}${r.commit ? ` (${String(r.commit).slice(0, 10)})` : ""}${r.by ? ` by ${r.by}` : ""}.
+      Restart Atrium to load the new code - changed web pages are served already.</span></div>
+    <a class="btn sm" href="#/extensions/self-patches">Self-patches</a>
+    <button type="button" class="icon-btn sm" data-dismiss title="Hide until the next page load" aria-label="Hide">${icon("x")}</button>`);
+}
+
 // ---------- popovers ----------
 function togglePopover(id, anchor) {
   const pop = $(id);
@@ -96,7 +159,8 @@ function togglePopover(id, anchor) {
 }
 function closePopovers() {
   document.querySelectorAll(".popover.open").forEach((p) => p.classList.remove("open"));
-  document.querySelectorAll('[aria-expanded="true"]').forEach((b) => b.setAttribute("aria-expanded", "false"));
+  // only the top bar's own buttons: a page's menus (a widget's options) keep their state until they close
+  document.querySelectorAll('header.topbar [aria-expanded="true"]').forEach((b) => b.setAttribute("aria-expanded", "false"));
 }
 
 function renderPortals() {
@@ -104,6 +168,8 @@ function renderPortals() {
   setHTML($("portals"), html`
     <h4>Hub apps</h4>
     <div class="portal-grid">${builtins.map((a) => html`<a class="portal-tile" href="#/${a.route}">${builtinIcon(a.icon, a.color)}<span>${a.short || a.name}</span></a>`)}</div>
+    ${xDomains.length ? html`<h4>Extensions</h4>
+      <div class="portal-grid">${xDomains.map(xApp).map((a) => html`<a class="portal-tile" href="${a.href}" title="${a.name}">${builtinIcon(a.icon, a.color)}<span>${a.name}</span></a>`)}</div>` : ""}
     <h4>Your tools</h4>
     <div class="portal-grid">
       ${state.tools.map((t) => html`<a class="portal-tile" href="#/portal/${t.id}" title="${t.name}">${appIcon(t)}<span>${t.name}</span></a>`)}
@@ -120,7 +186,7 @@ function renderNotifications() {
     <h4>Notifications</h4>
     <div class="notif-list">
       ${pending ? html`<a class="notif" href="#/approvals">${icon("checkCircle")}<div><b>${pending} agent action${pending > 1 ? "s" : ""} awaiting approval</b><div class="muted">Review commands and patches</div></div></a>` : ""}
-      ${items.map((a) => html`<a class="notif" href="#/agents"><span class="dot ${a.level === "error" ? "bad" : "warn"}" style="margin-top:7px"></span>
+      ${items.map((a) => html`<a class="notif" href="${a.data?.thread ? `#/bus/${encodeURIComponent(a.data.thread)}` : "#/agents"}"><span class="dot ${a.level === "error" ? "bad" : "warn"}" style="margin-top:7px"></span>
         <div><div>${a.text}</div><div class="faint">${a.actor} - ${timeAgo(a.ts)}</div></div></a>`)}
       ${!pending && !items.length ? emptyState("bell", "All quiet", "Warnings and approvals show up here.") : ""}
     </div>`);
@@ -154,39 +220,79 @@ async function signOut() {
 }
 
 // ---------- command palette ----------
+let paletteOpen = false;
+
 async function openPalette() {
   if (!signedIn) return;
   closePopovers();
-  const [agentList, assetList] = await Promise.all([get("/agents").catch(() => []), get("/assets").catch(() => [])]);
+  const [agentList, assetList, peopleList] = await Promise.all([get("/agents").catch(() => []), get("/assets").catch(() => []),
+    get("/people?brief=1").then((r) => r.people).catch(() => [])]);
   const operatorActions = can("operator") ? [
     { label: "Import a tool", kind: "Action", icon: "plus", run: () => tools.openImport() },
+    { label: "Add a person", kind: "Action", icon: "contact", run: () => people.openAddPerson() },
     { label: "Run a command", kind: "Action", icon: "terminal", go: "#/operator" },
     { label: "Scan for vulnerabilities", kind: "Action", icon: "radar", go: "#/vulnerabilities" },
     { label: "Ask the Hub Supervisor", kind: "Action", icon: "chat", go: "#/agents" },
   ] : [];
+  const dashboardActions = [
+    { label: "Customize dashboard", kind: "Action", icon: "edit", run: () => home.customize(), sub: "Home" },
+    { label: "Add a widget", kind: "Action", icon: "plus", run: () => home.addWidget(), sub: "Home" },
+  ];
   const entries = [
     ...APPS.filter((a) => can(a.minRole)).map((a) => ({ label: a.name, kind: "Page", icon: a.icon, go: `#/${a.route}` })),
     { label: "Data flows", kind: "Page", icon: "flow", go: "#/integration", sub: "Integration hub" },
+    { label: "Integration map", kind: "Page", icon: "plug", go: "#/integration/map", sub: "Integration hub" },
+    { label: "Network segmentation", kind: "Page", icon: "network", go: "#/integration/segmentation", sub: "Integration hub" },
+    { label: "Conversations with errors", kind: "Page", icon: "alert", go: "#/bus?errors=1", sub: "Agent bus" },
+    { label: "My chats with agents", kind: "Page", icon: "chat", go: "#/bus?mine=1", sub: "Agent bus" },
     { label: "Scan scope", kind: "Page", icon: "radar", go: "#/vulnerabilities/scope", sub: "Vulnerabilities" },
+    { label: "Configuration drift", kind: "Page", icon: "activity", go: "#/network/drift", sub: "Network" },
+    { label: "Device changes", kind: "Page", icon: "flow", go: "#/network/changes", sub: "Network" },
+    { label: "Network changes (guardrails, maintenance windows)", kind: "Page", icon: "sliders", go: "#/settings/network", sub: "Settings" },
+    { label: "AI models and providers", kind: "Page", icon: "bot", go: "#/settings/ai", sub: "Settings" },
+    { label: "Frameworks (CyFun self-assessment)", kind: "Page", icon: "shield", go: "#/compliance/frameworks", sub: "Compliance hub" },
+    { label: "Leavers", kind: "Page", icon: "alert", go: "#/people/leavers", sub: "People" },
+    { label: "Accounts in tools", kind: "Page", icon: "key", go: "#/people/accounts", sub: "People" },
+    ...(can("admin") ? [{ label: "Sign-in & SSO", kind: "Page", icon: "shield", go: "#/settings/sso", sub: "Settings" }] : []),
+    ...xDomains.map(xApp).map((a) => ({ label: a.name, kind: "App", icon: a.icon, go: a.href, sub: "Extension" })),
+    { label: "Gaps in Atrium", kind: "Page", icon: "alert", go: "#/extensions/gaps", sub: "Extensions" },
+    { label: "Self-patches", kind: "Page", icon: "branch", go: "#/extensions/self-patches", sub: "Extensions" },
+    ...(can("admin") ? [{ label: "Upload an extension pack", kind: "Action", icon: "upload", run: () => { location.hash = "#/extensions"; setTimeout(() => extensions.openUpload(), 50); } }] : []),
     ...operatorActions,
+    ...dashboardActions,
     ...(session.user?.has_password ? [{ label: "Change password", kind: "Account", icon: "key", run: openChangePassword }] : []),
     { label: "Sessions", kind: "Account", icon: "monitor", run: openSessions },
     { label: "Sign out", kind: "Account", icon: "logout", run: signOut },
     ...state.tools.map((t) => ({ label: t.name, kind: "Tool", icon: "grid", go: `#/tools/${t.id}`, sub: t.source })),
     ...agentList.map((a) => ({ label: a.name, kind: "Agent", icon: "bot", go: "#/agents", sub: a.title })),
-    ...assetList.filter((a) => a.status !== "retired").map((a) => ({ label: a.name, kind: "Asset", icon: "box", go: "#/assets", sub: a.type })),
+    ...assetList.filter((a) => a.status !== "retired").map((a) => ({ label: a.name, kind: "Asset", icon: "box", go: `#/assets/${encodeURIComponent(a.id)}`, sub: a.type })),
+    ...peopleList.map((p) => ({ label: p.display_name, kind: "Person", icon: "user", go: `#/people/${encodeURIComponent(p.id)}`,
+      sub: [p.title, p.email, p.status !== "active" ? p.status : ""].filter(Boolean).join(" - ") })),
   ];
-  if (!signedIn) return; // signed out while loading
+  if (!signedIn || paletteOpen) return; // signed out while loading, or Ctrl+K pressed twice
+  const opener = focusOrigin(); // focus goes back there when the palette closes (review F33)
   const backdrop = document.createElement("div");
   backdrop.className = "backdrop";
-  setHTML(backdrop, html`<div class="palette" role="dialog" aria-label="Search">
+  setHTML(backdrop, html`<div class="palette" role="dialog" aria-modal="true" aria-label="Search">
     <div class="search">${icon("search")}<input placeholder="Search tools, agents, assets, pages..." aria-label="Search"><kbd>Esc</kbd></div>
     <ul role="listbox"></ul></div>`);
   document.body.append(backdrop);
+  const box = backdrop.querySelector(".palette");
   const input = backdrop.querySelector("input");
   const list = backdrop.querySelector("ul");
   let sel = 0, shown = [];
-  const close = () => backdrop.remove();
+  const onKey = (e) => { if (dialogKeys(e, backdrop, box) && e.key === "Escape") close(); };
+  const close = () => {
+    if (!paletteOpen) return;
+    paletteOpen = false;
+    backdrop.remove();
+    dropLayer(backdrop);
+    document.removeEventListener("keydown", onKey);
+    restoreFocus(opener);
+  };
+  paletteOpen = true;
+  addLayer(backdrop, close);
+  document.addEventListener("keydown", onKey);
   const choose = (entry) => { close(); if (entry.run) entry.run(); else location.hash = entry.go; };
   const draw = () => {
     const q = input.value.trim().toLowerCase();
@@ -200,7 +306,6 @@ async function openPalette() {
     if (e.key === "ArrowDown") { sel = Math.min(sel + 1, shown.length - 1); draw(); e.preventDefault(); }
     if (e.key === "ArrowUp") { sel = Math.max(sel - 1, 0); draw(); e.preventDefault(); }
     if (e.key === "Enter" && shown[sel]) choose(shown[sel]);
-    if (e.key === "Escape") close();
   });
   list.addEventListener("click", (e) => { const li = e.target.closest("li[data-i]"); if (li) choose(shown[+li.dataset.i]); });
   backdrop.addEventListener("mousedown", (e) => { if (e.target === backdrop) close(); });
@@ -225,7 +330,7 @@ function getStarted() {
       ${step(5, "Check compliance", "The GRC Supervisor maps live evidence to ISO 27001, SOC 2 and NIS2 controls.", "compliance", "Open")}
       ${can("admin") ? step(6, "Invite your team", "Give people their own accounts as viewer, operator or admin, and create API tokens for integrations.", "users", "Open") : ""}
       ${llm && !llm.available ? html`<div class="notice" style="margin-top:14px">${icon("bot")}<div><b>Agents are in rules mode.</b>
-        <span class="muted">Set <code>ANTHROPIC_API_KEY</code> before starting the hub to let them plan in plain language and write code patches with Claude.</span></div></div>` : ""}`,
+        <span class="muted">Add an AI model provider - a local model server in Settings &gt; AI providers, or Claude with <code>ANTHROPIC_API_KEY</code> set before starting the hub - to let them plan in plain language and write code patches.</span></div></div>` : ""}`,
   });
   actions(m.el, {
     import: () => { m.close(); tools.openImport(); },
@@ -260,9 +365,14 @@ function updateBadges() {
 
 async function refreshState() {
   if (!signedIn) return;
-  const [overview, toolList, activity] = await Promise.all([get("/overview"), get("/tools"), get("/activity?limit=120")]);
+  const [overview, toolList, activity, xList] = await Promise.all([get("/overview"), get("/tools"), get("/activity?limit=120"),
+    get("/x").catch(() => null)]);
   if (!signedIn) return;
   Object.assign(state, { overview, tools: toolList, activity });
+  if (xList) setXDomains(xList);
+  if (!overview.restart_required) state.restart = null;
+  else if (!state.restart) state.restart = await get("/self-patches").then((r) => r.restart_required).catch(() => null);
+  renderRestart();
   updateBadges();
   if (currentApp) renderSubbar(currentApp, currentCrumb);
 }
@@ -272,16 +382,33 @@ let cleanup = null;
 let currentApp = null;
 let currentCrumb = null;
 
-async function route() {
+// A page with unsaved changes (ctx.guardLeave) is asked before the hash moves on: false keeps the person there.
+let leaveGuard = null;
+
+async function route(e) {
   if (!signedIn) return;
+  if (leaveGuard && e?.type === "hashchange") {
+    const guard = leaveGuard;
+    if (!(await guard())) {
+      history.replaceState(null, "", new URL(e.oldURL).hash || "#/"); // back to the page, without a new route()
+      return;
+    }
+  }
+  leaveGuard = null;
   cleanup?.();
-  const [name = "", ...params] = location.hash.replace(/^#\/?/, "").split("/").map(decodeURIComponent);
+  // "#/vulnerabilities/findings?severity=high": the query of the last segment is ctx.query, not part of a param
+  const path = location.hash.replace(/^#\/?/, "");
+  const q = path.indexOf("?");
+  const query = new URLSearchParams(q < 0 ? "" : path.slice(q + 1));
+  const [name = "", ...params] = (q < 0 ? path : path.slice(0, q)).split("/").map(decodeURIComponent);
   const app = ROUTES[name] || ROUTES[""];
   currentApp = app;
   currentCrumb = null;
-  document.querySelectorAll("#nav a").forEach((a) => a.classList.toggle("active", a.dataset.route === (app.route === "portal" ? "tools" : app.route)));
+  activeRoute = app.route === "portal" ? "tools" : app.route === "x" ? `x/${params[0] || ""}` : app.route === "d" ? "" : app.route;
+  markActive();
   $("sidebar").classList.remove("open");
   closePopovers();
+  closeDialogs(); // a link inside a dialog leaves the dialog too, not only the page under it (review F34)
   renderSubbar(app);
   // A fresh <main> per page drops the previous view's delegated listeners and any late async renders.
   const old = $("main");
@@ -291,8 +418,11 @@ async function route() {
   const disposers = [];
   const ctx = {
     params,
+    query,
     state,
     live(types, fn, wait = 350) { disposers.push(onEvent(types, debounce(fn, wait))); },
+    onLeave(fn) { disposers.push(fn); }, // runs when the next page replaces this one
+    guardLeave(fn) { leaveGuard = fn; }, // async () => may the person leave (e.g. after confirming unsaved changes)?
     crumb(text) { currentCrumb = text; renderSubbar(app, text); document.title = `${text} - Atrium`; },
   };
   cleanup = () => disposers.forEach((off) => off());
@@ -306,9 +436,17 @@ async function route() {
 }
 
 // ---------- session ----------
+// Views that keep live state (the maps) re-fetch on "atrium:events-reconnected": events sent while the stream was down
+// are lost (the stream has no event ids). "atrium:events-status" {detail: {ok}} drives their "Live updates paused" chip
+// (api.js eventsOk() gives the current state).
+let streamDown = false;
+
 function startEvents() {
   connectEvents((ok, closed) => {
     $("brand-mark").style.opacity = ok ? "1" : ".45";
+    if (ok && streamDown) window.dispatchEvent(new CustomEvent("atrium:events-reconnected"));
+    if (streamDown !== !ok) window.dispatchEvent(new CustomEvent("atrium:events-status", { detail: { ok } }));
+    streamDown = !ok;
     if (!ok) checkSession(closed);
   });
 }
@@ -343,10 +481,12 @@ function leaveApp() {
   cleanup?.();
   currentApp = null;
   closePopovers();
-  document.querySelectorAll(".backdrop").forEach((b) => b.remove());
+  closeDialogs({ all: true }); // every dialog, and the page behind them is no longer inert
   document.body.classList.remove("signed-in");
   delete document.body.dataset.role;
-  Object.assign(state, { overview: null, tools: [], activity: [] });
+  Object.assign(state, { overview: null, tools: [], activity: [], restart: null });
+  renderRestart();
+  setXDomains([]);
   agents.resetChat();
   setHTML($("main"), "");
   setHTML($("user-menu"), "");
@@ -388,5 +528,11 @@ window.addEventListener("atrium:user-updated", async () => {
 // ---------- boot ----------
 chrome();
 window.addEventListener("hashchange", route);
-onEvent(["approval", "tool", "tool_removed", "activity", "asset", "grc", "risk"], debounce(() => refreshState().catch(() => {}), 500));
+onEvent(["approval", "tool", "tool_removed", "activity", "asset", "grc", "risk", "extension", "extension_removed"],
+  debounce(() => refreshState().catch(() => {}), 500));
+onEvent("restart_required", (e) => {
+  if (!signedIn || !e.data) return;
+  state.restart = e.data;
+  renderRestart();
+});
 boot();

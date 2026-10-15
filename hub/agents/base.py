@@ -7,7 +7,9 @@ import contextlib
 import time
 from typing import TYPE_CHECKING, Any
 
-from ..bus import AgentError, Message
+from ..agent_errors import recorded
+from ..bus import AgentError, Message, conversation, handling
+from ..llm.types import Limited
 
 if TYPE_CHECKING:
     from ..core import Hub
@@ -20,7 +22,12 @@ class BaseAgent:
     description = ""
     default_instructions = ""
     uses_llm = False
+    # What the agent calls a model for (hub/llm): "chat", "code", "generate"; the first is its primary purpose
+    purposes: tuple[str, ...] = ()
     max_concurrency = 4
+    # Subjects handled outside the max_concurrency slots: quick, local work that must not wait behind slow handlers
+    # (e.g. the GRC Supervisor's evaluation behind a data flow that waits minutes for a tool).
+    unthrottled_subjects: frozenset[str] = frozenset()
     # What the agent may do through the shared toolkit, and the most a member of its team may get while the
     # limit_to_parent_permissions guardrail is on (see agents/teams.py).
     permissions: tuple[str, ...] = ("read",)
@@ -35,7 +42,8 @@ class BaseAgent:
         self.model_override: str | None = None
         self.instructions_override: str | None = None
         self.handled = 0
-        self.errors = 0
+        self.errors = 0  # failures since start (hub/agent_errors.py counts them; clearing an agent's errors resets it)
+        self.last_error_at: float | None = None
         self.active = 0
         self.last_active: float | None = None
         self._resume = asyncio.Event()
@@ -48,11 +56,16 @@ class BaseAgent:
 
     @property
     def model(self) -> str:
-        return self.model_override or self.hub.prefs["model"]
+        """The model of its primary purpose: what it runs on, or - while no model can - what was chosen for it."""
+        return self.hub.llm.effective(self)["model"]
 
     @property
     def instructions(self) -> str:
-        return self.instructions_override or self.default_instructions
+        """Its main instructions: the built-in ones, or an administrator's replacement (agent settings, "replace";
+        additional instructions in "append" mode are added to every model call by hub/llm)."""
+        if self.instructions_override and self.hub.llm.config(self.id).instructions_mode == "replace":
+            return self.instructions_override
+        return self.default_instructions
 
     @property
     def team(self) -> str:
@@ -74,6 +87,7 @@ class BaseAgent:
         self._publish()
 
     def record(self) -> dict[str, Any]:
+        effective = self.hub.llm.effective(self)
         return {
             "id": self.id,
             "name": self.name,
@@ -83,16 +97,19 @@ class BaseAgent:
             "scope": self.scope,
             "status": self.status,
             "paused": self.paused,
-            "model": self.model,
+            "model": effective["model"],
             "model_override": self.model_override,
             "instructions": self.instructions,
-            "custom_instructions": self.instructions_override is not None,
+            "custom_instructions": self.instructions != self.default_instructions
+            or bool(self.uses_llm and self.hub.llm.config(self.id).extra_instructions.strip()),
             "uses_llm": self.uses_llm,
-            "llm_active": self.uses_llm and self.hub.llm.available,
+            "llm_active": self.uses_llm and bool(self.purposes) and self.hub.llm.ready(self.id, self.purposes[0]),
             "kind": self.kind,
-            "provider": "anthropic" if self.uses_llm else "rules",
-            "provider_kind": "anthropic" if self.uses_llm else "rules",
-            "provider_label": "Claude" if self.uses_llm else "Rules",
+            "provider": effective["provider"],
+            "provider_kind": effective["provider_kind"],
+            "provider_label": effective["provider_label"],
+            "provider_override": None,
+            "llm": self.hub.llm.block(self),
             "permissions": list(self.permissions),
             "effective_permissions": list(self.permissions),
             "team": self.team,
@@ -101,6 +118,8 @@ class BaseAgent:
             "enabled": not self.paused,
             "handled": self.handled,
             "errors": self.errors,
+            "errors_unacknowledged": self.hub.agent_errors.unacknowledged(self.id),  # stored, not yet acknowledged
+            "last_error_at": self.last_error_at,
             "active": self.active,
             "queued": self.inbox.qsize(),
             "last_active": self.last_active,
@@ -110,7 +129,8 @@ class BaseAgent:
 
     def start(self) -> None:
         self.hub.bus.attach(self.id, self.inbox)
-        self._loop_task = asyncio.create_task(self._loop(), name=f"agent:{self.id}")
+        with conversation(None):  # the loop belongs to no conversation: each message it handles sets its own
+            self._loop_task = asyncio.create_task(self._loop(), name=f"agent:{self.id}")
         self.setup()
 
     def setup(self) -> None:
@@ -134,26 +154,48 @@ class BaseAgent:
             task.add_done_callback(self._tasks.discard)
 
     async def _process(self, msg: Message) -> None:
+        if msg.subject in self.unthrottled_subjects:
+            await self._handle(msg)
+            return
         async with self._sem:
-            self.active += 1
-            self.last_active = time.time()
-            self._publish()
-            try:
+            await self._handle(msg)
+
+    async def _handle(self, msg: Message) -> None:
+        self.active += 1
+        self.last_active = time.time()
+        self.hub.bus.enter(msg.thread)
+        self._publish()
+        try:
+            with conversation(handling(msg)):  # what the handler asks, tells and answers joins msg's conversation
                 handler = getattr(self, "on_" + msg.subject.replace(".", "_").replace("-", "_"), None)
                 if handler is None:
                     raise AgentError(f"{self.name} does not handle '{msg.subject}'")
                 result = await handler(msg.body, msg)
-                if msg.kind == "request":
-                    await self.hub.bus.reply(msg, self.id, result or {})
-            except Exception as exc:  # an agent must survive any single failure
-                self.errors += 1
-                self.log("error", f"'{msg.subject}' failed: {exc}")
-                if msg.kind == "request":
-                    await self.hub.bus.reply(msg, self.id, {"error": str(exc) or exc.__class__.__name__})
-            finally:
-                self.active -= 1
-                self.handled += 1
-                self._publish()
+            if msg.kind == "request":
+                await self.hub.bus.reply(msg, self.id, result or {})
+        except Limited as exc:  # a reached AI budget or rate limit (logged once by the meter): the asker says why
+            if msg.kind == "request":
+                await self.hub.bus.reply(msg, self.id, {"error": str(exc), "code": exc.code,
+                                                        "retry_after": exc.retry_after})
+        except Exception as exc:  # an agent must survive any single failure
+            text, code = str(exc) or exc.__class__.__name__, getattr(exc, "code", None)
+            # the activity log is shared: secrets and credential-looking pairs masked (capped like the error record),
+            # quotes of a person's private chat removed
+            shown = self.hub.agent_errors.clean(text)
+            shown = msg.private.quotes.scrub(shown) if msg.private is not None else shown
+            self.log("error", f"'{msg.subject}' failed: {shown}", thread=msg.thread, message_id=msg.id)
+            if not recorded(exc):  # a failed model call it ends is recorded already
+                self.hub.agent_errors.record(self.id, subject=msg.subject, sender=msg.sender, message=msg.id,
+                                             thread=msg.thread, text=text, error_class=exc.__class__.__name__,
+                                             code=code if isinstance(code, str) else None, kind="exception",
+                                             private=msg.private)
+            if msg.kind == "request":
+                await self.hub.bus.reply(msg, self.id, {"error": text})
+        finally:
+            self.hub.bus.leave(msg.thread)
+            self.active -= 1
+            self.handled += 1
+            self._publish()
 
     # -- talking ---------------------------------------------------------------------
 

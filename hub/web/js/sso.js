@@ -10,7 +10,7 @@ export const STATUS = {
   needs_choice: ["choose a provider", "warn"],
   no_provider: ["no provider", ""],
 };
-const STRATEGY = { sso_connect: "native connection", sso_code: "code patch (Claude)", sso_proxy: "SSO proxy" };
+const STRATEGY = { sso_connect: "native connection", sso_code: "code patch (AI model)", sso_proxy: "SSO proxy" };
 const SETTING = {
   realm: ["Realm", "Keycloak realm the clients are registered in. Default: hub."],
   slug: ["Application slug", "authentik application of Atrium's own sign-in (its issuer is .../application/o/<slug>/). Default: atrium. Each tool gets its own application."],
@@ -43,6 +43,7 @@ export function openProviderPicker({ toolId, toolName, data, current, done }) {
       const name = providerName(data, provider);
       if (r.patches.length) toast(`${toolName} -> ${name}: patch proposed${r.superseded.length ? ", the previous one was superseded" : ""}. See Approvals.`, "ok");
       else if (r.pending) toast(`A patch for ${name} is already waiting for approval`, "info");
+      else if (r.skipped?.length) toast(`${toolName} -> ${name}: not proposed - ${r.skipped.map((s) => s.reason).join(" ")}`, "warn");
       else toast(`${toolName} signs in through ${name}`, "ok");
       done?.(r);
     },

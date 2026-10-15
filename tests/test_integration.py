@@ -70,6 +70,94 @@ def test_reassign_port_patch_picks_a_free_port():
     assert patch.manifest_update["health"]["url"] == "http://localhost:3002/health"
 
 
+def keycloak_release(root: Path) -> Path:
+    for rel, text in (("bin/kc.sh", "#!/bin/sh\n"), ("bin/kc.bat", "@echo off\r\n"), ("conf/keycloak.conf", "\n"),
+                      ("version.txt", "Keycloak - Version 26.0.5\n")):
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
+        (root / rel).write_text(text)
+    (root / "lib").mkdir()
+    (root / "lib" / "quarkus-run.jar").write_bytes(b"PK\x03\x04")
+    return root
+
+
+def on_disk(root: Path, tool_id: str) -> Tool:
+    m, _ = analyze_repo(root, tool_id, tool_id.title())
+    return Tool(id=tool_id, name=m.name, source_type="local", source=str(root), path=str(root), manifest=m)
+
+
+def test_reassign_port_moves_only_what_the_launch_can_take(tmp_path: Path):
+    """Review R7: the patch used to set PORT for every tool, closing "Port is free" while a product that reads its own
+    variable (Keycloak: KC_HTTP_PORT) or a container publishing -p 8080:8080 kept its port."""
+    from hub.integration import gapfix
+    from hub.integration.patches import Skip, plan
+
+    other = make_tool("busy", launch={"port": 8080})
+    kc = on_disk(keycloak_release(tmp_path / "keycloak"), "keycloak")
+    assert kc.manifest.launch.command == "bin/kc.sh start-dev" and kc.manifest.launch.port == 8080
+    patch = plan(kc, [other], "reassign_port", "http://x")
+    assert patch.manifest_update["launch"] == {"port": 8081, "env": {"KC_HTTP_PORT": "8081"}}
+    assert "KC_HTTP_PORT=8081" in patch.rationale and not gapfix.touches_launch(patch)  # a port number only
+    assert patch.manifest_update["api"]["base_url"] == "http://localhost:8081/admin/realms"
+
+    spring = make_tool("ledger", stack=["java", "spring"], launch={"port": 8080, "command": "./mvnw spring-boot:run"})
+    assert plan(spring, [other], "reassign_port", "http://x").manifest_update["launch"]["env"] == {"SERVER_PORT": "8081"}
+    node = make_tool("crm", stack=["node"], launch={"port": 8080, "command": "npm start"})
+    assert plan(node, [other], "reassign_port", "http://x").manifest_update["launch"]["env"] == {"PORT": "8081"}
+
+    docker = make_tool("wiki", launch={"port": 8080, "command": "docker run --rm -p 127.0.0.1:8080:3000 wiki:2"},
+                       health={"url": "http://localhost:8080/healthz"})
+    patch = plan(docker, [other], "reassign_port", "http://x")
+    assert patch.manifest_update["launch"] == {"port": 8081, "command": "docker run --rm -p 127.0.0.1:8081:3000 wiki:2"}
+    assert patch.manifest_update["health"]["url"] == "http://localhost:8081/healthz" and gapfix.touches_launch(patch)
+
+    for tool in (make_tool("stack", launch={"port": 8080, "command": "docker compose up"}),
+                 make_tool("metrics", known={"profile": "prometheus", "shape": "other"},
+                           launch={"port": 8080, "command": "./prometheus"}),
+                 make_tool("oddity", launch={"port": 8080, "command": "docker run --rm -p 9999:8080 x"})):
+        skip = plan(tool, [other], "reassign_port", "http://x")
+        assert isinstance(skip, Skip) and skip.needs_input and "Integration > Launch > Edit" in skip.reason, tool.id
+
+
+def test_health_endpoint_never_for_a_known_product_or_a_container(tmp_path: Path):
+    """Review R4: a Keycloak source checkout started with the official image got health_endpoint - a code patch to
+    source that never runs - instead of the probe and the note naming the flags to add."""
+    root = tmp_path / "keycloak"
+    root.mkdir()
+    (root / "pom.xml").write_text("<project><groupId>org.keycloak</groupId><artifactId>keycloak-parent</artifactId>"
+                                  "<version>999.0.0-SNAPSHOT</version></project>\n")
+    (root / "quarkus").mkdir()
+    (root / "quarkus" / "x.java").write_text("class X {}\n")
+    kc = on_disk(root, "keycloak")
+    kc.manifest.launch.command = "docker run --rm -p 8080:8080 quay.io/keycloak/keycloak:26.0 start-dev"
+    kc.manifest.launch.port = 8080
+    health = next(c for c in evaluate_tool(kc, []).checks if c.id == "health")
+    assert health.fix == "health_probe" and "-e KC_HEALTH_ENABLED=true" in health.detail
+    app = make_tool("shop", stack=["node"], launch={"port": 3000, "command": "docker compose up -d"})
+    app.path = str(tmp_path)
+    assert next(c for c in evaluate_tool(app, []).checks if c.id == "health").fix == "health_probe"
+    app.manifest.launch.command = "npm start"  # its own process: a code patch can add the endpoint
+    assert next(c for c in evaluate_tool(app, []).checks if c.id == "health").fix == "health_endpoint"
+
+
+def test_an_api_adapter_skeleton_is_no_api(tmp_path: Path):
+    """Review R5: approving the api_adapter skeleton set api.type rest - a pass - though it is full of TODOs and the hub
+    never runs it. It sets nothing now, and the check says what a person does next, with no fix."""
+    from hub.integration import gapfix
+    from hub.integration.compatibility import EvalContext
+    from hub.integration.patches import plan
+
+    vendor = make_tool("vendor", kind="closed", launch={"port": 9000, "command": "vendor.exe"})
+    skeleton = plan(vendor, [], "api_adapter", "http://x")
+    assert skeleton.manifest_update == {} and "TODO" in skeleton.changes[0].content
+    skeleton.status = "applied"
+    ctx = EvalContext(waiting=lambda t, check_id: gapfix.waiting(t, check_id, [skeleton]))
+    api = next(c for c in evaluate_tool(vendor, [], ctx=ctx).checks if c.id == "api")
+    assert api.status == "warn" and api.fix is None
+    assert api.detail.startswith("An API adapter skeleton was generated (adapters/vendor/api/adapter.py)")
+    vendor.manifest.api.type, vendor.manifest.api.base_url = "rest", "http://127.0.0.1:9100"  # set by a person
+    assert next(c for c in evaluate_tool(vendor, [], ctx=ctx).checks if c.id == "api").status == "pass"
+
+
 @pytest.mark.parametrize("path", ["../evil.py", "/etc/passwd", "C:/Windows/x", "a/../../b"])
 def test_patch_paths_cannot_escape(path):
     with pytest.raises(ValueError):
@@ -112,7 +200,12 @@ def test_repo_patch_lands_on_a_branch_in_a_worktree(tmp_path: Path, plain_repo: 
     assert not (plain_repo / "hub.manifest.yaml").exists()  # the user's checkout is untouched
     branches = subprocess.run([*git, "branch", "--list", "hub/*"], capture_output=True, text=True).stdout
     assert applied.branch in branches
-    assert hub.tool.manifest.native
+    # an adopted manifest waits unmerged on its branch: it is recorded where it waits, and the tool does not ship its
+    # own manifest (native) until it is merged and re-analysed - it used to claim native here (a false PASS)
+    assert not hub.tool.manifest.native
+    assert hub.tool.manifest.adopted == applied.branch
+    assert hub.tool.manifest_overrides == {"adopted": applied.branch}
+    assert "TODO" not in patch.changes[0].content
 
 
 def test_adapter_patch_updates_manifest(tmp_path: Path):

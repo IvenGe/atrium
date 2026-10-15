@@ -1,5 +1,5 @@
-"""The shared agent toolkit: the tools agents can call from a model, each tagged with the permission it needs, and the
-loops that run a conversation with Claude or a local model.
+"""The shared agent toolkit: the tools agents can call from a model, each tagged with the permission it needs. The
+provider layer (hub/llm) runs the conversation with whichever model an agent resolves to.
 
 The Hub Supervisor's chat gets every tool. A custom (team) agent gets the tools its effective permissions allow
 (see teams.effective_permissions), and an agent of a tool's team only reaches that tool through the tools that act on
@@ -10,8 +10,7 @@ agent as the sender, so the guardrails and the autonomy level apply to it.
 
 from __future__ import annotations
 
-import asyncio
-import json
+import re
 import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
@@ -25,10 +24,11 @@ if TYPE_CHECKING:
     from ..core import Hub
     from .base import BaseAgent
 
-MAX_TURNS = 12
-MAX_RESULT = 20_000
 STR = {"type": "string"}
 INT = {"type": "integer"}
+# The only hub tools a subsidiary's sidecar staff reach (POST /api/subsidiary/v1/hub-request, hub/subsidiary/
+# hubrequest.py), each forced to their own tool and narrowed further to the staff member's charter scope.
+SIDECAR_HUB_TOOLS = frozenset({"get_tool", "tool_health", "data_flows", "propose_patches", "request_code_patch"})
 
 
 @dataclass
@@ -40,6 +40,9 @@ class ToolContext:
     agent: "BaseAgent"
     permissions: frozenset[str]
     tool_scope: str | None = None  # a tool id: tools that act on one tool only reach this one
+    # the person ("user:<name>" / "token:<name>") whose chat message or manual run the agent acts on: the Operator
+    # Agent judges commands and tool starts on the hub machine by that person's role (F1)
+    requested_by: str | None = None
 
     def scoped(self, tool_id: str) -> str:
         tool_id = str(tool_id or "").strip()
@@ -49,8 +52,33 @@ class ToolContext:
             raise ValueError(f"Unknown tool id '{tool_id}'")
         return tool_id
 
+    def owns(self, source: str) -> bool:
+        """Whether this agent may change a hub record whose ``source`` is `source`. Hub-wide agents may change any; an
+        agent of a tool's team only what its tool supplied (``tool:<id>``, ``sync:<id>``, or the tool id itself, as
+        findings record it) and what an agent of its team created - never people's records or other teams'."""
+        scope = self.tool_scope
+        if not scope:
+            return True
+        if source in (scope, f"tool:{scope}", f"sync:{scope}"):
+            return True
+        from . import teams
+
+        defn = teams.get_def(self.hub, source) if source.startswith("agent:") else None
+        return defn is not None and defn.team == scope
+
+    def check_owns(self, kind: str, record_id: str, source: str) -> None:
+        if not self.owns(source):
+            raise PermissionError(f"{self.agent.name} works for the {self.tool_scope} team: it changes only {kind}s "
+                                  f"that {self.tool_scope} or its team supplied, not {kind} {record_id} ({source})")
+
     async def ask(self, recipient: str, subject: str, body: dict[str, Any] | None = None, timeout: float = 300) -> dict[str, Any]:
-        return await self.agent.ask(recipient, subject, body or {}, timeout)
+        target = self.hub.agents.get(recipient)
+        if target is not None and target.paused:  # it would answer only after it is resumed: fail now, not at the timeout
+            raise RuntimeError(f"{target.name} is paused")
+        body = dict(body or {})
+        if recipient == "operator":  # always set here, never taken from a tool's arguments
+            body["requested_by"] = self.requested_by
+        return await self.agent.ask(recipient, subject, body, timeout)
 
 
 Handler = Callable[[ToolContext, dict[str, Any]], Awaitable[Any]]
@@ -92,13 +120,51 @@ def definitions(permissions: set[str] | frozenset[str]) -> list[dict[str, Any]]:
 
 
 async def execute(ctx: ToolContext, name: str, args: dict[str, Any]) -> Any:
-    """Run one tool call - refused when the caller lacks the tool's permission."""
+    """Run one tool call - refused when the caller lacks the tool's permission or the arguments break the schema."""
     spec = TOOLS.get(name)
     if spec is None or spec.run is None:
         raise ValueError(f"Unknown tool {name}")
     if spec.permission not in ctx.permissions:
         raise PermissionError(f"{ctx.agent.name} lacks the '{spec.permission}' permission needed for {name}")
-    return await spec.run(ctx, dict(args or {}))
+    return await spec.run(ctx, validate_args(spec, args))
+
+
+def validate_args(spec: AgentTool, args: Any) -> dict[str, Any]:
+    """The arguments checked against the tool's schema here, not only by the model provider: a local model gets no
+    strict schemas, so enums (e.g. the domains read_tool_records may read) would otherwise be advisory. Unknown keys
+    are dropped, null (or "" for a non-string) means "not given" (dropped), a wrong type or a value outside an enum is
+    refused. Integers and booleans sent as strings ("5", "true") are accepted, as local models often send them."""
+    if not isinstance(args, dict):
+        raise ValueError(f"{spec.name}: the arguments must be an object")
+    return {key: _check_value(schema, args[key], f"{spec.name}.{key}") for key, schema in spec.properties.items()
+            if args.get(key) is not None and not (args[key] == "" and schema.get("type") != "string")}
+
+
+def _check_value(schema: dict[str, Any], value: Any, where: str) -> Any:
+    kind = schema.get("type")
+    if kind == "string":
+        if not isinstance(value, str):
+            raise ValueError(f"{where} must be a string")
+    elif kind == "integer":
+        if isinstance(value, str) and re.fullmatch(r"-?[0-9]{1,18}", value.strip()):
+            value = int(value)
+        elif isinstance(value, float) and value.is_integer():
+            value = int(value)
+        if not isinstance(value, int) or isinstance(value, bool):
+            raise ValueError(f"{where} must be an integer")
+    elif kind == "boolean":
+        value = {"true": True, "false": False}.get(value.strip().lower(), value) if isinstance(value, str) else value
+        if not isinstance(value, bool):
+            raise ValueError(f"{where} must be true or false")
+    elif kind == "array":
+        if not isinstance(value, list):
+            raise ValueError(f"{where} must be a list")
+        value = [_check_value(schema.get("items") or {}, item, f"{where}[]") for item in value]
+    elif kind == "object" and not isinstance(value, dict):
+        raise ValueError(f"{where} must be an object")
+    if "enum" in schema and value not in schema["enum"]:
+        raise ValueError(f"{where} must be one of: {', '.join(map(str, schema['enum']))}")
+    return value
 
 
 # --------------------------------------------------------------------------------------
@@ -118,7 +184,7 @@ async def _get_tool(ctx: ToolContext, args: dict[str, Any]) -> Any:
     tool_ = ctx.hub.get_tool(args["tool_id"])
     if tool_ is None:
         raise ValueError("Unknown tool id")
-    return {"tool": tool_.model_dump(mode="json"),
+    return {"tool": tool_.public(),  # no webhook URL or launch env values for the model or the run log (F24)
             "patches": [{"id": p.id, "title": p.title, "status": p.status} for p in ctx.hub.patches(tool_.id)]}
 
 
@@ -147,6 +213,18 @@ async def _assets(ctx: ToolContext, args: dict[str, Any]) -> Any:
     return await ctx.ask("module:assets", "summary")
 
 
+@tool("people_summary", "People in the People app by status, their accounts, and leavers who still have access or "
+      "company devices.", "read")
+async def _people(ctx: ToolContext, args: dict[str, Any]) -> Any:
+    return await ctx.ask("module:people", "summary")
+
+
+@tool("network_summary", "Network devices (firewalls, routers, switches, host firewalls): how many, how many without a "
+      "current snapshot, unexplained configuration changes (drift) and how many accept changes now. Counts only.", "read")
+async def _network(ctx: ToolContext, args: dict[str, Any]) -> Any:
+    return await ctx.ask("module:network", "summary")
+
+
 @tool("compliance_summary", "Framework scores, failing controls and top risks.", "read")
 async def _compliance(ctx: ToolContext, args: dict[str, Any]) -> Any:
     return await ctx.ask("module:grc", "summary")
@@ -157,6 +235,22 @@ async def _flows(ctx: ToolContext, args: dict[str, Any]) -> Any:
     return [{k: v for k, v in flows.public(ctx.hub, f).items() if k in (
         "id", "title", "status", "schedule_minutes", "last_run", "last_result", "failures", "job", "tool_id")}
         for f in flows.all_flows(ctx.hub, ctx.tool_scope)]
+
+
+@tool("subsidiary_summary", "The agent teams working inside tools (subsidiaries): status, flags, staff, today's usage "
+      "and approvals waiting. Counts only - never text from the tools.", "read")
+async def _subsidiaries(ctx: ToolContext, args: dict[str, Any]) -> Any:
+    from ..subsidiary import governance
+
+    out = []
+    for sub in governance.all_subsidiaries(ctx.hub):
+        if sub.status == "archived" or (ctx.tool_scope and sub.tool_id != ctx.tool_scope):
+            continue
+        summary = governance.summary(ctx.hub, sub)
+        out.append({k: summary[k] for k in ("tool_id", "tool_name", "mode", "status", "flags", "charter_version",
+                                            "staff_count", "pending_approvals", "last_seen")}
+                   | {"usage": {k: v for k, v in summary["usage"].items() if isinstance(v, (int, float, type(None)))}})
+    return {"allowed": governance.allowed(ctx.hub), "subsidiaries": out}
 
 
 @tool("vulnerability_summary", "Open findings by severity, overdue findings, scan coverage and scanners.", "read")
@@ -185,10 +279,41 @@ async def _risks(ctx: ToolContext, args: dict[str, Any]) -> Any:
              "source": r.source, "owner": r.owner} for r in risks[:50]]
 
 
+@tool("extension_records", "Records of an app an extension pack adds (alerts, tickets, incidents...). domain: its key, "
+      "or '' to list the enabled extension domains; q: text to search for or ''. At most 100, most severe first.",
+      "read", {"domain": STR, "q": STR})
+async def _extension_records(ctx: ToolContext, args: dict[str, Any]) -> Any:
+    from ..extensions import records, registry
+
+    domains = registry.active_domains(ctx.hub)
+    key = str(args.get("domain") or "").strip().removeprefix("x:")
+    if not key:
+        return [{"domain": k, "title": d.title, "fields": [f.name for f in d.fields]} for k, (d, _) in domains.items()]
+    if key not in domains:
+        raise ValueError(f"No enabled extension domain '{key}' (enabled: {', '.join(domains) or 'none'})")
+    listed = records.listing(ctx.hub, domains[key][0], q=str(args.get("q") or "")[:200], source=ctx.tool_scope or "",
+                             limit=100)
+    return [{k: r[k] for k in ("id", "title", "fields", "source", "asset", "person", "updated_at")}
+            for r in listed["records"]]
+
+
 @tool("list_approvals", "Actions waiting for human approval.", "read")
 async def _approvals(ctx: ToolContext, args: dict[str, Any]) -> Any:
     return [{"id": a.id, "title": a.title, "kind": a.kind, "requested_by": a.requested_by}
             for a in ctx.hub.approvals.list("pending")]
+
+
+@tool("escalate", "Ask a person instead of deciding yourself: it waits in Approvals, and their answer reaches you "
+      "in a later turn. Use it when one of your escalation rules applies, when you are blocked, or when you are unsure "
+      "whether an action is safe. summary: what happened and what you need (the first line is its title); severity: "
+      "info, warning or critical; needs: decision or information.", "read",
+      {"summary": STR, "severity": {"type": "string", "enum": ["info", "warning", "critical"]},
+       "needs": {"type": "string", "enum": ["decision", "information"]}})
+async def _escalate(ctx: ToolContext, args: dict[str, Any]) -> Any:
+    from . import notify
+
+    return notify.escalate(ctx.hub, ctx.agent, summary=str(args.get("summary") or ""),
+                           severity=str(args.get("severity") or "warning"), needs=str(args.get("needs") or "decision"))
 
 
 @tool("agent_teams", "The agent teams: each tool's, the hub's and the built-in apps' leads and team members.", "read")
@@ -213,11 +338,19 @@ async def _test_connection(ctx: ToolContext, args: dict[str, Any]) -> Any:
     return result
 
 
-@tool("read_tool_records", "Read records of one domain (assets, vulnerabilities, risks or controls) from a tool's own "
-      "API; returns the count and the first 20 records.", "tool_api",
-      {"tool_id": STR, "domain": {"type": "string", "enum": ["assets", "vulnerabilities", "risks", "controls"]}})
+# Not "network" (device configuration: untrusted rule descriptions and interface names) nor "frameworks" (licensed
+# requirement text): agents read those through the summaries of the apps that own them.
+READ_DOMAINS = ("assets", "vulnerabilities", "risks", "controls", "people", "accounts")
+
+
+@tool("read_tool_records", "Read records of one domain (assets, vulnerabilities, risks, controls, people or accounts) "
+      "from a tool's own API; returns the count and the first 20 records.", "tool_api",
+      {"tool_id": STR, "domain": {"type": "string", "enum": list(READ_DOMAINS)}})
 async def _read_records(ctx: ToolContext, args: dict[str, Any]) -> Any:
-    reply = await ctx.ask(f"tool:{ctx.scoped(args['tool_id'])}", "connector.pull", {"domain": args["domain"]}, timeout=600)
+    domain = args.get("domain")
+    if domain not in READ_DOMAINS:  # also checked by the schema; kept here so no caller can widen it
+        raise ValueError(f"read_tool_records reads only {', '.join(READ_DOMAINS)}")
+    reply = await ctx.ask(f"tool:{ctx.scoped(args['tool_id'])}", "connector.pull", {"domain": domain}, timeout=600)
     if reply.get("failure"):
         raise RuntimeError(reply["failure"].get("message") or "the connector failed")
     records = list(reply.get("records") or [])
@@ -327,6 +460,7 @@ async def _update_asset(ctx: ToolContext, args: dict[str, Any]) -> Any:
     asset = ctx.hub.one("assets", str(args["asset_id"]), Asset)
     if asset is None:
         raise ValueError("Unknown asset id")
+    ctx.check_owns("asset", asset.id, asset.source)
     changes = {k: args[k] for k in ("owner", "criticality", "status") if args.get(k)}
     if not changes:
         return {"changed": []}
@@ -341,8 +475,16 @@ async def _update_asset(ctx: ToolContext, args: dict[str, Any]) -> Any:
 @tool("set_scan_scope", "Put assets in (or take them out of) vulnerability-scan scope.", "assets_write",
       {"asset_ids": {"type": "array", "items": STR}, "in_scope": {"type": "boolean"}})
 async def _scope(ctx: ToolContext, args: dict[str, Any]) -> Any:
-    return await ctx.ask("module:assets", "scan.scope", {"asset_ids": list(args["asset_ids"])[:1000],
-                                                         "in_scope": bool(args["in_scope"])})
+    from ..models import Asset
+
+    asset_ids = [str(a) for a in list(args["asset_ids"])[:1000]]
+    if ctx.tool_scope:  # every asset first: nothing changes when one of them is out of reach
+        for asset_id in asset_ids:
+            asset = ctx.hub.one("assets", asset_id, Asset)
+            if asset is None:
+                raise ValueError(f"Unknown asset id '{asset_id}'")
+            ctx.check_owns("asset", asset.id, asset.source)
+    return await ctx.ask("module:assets", "scan.scope", {"asset_ids": asset_ids, "in_scope": bool(args["in_scope"])})
 
 
 @tool("sync_assets", "Ask the Asset Supervisor to sync tools and hosts into the asset register.", "assets_write")
@@ -374,6 +516,7 @@ async def _update_risk(ctx: ToolContext, args: dict[str, Any]) -> Any:
     risk = ctx.hub.one("risks", str(args["risk_id"]), Risk)
     if risk is None:
         raise ValueError("Unknown risk id")
+    ctx.check_owns("risk", risk.id, risk.source)
     changes = {k: args[k] for k in ("status", "treatment") if args.get(k)}
     if args.get("note"):
         changes["description"] = (risk.description + "\n\n" if risk.description else "") + f"{ctx.agent.name}: {args['note']}"[:4000]
@@ -392,7 +535,7 @@ async def _update_vuln(ctx: ToolContext, args: dict[str, Any]) -> Any:
     vuln = ctx.hub.one("vulnerabilities", str(args["vulnerability_id"]), Vulnerability)
     if vuln is None:
         raise ValueError("Unknown vulnerability id")
-    if ctx.tool_scope and vuln.source != ctx.tool_scope:
+    if ctx.tool_scope and not ctx.owns(vuln.source):
         raise PermissionError(f"{ctx.agent.name} only triages findings from {ctx.tool_scope}")
     status = args.get("status") or None
     if status and status != vuln.status:
@@ -438,49 +581,3 @@ async def _create_member(ctx: ToolContext, args: dict[str, Any]) -> Any:
                                        "schedule_minutes")}
     return teams.propose_members(ctx.hub, requested_by=ctx.agent.id, parent=ctx.agent.id, members=[member],
                                  designer="agent", rationale=f"Requested by {ctx.agent.name}.")
-
-
-# --------------------------------------------------------------------------------------
-# loops
-# --------------------------------------------------------------------------------------
-
-
-async def claude_loop(hub: "Hub", history: list[dict[str, Any]], *, system: str, tools: list[dict[str, Any]],
-                      model: str, run: Callable[[str, dict[str, Any]], Awaitable[Any]], max_turns: int = MAX_TURNS) -> str:
-    """Run the conversation in `history` (Anthropic message format, appended to in place) with Claude - through
-    hub.llm.create, so the hub's default model and request options apply - until it answers without a tool call."""
-    response = None
-    for _ in range(max_turns):
-        response = await hub.llm.create(system=system, messages=history, tools=tools or None, model=model, effort="medium")
-        history.append({"role": "assistant", "content": response.content})
-        if response.stop_reason == "refusal":
-            return "I can't help with that request."
-        if response.stop_reason == "pause_turn":
-            continue
-        if response.stop_reason != "tool_use":
-            break
-        calls = [b for b in response.content if b.type == "tool_use"]
-        results = await asyncio.gather(*(_claude_result(b, run) for b in calls))
-        history.append({"role": "user", "content": list(results)})
-    reply = "\n".join(b.text for b in (response.content if response else []) if b.type == "text").strip()
-    if response is not None and response.stop_reason == "max_tokens":
-        reply += "\n\n(Reply cut off - ask me to continue.)"
-    return reply or "Done."
-
-
-async def local_loop(hub: "Hub", provider: Any, history: list[dict[str, Any]], *, system: str,
-                     tools: list[dict[str, Any]], model: str, run: Callable[[str, dict[str, Any]], Awaitable[Any]],
-                     max_turns: int = MAX_TURNS) -> str:
-    """The same with a local model (OpenAI-compatible API, OpenAI message format in `history`); see llm_providers."""
-    from .. import llm_providers
-
-    return await llm_providers.chat_loop(hub, provider, model=model, system=system, history=history, tools=tools,
-                                         execute=run, max_turns=max_turns)
-
-
-async def _claude_result(block: Any, run: Callable[[str, dict[str, Any]], Awaitable[Any]]) -> dict[str, Any]:
-    try:
-        result = await run(block.name, dict(block.input or {}))
-        return {"type": "tool_result", "tool_use_id": block.id, "content": json.dumps(result, default=str)[:MAX_RESULT]}
-    except Exception as exc:
-        return {"type": "tool_result", "tool_use_id": block.id, "content": f"Error: {exc}", "is_error": True}

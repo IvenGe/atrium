@@ -1,10 +1,14 @@
 # Identity provider for the suite (development mode - not for production).
+# Keycloak 25 and later serve the health check on the management port 9000 once KC_HEALTH_ENABLED is set;
+# Keycloak 26 creates the first administrator from the KC_BOOTSTRAP_ADMIN_* variables (KEYCLOAK_ADMIN* before 26).
 services:
   keycloak:
-    image: quay.io/keycloak/keycloak:25.0
+    image: quay.io/keycloak/keycloak:26.0
     command: start-dev
     environment:
-      KEYCLOAK_ADMIN: admin
-      KEYCLOAK_ADMIN_PASSWORD: change-me
+      KC_HEALTH_ENABLED: "true"
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: change-me
     ports:
       - "8080:8080"
+      - "9000:9000"

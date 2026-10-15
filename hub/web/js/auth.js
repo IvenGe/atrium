@@ -121,9 +121,10 @@ export function showAuth(me, { notice, onDone }) {
 }
 
 function loginScreen(me, notice, onDone) {
-  const error = hashParams("login").get("error");
-  if (error) history.replaceState(null, "", "#/login");
-  const msg = error ? { text: error, tone: "bad" } : notice;
+  // Why single sign-on failed comes from the hub (a cookie only it can read), never from the URL: a link such as
+  // #/login?error=... cannot put its own text in this box. Older links' query is just dropped.
+  if (/^#\/login\?/.test(location.hash)) history.replaceState(null, "", "#/login");
+  const msg = me.sso_error ? { text: me.sso_error, tone: "bad" } : notice;
   const el = screen(html`
     <h1>Sign in</h1>
     <p class="lead">Welcome back. Sign in to manage your suite.</p>

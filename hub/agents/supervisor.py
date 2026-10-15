@@ -7,13 +7,39 @@ import re
 from pathlib import Path
 from typing import Any
 
+from ..approvals import sender_person
 from ..bus import Message
-from ..integration import connections, flows, identity, importer, strategies
-from ..integration.compatibility import evaluate_suite, suite_matrix
+from ..extensions import gaps as extension_gaps
+from ..extensions import registry as extension_registry
+from ..integration import connections, flows, gapfix, identity, importer, strategies
+from ..integration.compatibility import EvalContext, evaluate_suite, suite_matrix
 from ..integration.identity import SSO_STRATEGIES
-from ..models import AGENT_PERMISSIONS
-from . import teams, toolkit
+from ..llm import Limited, LLMUnavailable, Msg, ReplyMeta
+from ..models import AGENT_PERMISSIONS, AgentConfig, strip_url_credentials
+from . import notify, teams, toolkit
+from . import settings as agent_settings
 from .base import BaseAgent
+
+
+def fallback_note(label: str, why: str) -> str:
+    """The note above a rules answer when the model failed: the provider's own words ("Claude answered HTTP 400:
+    ...") or "<label> unavailable: <cause>" when they do not name it."""
+    why = why.rstrip(". ")
+    said = why if why.startswith(label) else f"{label} unavailable: {why}"
+    return f"{said}. Falling back to built-in commands."
+
+
+def patch_reply(name: str, result: dict[str, Any]) -> str:
+    """The rules chat's answer to `patch <tool>`: what the Patch Agent proposed, what still waits for approval and why
+    each other gap got no patch."""
+    created, pending, skipped = result.get("patches") or [], result.get("pending") or [], result.get("skipped") or []
+    text = f"The Patch Agent proposed {len(created)} patch(es) for {name}"
+    text += f"; {len(pending)} more wait for approval" if pending else ""
+    text += "; see Approvals." if created or pending else "."
+    if skipped:
+        text += "\n\nNot proposed:\n" + "\n".join(f"- {s.get('title')}: {s.get('reason')}" for s in skipped)
+    return text
+
 
 HELP = (
     "I coordinate the agents in this hub. Things I understand without an LLM:\n"
@@ -22,7 +48,8 @@ HELP = (
     "- `analyze <tool>` / `patch <tool>` / `start <tool>` / `stop <tool>`\n"
     "- `run <command>` or `run on <host>: <command>`\n"
     "- `health`, `assets`, `compliance`\n"
-    "With ANTHROPIC_API_KEY set I also understand plain language and can plan multi-step work."
+    "With an AI model (Claude, or a local model - Settings > AI providers) I also understand plain language and can "
+    "plan multi-step work."
 )
 
 SYSTEM = """You are the Hub Supervisor, the orchestrating agent of an integration hub - an "office suite" that brings
@@ -52,6 +79,7 @@ class HubSupervisor(BaseAgent):
     role = "supervisor"
     title = "Hub Supervisor"
     uses_llm = True
+    purposes = ("chat",)
     max_concurrency = 16  # imports can take minutes; chat must stay responsive
     permissions = AGENT_PERMISSIONS  # its chat gets every tool of the shared toolkit
     description = ("Orchestrates the hub. Imports tools, assigns a supervisor to each, scores how well the suite "
@@ -60,8 +88,6 @@ class HubSupervisor(BaseAgent):
 
     def __init__(self, hub):
         super().__init__(hub, "supervisor", "Hub Supervisor")
-        self._history: list[dict[str, Any]] = []
-        self._chat_lock = asyncio.Lock()
 
     # -- tool lifecycle ----------------------------------------------------------------
 
@@ -69,7 +95,7 @@ class HubSupervisor(BaseAgent):
         tool = self.hub.get_tool(body["tool_id"])
         if tool is None:
             raise ValueError("Unknown tool")
-        self.log("info", f"Importing {tool.name} from {tool.source_type}: {tool.source}")
+        self.log("info", f"Importing {tool.name} from {tool.source_type}: {strip_url_credentials(tool.source)}")
         tool = await importer.materialize(self.hub, tool, body.get("branch"))
         if tool.status == "error":
             self.log("error", f"Import of {tool.name} failed: {tool.error}")
@@ -101,9 +127,22 @@ class HubSupervisor(BaseAgent):
             await self._sso_sweep(exclude=tool_id)
         if teams.classify(self.hub, tool):  # a known complex tool (SIEM, GRC, inventory, scanner) gets a team proposal
             await self.tell(f"tool:{tool_id}", "team.propose", {"auto": True})
+        await self.extend_for(tool)
         await self.tell("module:assets", "sync")
         await self.tell("module:grc", "evaluate")
         return {"tool_id": tool_id, "score": tool.report.score, "level": tool.report.level, "gaps": len(gaps)}
+
+    async def extend_for(self, tool) -> list[dict[str, Any]]:
+        """Hub-side gaps (a data domain Atrium does not model, no connector, unknown SSO) go to the Patch Agent, which
+        extends Atrium - once per tool (see PatchAgent.on_extension_propose)."""
+        if not extension_registry.allowed(self.hub) or extension_registry.covers_tool(self.hub, tool.id):
+            return []
+        gaps = [g.as_dict() for g in extension_gaps.detect(self.hub, tool)]
+        if gaps:
+            self.log("info", f"Atrium lacks {len(gaps)} thing(s) for {tool.name}: " + "; ".join(g["title"] for g in gaps)
+                     + " - asking the Patch Agent to extend Atrium", tool_id=tool.id)
+            await self.tell("patcher", "extension.propose", {"tool_id": tool.id, "auto": True})
+        return gaps
 
     async def on_tool_patched(self, body: dict[str, Any], msg: Message) -> dict[str, Any]:
         self.reevaluate()
@@ -160,6 +199,20 @@ class HubSupervisor(BaseAgent):
         await self.propose_teams()
         return {"proposed": [flows.public(self.hub, f) for f in created]}
 
+    async def on_flows_create(self, body: dict[str, Any], msg: Message) -> dict[str, Any]:
+        """A data flow a person drew on the integration map (POST /api/flows): the planner's rules decide whether it
+        may exist (strategies.create_flow); a proposal is requested by this agent, so approving it enables the flow
+        here. The proposer is the sender when a person sent it - never a name in the body."""
+        actor = sender_person(msg.sender) or msg.sender
+        try:
+            flow, approval = strategies.create_flow(
+                self.hub, domain=str(body.get("domain") or ""), source=str(body.get("source") or ""),
+                target=str(body.get("target") or ""), action=body.get("action"),
+                schedule_minutes=body.get("schedule_minutes"), options=body.get("options") or {}, actor=actor)
+        except strategies.FlowRefused as exc:
+            return {"refused": exc.as_dict()}
+        return {"flow": flows.public(self.hub, flow), "approval_id": approval.id if approval else None}
+
     async def propose_teams(self) -> list[str]:
         """Tools with a connection get an agent team proposal - once (see ToolSupervisor.on_team_propose)."""
         asked = []
@@ -170,6 +223,8 @@ class HubSupervisor(BaseAgent):
         return asked
 
     async def on_approval_decided(self, body: dict[str, Any], msg: Message) -> None:
+        if notify.answered(self.hub, self.id, body):  # a person answered its escalation: for its next chat turn
+            return
         approval = self.hub.approvals.get(body["approval_id"])
         if approval is not None and approval.kind == "agent_team":  # members it proposed from chat
             teams.settle(self.hub, approval.id, bool(body.get("approved")))
@@ -177,13 +232,26 @@ class HubSupervisor(BaseAgent):
         if approval is None or approval.kind != "flow":
             return
         flow = flows.get(self.hub, approval.payload.get("flow_id", ""))
+        conflict = None
         if flow is not None and flow.status == "proposed":
-            flow.status = "enabled" if body.get("approved") else "disabled"
+            # the loop rule: never enable a pull next to an enabled push of the same domain for a tool (or the reverse)
+            conflict = strategies.loop_conflict(flows.all_flows(self.hub), *flows.key(flow), exclude=flow.id,
+                                                states=("enabled",)) if body.get("approved") else None
+            flow.status = "enabled" if body.get("approved") and conflict is None else "disabled"
             flow.approval_id = None
+            if not body.get("approved"):  # a rejection stays binding: enabling the flow later proposes it again
+                flow.rejected = approval.id
             flows.save(self.hub, flow)
-            self.log("info", f"Data flow {flow.status}: {flow.title}", flow_id=flow.id)
+            if conflict is not None:
+                self.log("warn", f"Data flow not enabled: {flow.title} - "
+                         + strategies.loop_message(self.hub, flow.domain, flow.source, flow.target), flow_id=flow.id)
+            else:
+                self.log("info", f"Data flow {flow.status}: {flow.title}", flow_id=flow.id)
         if body.get("approved"):  # a rejected proposal stays "rejected"; the flow stays as a disabled record
-            self.hub.approvals.complete(approval.id, flow is not None, {"status": flow.status if flow else "removed"})
+            result: dict[str, Any] = {"status": flow.status if flow else "removed"}
+            if conflict is not None:
+                result.update(error="flow_conflict", flow_id=conflict.id)
+            self.hub.approvals.complete(approval.id, flow is not None and conflict is None, result)
 
     async def on_flow_failed(self, body: dict[str, Any], msg: Message) -> dict[str, Any]:
         """A flow failed again: after REPAIR_AFTER consecutive failures, ask the Patch Agent for a repair (once - until
@@ -213,8 +281,27 @@ class HubSupervisor(BaseAgent):
         return {"checked": len(results), "results": results}
 
     def reevaluate(self) -> None:
+        """Score every tool again. The API check counts a connector that reaches the tool (strategies.connector_api),
+        an open check whose applied patch has no effect yet says why instead of offering a fix (gapfix.waiting: code
+        on an unmerged branch, an API skeleton nothing runs), and each open check's detail ends with what happened to
+        the patches tried for it (gapfix.history_note: the patches and stored outcomes are read once per tool, not per
+        check)."""
         tools = self.hub.tools()
-        for tool_id, report in evaluate_suite(tools, identity.load_prefs(self.hub)).items():
+        prefs = identity.load_prefs(self.hub)
+        patches: dict[str, list] = {}
+        for patch in self.hub.patches():
+            patches.setdefault(patch.tool_id, []).append(patch)
+        stored: dict[str, dict] = {}
+
+        def note(tool, check):
+            if tool.id not in stored:
+                stored[tool.id] = (self.hub.store.get(gapfix.OUTCOMES, tool.id) or {}).get("fixes") or {}
+            return gapfix.history_note(self.hub, tool, check, others=[t for t in tools if t.id != tool.id],
+                                       items=patches.get(tool.id, []), stored=stored[tool.id], idp=prefs)
+
+        ctx = EvalContext(builtin_api=lambda t: strategies.connector_api(self.hub, t), note=note,
+                          waiting=lambda t, check_id: gapfix.waiting(t, check_id, patches.get(t.id, [])))
+        for tool_id, report in evaluate_suite(tools, prefs, ctx).items():
             tool = self.hub.get_tool(tool_id)
             if tool and tool.manifest:
                 tool.report = report
@@ -224,33 +311,54 @@ class HubSupervisor(BaseAgent):
 
     async def on_chat(self, body: dict[str, Any], msg: Message) -> dict[str, Any]:
         text = str(body.get("text", "")).strip()
-        if self.hub.llm.available:
+        person = msg.sender if sender_person(msg.sender) else None  # commands asked for in chat are judged by them (F1)
+        res = self.hub.llm.resolve(self.id, "chat")
+        if res.ready:
+            config = self.hub.llm.config(self.id)
+            self.hub.llm.start_run(self.id, config)  # its chats per hour (RateLimited: HTTP 429)
             try:
-                return {"reply": await self._llm_chat(text), "mode": "llm"}
-            except Exception as exc:  # fall back to rules on any API failure
-                note = f"(Claude unavailable: {exc.__class__.__name__}. Falling back to built-in commands.)\n\n"
-                return {"reply": note + await self._rules_chat(text), "mode": "rules"}
-        return {"reply": await self._rules_chat(text), "mode": "rules"}
+                reply, meta, notice = await self._llm_chat(text, msg.sender, person, config)
+                return {"reply": f"{notice}\n\n{reply}" if notice else reply, "mode": self.hub.llm.mode(meta.provider),
+                        "meta": meta.model_dump(mode="json")}
+            except Limited:
+                raise  # a person asked: they see why (HTTP 429), not a rules answer
+            except Exception as exc:  # fall back to rules on any provider failure, saying why
+                note = f"({fallback_note(res.provider_label, self.hub.llm.explain(exc))})\n\n"
+                return {"reply": note + await self._rules_chat(text, person), "mode": "rules"}
+        return {"reply": await self._rules_chat(text, person), "mode": "rules"}
 
     async def on_chat_reset(self, body: dict[str, Any], msg: Message) -> dict[str, Any]:
-        async with self._chat_lock:
-            self._history = []
+        memory = self.hub.llm.memory
+        memory.reset(self.id, memory.person_of(msg.sender))
         return {"ok": True}
 
-    async def _llm_chat(self, text: str) -> str:
-        async with self._chat_lock:
-            if len(self._history) > 80:  # start a fresh conversation instead of editing history
-                self._history = []
-            self._history.append({"role": "user", "content": text})
-            ctx = toolkit.ToolContext(self.hub, self, frozenset(self.permissions))
+    async def _llm_chat(self, text: str, sender: str, person: str | None = None,
+                        config: AgentConfig | None = None) -> tuple[str, ReplyMeta, str | None]:
+        """One turn of the sender's own conversation (memory is per person, review D7; how long it lasts is the
+        agent's memory setting): (reply, what it ran on, a notice when the conversation started afresh)."""
+        memory = self.hub.llm.memory
+        key = memory.person_of(sender)
+        config = config or self.hub.llm.config(self.id)
+        res = self.hub.llm.resolve(self.id, "chat")
+        async with memory.turn(self.id, key, res.provider, res.model, config.memory) as turn:
+            turn.messages.append(Msg(role="user", text=text))
+            ctx = toolkit.ToolContext(self.hub, self, frozenset(self.permissions), requested_by=person)
+            tools, allowed = agent_settings.allowed_definitions(self, ctx.permissions, config)
 
             async def run(name: str, args: dict[str, Any]) -> Any:
+                agent_settings.check_allowed(self, name, ctx.permissions, allowed)
                 return await toolkit.execute(ctx, name, args)
 
-            return await toolkit.claude_loop(self.hub, self._history, system=self.instructions,
-                                             tools=toolkit.definitions(ctx.permissions), model=self.model, run=run)
+            system, answers = notify.with_answers(self.hub, self.id, self.instructions)  # answers to its escalations
+            found = await self.hub.llm.converse(self.id, "chat", system=system, history=turn.messages,
+                                                tools=tools, run=run, trigger="chat", person=key if person else None,
+                                                resolved=res, config=config)
+            if found is None:
+                raise LLMUnavailable("no AI model")
+            notify.clear_answers(self.hub, self.id, answers)  # the model read them
+            return found[0], found[1], turn.notice
 
-    async def _rules_chat(self, text: str) -> str:
+    async def _rules_chat(self, text: str, person: str | None = None) -> str:
         low = text.lower().strip()
         if not low or low in ("help", "?", "hi", "hello"):
             return HELP
@@ -285,9 +393,10 @@ class HubSupervisor(BaseAgent):
                 return f"{tool.name}: score {result['score']} ({result['level']}), {result['gaps']} gap(s)."
             if verb == "patch":
                 result = await self.ask("patcher", "propose", {"tool_id": tool.id}, timeout=600)
-                return f"The Patch Agent proposed {len(result['patches'])} patch(es) for {tool.name}; see Approvals."
-            result = await self.ask(f"tool:{tool.id}", verb, timeout=60)
-            return f"{verb.capitalize()} {tool.name}: {result.get('status', result)}"
+                return patch_reply(tool.name, result)
+            result = await self.ask(f"tool:{tool.id}", verb, {"requested_by": person}, timeout=60)
+            return (f"{verb.capitalize()} {tool.name}: {result.get('status', result)}"
+                    + (f" - {result['reason']}" if result.get("reason") else ""))
         match = re.match(r"^(?:run|exec)\s+(?:on\s+([\w.-]+)\s*:\s*)?(.+)$", text.strip(), re.IGNORECASE | re.DOTALL)
         if match:
             host_name, command = match.group(1), match.group(2).strip()
@@ -297,7 +406,8 @@ class HubSupervisor(BaseAgent):
                 if host is None:
                     return f"I don't know a host called '{host_name}'."
                 target = host.id
-            result = await self.ask("operator", "run", {"target": target, "command": command, "reason": "Requested in chat"}, timeout=900)
+            result = await self.ask("operator", "run", {"target": target, "command": command, "reason": "Requested in chat",
+                                                        "requested_by": person}, timeout=900)
             if result["status"] == "done":
                 return f"Exit code {result['exit_code']}:\n```\n{result['output'][-3000:]}\n```"
             return f"{result['status'].replace('_', ' ').capitalize()}: {result.get('reason', '')}"
@@ -315,4 +425,4 @@ class HubSupervisor(BaseAgent):
             frameworks = "\n".join(f"- {f['name']}: {f['score']}%" for f in s["frameworks"])
             failing = "\n".join(f"- {c}" for c in s["failing_controls"][:6]) or "- none"
             return f"{frameworks}\n\nFailing or partial controls:\n{failing}"
-        return "I'm running without an LLM, so I only understand a few commands.\n\n" + HELP
+        return "I'm running without an AI model, so I only understand a few commands.\n\n" + HELP

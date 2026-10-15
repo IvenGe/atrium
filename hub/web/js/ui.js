@@ -29,7 +29,8 @@ export function setHTML(el, content) {
   return el;
 }
 
-const ICONS = {
+// Read-only outside this file (the canvas builds <symbol> definitions from it).
+export const ICONS = {
   home: '<path d="M3 11 12 4l9 7"/><path d="M5 10v10h14V10"/><path d="M10 20v-5h4v5"/>',
   grid: '<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>',
   search: '<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>',
@@ -78,10 +79,40 @@ const ICONS = {
   bug: '<rect x="8" y="7" width="8" height="13" rx="4"/><path d="M10 7a2 2 0 0 1 4 0M12 11v9M8 13H4M20 13h-4M8 17.5l-3 1.5M16 17.5l3 1.5M8.5 9.5 5 7.5M15.5 9.5l3.5-2"/>',
   radar: '<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><path d="m12 12 6.5-6.5"/><circle cx="12" cy="12" r="1"/>',
   flow: '<path d="M4 8h14M14 4l4 4-4 4M20 16H6M10 12l-4 4 4 4"/>',
+  contact: '<rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="9" cy="11" r="2.5"/><path d="M5.5 16.5a3.5 3.5 0 0 1 7 0M15 10h3M15 13.5h3"/>',
+  puzzle: '<path d="M10 4.5a2 2 0 1 1 4 0V6h4a1 1 0 0 1 1 1v4h-1.5a2 2 0 1 0 0 4H19v4a1 1 0 0 1-1 1h-4v-1.5a2 2 0 1 0-4 0V20H6a1 1 0 0 1-1-1v-4h1.5a2 2 0 1 0 0-4H5V7a1 1 0 0 1 1-1h4z"/>',
+  ticket: '<path d="M4 6h16v3.5a2.5 2.5 0 0 0 0 5V18H4v-3.5a2.5 2.5 0 0 0 0-5z"/><path d="M14 6v2.5M14 11v2M14 15.5V18"/>',
+  upload: '<path d="M12 15V4M7 9l5-5 5 5"/><path d="M4 15v4a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-4"/>',
+  download: '<path d="M12 4v11M7 10l5 5 5-5"/><path d="M4 15v4a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-4"/>',
+  undo: '<path d="M4 9h10a6 6 0 0 1 0 12H8"/><path d="m8 5-4 4 4 4"/>',
+  merge: '<circle cx="6" cy="5" r="2"/><circle cx="6" cy="19" r="2"/><circle cx="18" cy="12" r="2"/><path d="M6 7v10M6 7c0 4 6 5 10 5"/>',
+  clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+  mail: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 7 9 6 9-6"/>',
+  calendar: '<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/>',
+  database: '<ellipse cx="12" cy="5.5" rx="8" ry="2.5"/><path d="M4 5.5v13c0 1.4 3.6 2.5 8 2.5s8-1.1 8-2.5v-13M4 12c0 1.4 3.6 2.5 8 2.5s8-1.1 8-2.5"/>',
+  tag: '<path d="M3 12V4h8l10 10-8 8z"/><circle cx="7.5" cy="8.5" r="1.3"/>',
+  flag: '<path d="M5 21V4M5 4h11l-2 4 2 4H5"/>',
+  network: '<rect x="9" y="3" width="6" height="5" rx="1"/><rect x="3" y="16" width="6" height="5" rx="1"/><rect x="15" y="16" width="6" height="5" rx="1"/><path d="M12 8v4M6 16v-4h12v4"/>',
+  firewall: '<rect x="3" y="5" width="18" height="14" rx="1.5"/><path d="M3 9.7h18M3 14.3h18M9 5v4.7M15 5v4.7M6 9.7v4.6M12 9.7v4.6M18 9.7v4.6M9 14.3V19M15 14.3V19"/>',
+  router: '<rect x="3" y="13" width="18" height="7" rx="1.5"/><path d="M7 16.5h.01M11 16.5h.01M15 16.5h3M12 13V9.5"/><path d="M8.8 7.3a4.5 4.5 0 0 1 6.4 0M6.3 4.8a8 8 0 0 1 11.4 0"/>',
+  switch: '<rect x="2.5" y="7" width="19" height="10" rx="1.5"/><path d="M6 11h1.5M9.5 11H11M13 11h1.5M16.5 11H18M6 14h12"/>',
+  expand: '<path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/>',
+  keyboard: '<rect x="2.5" y="6" width="19" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M8 14h8"/>',
+  more: '<circle cx="5" cy="12" r="1.3"/><circle cx="12" cy="12" r="1.3"/><circle cx="19" cy="12" r="1.3"/>',
+  grip: '<circle cx="9" cy="6" r="1.2"/><circle cx="15" cy="6" r="1.2"/><circle cx="9" cy="12" r="1.2"/><circle cx="15" cy="12" r="1.2"/><circle cx="9" cy="18" r="1.2"/><circle cx="15" cy="18" r="1.2"/>',
+  resize: '<path d="M20 11v9h-9M20 20 11 11M15 20l5-5"/>',
+  table: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 10h18M3 15h18M9 10v10"/>',
+  building: '<path d="M4 21V4.5a1 1 0 0 1 1-1h9a1 1 0 0 1 1 1V21"/><path d="M15 9h4a1 1 0 0 1 1 1v11M2.5 21h19M8 8h3M8 12h3M8 16h3"/>',
+  messages: '<path d="M4 4h11a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1H8l-4 3z"/><path d="M16 8h4a1 1 0 0 1 1 1v11l-3-3h-7a1 1 0 0 1-1-1v-3"/>',
 };
 
 export function icon(name, extra = "") {
   return raw(`<svg class="i ${extra}" viewBox="0 0 24 24" aria-hidden="true">${ICONS[name] || ICONS.grid}</svg>`);
+}
+
+/** An icon placed inside an <svg> drawing, at (x, y) with an explicit size. */
+export function glyph(name, x, y, size = 18) {
+  return raw(`<svg class="glyph" x="${+x}" y="${+y}" width="${+size}" height="${+size}" viewBox="0 0 24 24" aria-hidden="true">${ICONS[name] || ICONS.grid}</svg>`);
 }
 
 // ---------- formatting ----------
@@ -152,10 +183,29 @@ export function colorFor(text) {
   return PALETTE[h % PALETTE.length];
 }
 
+// A manifest's ui.color goes into a style attribute: only a hex colour may, or "#000;position:fixed;inset:0" would add
+// declarations (a layer over the whole page). The server drops anything else too (models.PortalUi).
+export const HEX_COLOR = /^#(?:[0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})$/i;
+const GRAPHEMES = typeof Intl !== "undefined" && Intl.Segmenter ? new Intl.Segmenter(undefined, { granularity: "grapheme" }) : null;
+
+/** The first `n` characters a person sees (an emoji with joiners counts as one). */
+export function graphemes(text, n) {
+  const s = String(text ?? "");
+  return (GRAPHEMES ? [...GRAPHEMES.segment(s)].map((g) => g.segment) : [...s]).slice(0, n).join("");
+}
+
+/** The colour and glyph of a tool's tile: its manifest's when they are a hex colour and one or two characters. */
+export function tileLook(tool) {
+  const name = String(tool.name || tool.id || "?");
+  const ui = tool.manifest?.ui || {};
+  const color = typeof ui.color === "string" && HEX_COLOR.test(ui.color) ? ui.color : colorFor(tool.id || name);
+  const own = typeof ui.icon === "string" ? ui.icon.trim() : "";
+  const glyph = own && !/\s/.test(own) ? graphemes(own, 2) : graphemes(name.trim(), 1).toUpperCase() || "?";
+  return { color, glyph };
+}
+
 export function appIcon(tool, size = "") {
-  const name = tool.name || tool.id || "?";
-  const color = tool.manifest?.ui?.color || colorFor(tool.id || name);
-  const glyph = tool.manifest?.ui?.icon || name.trim()[0]?.toUpperCase() || "?";
+  const { color, glyph } = tileLook(tool);
   const live = tool.running ? html`<i class="live" style="background:var(--ok)"></i>` : "";
   return html`<div class="app-icon ${size}" style="background:${color}">${glyph}${live}</div>`;
 }
@@ -172,7 +222,9 @@ const TONES = {
   low: "", medium: "info", high: "warn", critical: "bad", manual: "", na: "",
   enabled: "ok", disabled: "", fixed: "ok", in_progress: "info", accepted: "", false_positive: "", info: "",
   running: "info", awaiting_approval: "warn", failing: "bad", available: "info", needs_decision: "warn",
-  needs_claude: "", unavailable: "", not_needed: "", withdrawn: "",
+  needs_model: "", needs_claude: "", unavailable: "", not_needed: "", withdrawn: "",
+  suspended: "warn", terminated: "bad",
+  merged: "ok", pull_request: "info", testing: "info", stale: "warn",
 };
 export function badge(text, tone) {
   const t = tone ?? TONES[text] ?? "";
@@ -188,10 +240,13 @@ export function ring(score, size = 46) {
   const r = (size - 6) / 2;
   const c = 2 * Math.PI * r;
   const pct = score == null ? 0 : Math.max(0, Math.min(100, score));
+  const label = String(score ?? "-");
+  // "100" in a small ring: a smaller font, so the number stays inside the circle (13px otherwise)
+  const font = label.length > 2 ? Math.min(13, Math.round(size * 0.27)) : 13;
   return html`<div class="ring" style="width:${size}px;height:${size}px" title="Integration score">
     <svg width="${size}" height="${size}"><circle cx="${size / 2}" cy="${size / 2}" r="${r}" stroke="var(--border-strong)" stroke-width="5" fill="none"/>
     <circle cx="${size / 2}" cy="${size / 2}" r="${r}" stroke="${scoreTone(score)}" stroke-width="5" fill="none" stroke-linecap="round"
-      stroke-dasharray="${(c * pct) / 100} ${c}"/></svg><b>${score ?? "-"}</b></div>`;
+      stroke-dasharray="${(c * pct) / 100} ${c}"/></svg><b style="font-size:${font}px">${label}</b></div>`;
 }
 
 /** Very small markdown renderer for chat replies and policies (input is escaped first). */
@@ -233,36 +288,157 @@ export function diffView(diff) {
 
 // ---------- toasts ----------
 
-export function toast(message, tone = "info") {
+export function toast(message, tone = "info", link = null) {
   let box = document.querySelector(".toasts");
   if (!box) { box = document.createElement("div"); box.className = "toasts"; document.body.append(box); }
   const el = document.createElement("div");
   el.className = `toast ${tone}`;
   el.setAttribute("role", "status");
   el.textContent = message;
+  if (link?.href?.startsWith("#/")) { // an in-app link after the text ("Added to My dashboard. Open")
+    const a = Object.assign(document.createElement("a"), { href: link.href, textContent: link.text || "Open" });
+    el.append(" ", a);
+  }
   box.append(el);
   setTimeout(() => el.remove(), 4200);
 }
 
 // ---------- modals ----------
 
+// The element that opened each open modal (by backdrop): a dialog opened from inside another one falls back to it.
+const OPENERS = new WeakMap();
+
+/** A selector that finds an element again after its view re-rendered (live updates replace the DOM): id or data-*. */
+function locator(el) {
+  if (!el) return null;
+  if (el.id) return `#${CSS.escape(el.id)}`;
+  const attrs = ["act", "id", "key", "tab"].filter((k) => el.dataset?.[k] !== undefined)
+    .map((k) => `[data-${k}="${CSS.escape(el.dataset[k])}"]`).join("");
+  return attrs ? `${el.tagName.toLowerCase()}${attrs}` : null;
+}
+
+/** After a modal closed: focus the first opener still on the page (or its re-rendered twin), unless focus already moved
+ *  somewhere else or another dialog is open that the opener is not part of (that dialog keeps the focus). */
+function returnFocus(candidates) {
+  const active = document.activeElement;
+  if (active && active !== document.body && active.isConnected) return;
+  const top = [...document.querySelectorAll(".backdrop")].at(-1);
+  const target = candidates.map(([el, sel]) => (el?.isConnected ? el : sel ? document.querySelector(sel) : null))
+    .find((c) => c && (!top || top.contains(c)));
+  target?.focus({ preventScroll: true });
+}
+
+/** The element that has the focus now, as a candidate for returnFocus() (null when it is the page itself). */
+export function focusOrigin() {
+  const active = document.activeElement;
+  const el = (active instanceof HTMLElement || active instanceof SVGElement) && active !== document.body ? active : null;
+  return [el, locator(el)];
+}
+export const restoreFocus = (...candidates) => returnFocus(candidates);
+
+// ---------- dialog layers ----------
+// Every open dialog (a modal or the command palette) is a .backdrop on <body>. While one is open, everything else on
+// <body> is inert - the top bar, the sidebar, the page and any dialog below the top one - so Tab, a click or a screen
+// reader cannot reach what the dialog covers (review F33). Navigating to another page closes them (review F34).
+
+const LAYERS = new Map(); // backdrop -> {close, sticky}
+const INERT_MARK = "data-dialog-inert"; // set on what this module made inert, so only that is undone
+
+/** Makes everything on <body> but the top-most dialog inert, or nothing when no dialog is open. */
+export function syncInert() {
+  const top = [...document.querySelectorAll("body > .backdrop")].at(-1) || null;
+  for (const el of document.body.children) {
+    const cover = Boolean(top) && el !== top && !el.classList.contains("toasts") && el.tagName !== "SCRIPT";
+    if (cover && !el.inert) { el.inert = true; el.setAttribute(INERT_MARK, ""); }
+    else if (!cover && el.hasAttribute(INERT_MARK)) { el.inert = false; el.removeAttribute(INERT_MARK); }
+  }
+}
+
+/** Registers an open dialog's backdrop (already on <body>). `close` must remove it and call dropLayer(). */
+export function addLayer(backdrop, close, { sticky = false } = {}) {
+  LAYERS.set(backdrop, { close, sticky });
+  syncInert();
+}
+
+export function dropLayer(backdrop) {
+  LAYERS.delete(backdrop);
+  syncInert();
+}
+
+/** Closes the open dialogs, top-most first: on navigation every one but those that only their buttons may close
+ *  (a token shown once), on sign-out (`all`) every one. */
+export function closeDialogs({ all = false } = {}) {
+  for (const [backdrop, layer] of [...LAYERS].reverse()) {
+    try {
+      if (all || !layer.sticky) layer.close();
+    } catch (err) {
+      console.error(err); // a failing onClose must not stop the page change
+      if (all) backdrop.remove();
+    }
+    if (!backdrop.isConnected) LAYERS.delete(backdrop);
+  }
+  if (all) document.querySelectorAll("body > .backdrop").forEach((b) => b.remove());
+  syncInert();
+}
+
+/** Keeps Tab and Shift+Tab inside `box` (for browsers without `inert`, and so focus never rests outside it). */
+function trapTab(e, box) {
+  const items = [...box.querySelectorAll('a[href], button, input, select, textarea, [tabindex]:not([tabindex="-1"])')]
+    .filter((el) => !el.matches(":disabled") && el.getClientRects().length && el.closest("[inert]") === null);
+  if (!items.length) { e.preventDefault(); return; }
+  const first = items[0], last = items.at(-1), active = document.activeElement;
+  if (!box.contains(active)) { e.preventDefault(); (e.shiftKey ? last : first).focus(); }
+  else if (e.shiftKey && active === first) { e.preventDefault(); last.focus(); }
+  else if (!e.shiftKey && active === last) { e.preventDefault(); first.focus(); }
+}
+
+/** Keydown handling every dialog shares: Tab stays inside the top-most one. */
+export function dialogKeys(e, backdrop, box) {
+  const top = [...document.querySelectorAll("body > .backdrop")].at(-1) === backdrop;
+  if (top && e.key === "Tab") trapTab(e, box);
+  return top;
+}
+
 /**
  * Opens a modal. `body` is html``; returns {el, close}. onSubmit receives FormData when the form is submitted.
  * `minRole`: below that role the body is read-only and the submit button hidden. `sticky`: only the buttons close it.
+ * `drawer`: a panel along the right edge instead of a centred box (same keyboard and focus handling).
+ * `onClose` runs exactly once however the modal closes (buttons, Esc, backdrop, submit); focus then returns to the
+ * element that opened it.
  */
-export function modal({ title, body, submit = "Save", cancel = "Cancel", wide = false, onSubmit, footer, minRole, sticky = false }) {
+export function modal({ title, body, submit = "Save", cancel = "Cancel", wide = false, drawer = false, onSubmit, footer, minRole, sticky = false, onClose }) {
   const readOnly = !can(minRole);
+  // HTML or SVG (a map item): anything focusable that is not the page itself
+  const active = document.activeElement;
+  const opener = (active instanceof HTMLElement || active instanceof SVGElement) && active !== document.body ? active : null;
+  const outer = opener?.closest(".backdrop");
+  const fallback = outer ? OPENERS.get(outer) : null;
   const backdrop = document.createElement("div");
-  backdrop.className = "backdrop";
+  const mine = [opener, locator(opener)];
+  if (opener) OPENERS.set(backdrop, mine);
+  backdrop.className = drawer ? "backdrop side" : "backdrop";
   const foot = footer ?? html`${cancel ? html`<button type="button" class="btn" data-close>${readOnly && cancel === "Cancel" ? "Close" : cancel}</button>` : ""}
       ${submit ? html`<button type="submit" class="btn primary" ${minRole ? html`data-min-role="${minRole}"` : ""}>${submit}</button>` : ""}`;
-  setHTML(backdrop, html`<form class="modal ${wide ? "wide" : ""}" role="dialog" aria-modal="true" novalidate>
+  setHTML(backdrop, html`<form class="modal ${wide ? "wide" : ""} ${drawer ? "drawer" : ""}" role="dialog" aria-modal="true" novalidate>
     <header><h2>${title}</h2><button type="button" class="icon-btn" data-close aria-label="Close">${icon("x")}</button></header>
     <div class="body">${readOnly ? html`<fieldset class="plain" disabled>${body}</fieldset>` : body}</div>
     <footer>${foot}</footer></form>`);
   const form = backdrop.querySelector("form");
-  const close = () => { backdrop.remove(); document.removeEventListener("keydown", onKey); };
-  const onKey = (e) => { if (e.key === "Escape" && !sticky) close(); };
+  let closed = false;
+  const close = () => {
+    if (closed) return;
+    closed = true;
+    backdrop.remove();
+    dropLayer(backdrop); // the page (or the dialog below) is usable again before focus returns to it
+    document.removeEventListener("keydown", onKey);
+    try {
+      onClose?.();
+    } finally {
+      returnFocus([mine, fallback || [null, null]]);
+    }
+  };
+  // Esc closes the top-most dialog only (a dialog opened from another one closes first); Tab stays inside it
+  const onKey = (e) => { if (dialogKeys(e, backdrop, form) && e.key === "Escape" && !sticky) close(); };
   document.addEventListener("keydown", onKey);
   backdrop.addEventListener("mousedown", (e) => { if (e.target === backdrop && !sticky) close(); });
   backdrop.querySelectorAll("[data-close]").forEach((b) => b.addEventListener("click", close));
@@ -281,17 +457,20 @@ export function modal({ title, body, submit = "Save", cancel = "Cancel", wide = 
     }
   });
   document.body.append(backdrop);
-  setTimeout(() => form.querySelector("input:not([type=hidden]):not([hidden]):not(:disabled), select:not(:disabled), textarea:not(:disabled)")?.focus(), 30);
+  addLayer(backdrop, close, { sticky });
+  // focus moves into the dialog: its first field, else its first footer button (Cancel before a destructive action)
+  setTimeout(() => (form.querySelector("input:not([type=hidden]):not([hidden]):not(:disabled), select:not(:disabled), textarea:not(:disabled)")
+    || form.querySelector("footer button:not(:disabled)") || form.querySelector("[data-close]"))?.focus(), 30);
   return { el: form, close };
 }
 
 export function confirmDialog(title, text, action = "Confirm") {
   return new Promise((resolve) => {
-    const m = modal({
+    modal({
       title, body: html`<p>${text}</p>`, submit: action,
       onSubmit: () => resolve(true),
+      onClose: () => resolve(false), // Cancel, Esc or a click outside (after a submit the promise is settled already)
     });
-    m.el.querySelectorAll("[data-close]").forEach((b) => b.addEventListener("click", () => resolve(false)));
   });
 }
 

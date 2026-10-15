@@ -87,3 +87,41 @@ class SecretBox:
         except (InvalidToken, ValueError, UnicodeError) as exc:
             raise SecretError("A stored secret cannot be decrypted - HUB_SECRET_KEY or secret.key changed since it "
                               "was saved; enter the secret again.") from exc
+
+
+def hub_secret_values(hub) -> list[str]:
+    """Every secret value this hub holds, for masking text that leaves its control (command output that viewers and
+    models read, audit packs): its settings and credential-looking environment variables, the Fernet key(s) - from
+    HUB_SECRET_KEY or the key file - and the stored credentials it can decrypt (tool connections, AI model
+    providers, the SSO client secret, the subsidiaries' signing keys) and the tools' launch secrets
+    (adapters/<id>/launch/secrets.env) distinctive enough to search for (launch_secrets.maskable)."""
+    from .extensions.selfpatch import known_secrets
+    from .integration import connections, launch_secrets
+    from . import llm_providers
+
+    values = list(known_secrets(hub))
+    raw_keys = hub.settings.secret_key or ""
+    try:
+        if not raw_keys:
+            raw_keys = (hub.settings.data_dir / KEY_FILE).read_text(encoding="ascii")
+    except (OSError, UnicodeError):
+        pass
+    values += [k.strip() for k in raw_keys.split(",") if k.strip()]
+    stored: list[str] = []
+    for conn in connections.all_connections(hub):
+        stored += list(conn.secrets.values())
+    stored += [p.api_key for p in llm_providers.all_providers(hub) if p.api_key]
+    sso = hub.store.get("settings", "sso") or {}
+    if sso.get("client_secret"):
+        stored.append(sso["client_secret"])
+    for token in stored:
+        try:
+            values.append(hub.secrets.decrypt(token))
+        except (SecretError, TypeError, AttributeError):  # a credential that cannot be decrypted cannot leak either
+            continue
+    from .subsidiary import governance as subsidiaries
+    from .subsidiary import keys as subsidiary_keys
+    values += subsidiary_keys.secret_values(hub)  # the subsidiaries' signing keys
+    values += subsidiaries.credential_values(hub)  # and the dedicated credentials of API-only subsidiaries
+    values += launch_secrets.mask_values(hub.settings.workspace)  # a tool's launch secrets (never plain words)
+    return [v for v in values if isinstance(v, str) and len(v) >= 4]

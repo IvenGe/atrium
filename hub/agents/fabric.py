@@ -45,6 +45,9 @@ class FlowOwner(BaseAgent):
     async def execute(self, flow: Flow, body: dict[str, Any], msg: Message) -> dict[str, Any]:
         raise NotImplementedError
 
+    def owns(self, domain: str) -> bool:
+        return domain in self.flow_domains
+
     # -- talking to the tool's supervisor ------------------------------------------------
 
     async def connector(self, tool_id: str, op: str, body: dict[str, Any], timeout: float = 900) -> dict[str, Any]:
@@ -106,10 +109,19 @@ class FlowOwner(BaseAgent):
         flow = flows.get(self.hub, flow_id)
         if flow is None:
             raise ValueError(f"Unknown flow '{flow_id}'")
-        if flow.domain not in self.flow_domains:
+        if not self.owns(flow.domain):
             raise ValueError(f"{self.name} does not own {flow.domain} flows")
         trigger = str(body.get("trigger") or ("manual" if msg.sender.startswith(("user:", "token:")) else "agent"))
         async with self._flow_locks.setdefault(flow_id, asyncio.Lock()):
+            current = flows.get(self.hub, flow_id)
+            refused = current is not None and not current.job and flows.never_approved(self.hub, current)
+            if refused or (trigger != "manual" and current is not None and current.status != "enabled" and not current.job):
+                # disabled (or still proposed) since the run was asked for - e.g. queued while this agent was paused:
+                # only a person running it by hand runs it now (F25). A turned-down proposal never runs.
+                current.running = None
+                flows.save(self.hub, current)
+                detail = "its proposal was turned down" if refused else f"the flow is {current.status}"
+                return {"ok": False, "skipped": True, "detail": f"Not run: {detail}", "flow": self._public(flow_id)}
             flow = flows.begin(self.hub, flow_id)
             started = time.time()
             try:

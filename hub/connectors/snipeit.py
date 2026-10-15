@@ -18,6 +18,10 @@ transformers, the CustomField model) and its API docs, October 2026:
   (which pushes write as well), and from primary_ip of newer sync adapters. MACs come from MAC-format fields, fields
   named "MAC ..." and primary_mac.
 
+- with "Read user accounts" on, GET /api/v1/users (same paging) is read as the "accounts" domain: username, email,
+  name, activated (may sign in) and last_login ({"datetime", "formatted"}); hardware keeps the assigned user's
+  username and email (facts assigned_username / assigned_email) so the hub links devices to people.
+
 Assumptions (not verifiable without an instance): GET /api/v1/users/me answers the user object itself (a "payload"
 wrapper is accepted too); an older update-of-a-deleted-asset answer is recognised by its English message.
 """
@@ -163,6 +167,9 @@ class SnipeItConnector(Connector):
         ConnectorField(name="asset_tags", label="Asset tags of new hardware", kind="select", default="hub", choices=[
             {"value": "hub", "label": "The hub asset id"},
             {"value": "auto", "label": "Snipe-IT's auto-increment (turn it on in Snipe-IT's settings)"}]),
+        ConnectorField(name="read_accounts", label="Read user accounts (People app)", kind="bool",
+                       help="Read Snipe-IT's users as accounts, so leavers who can still sign in are found. The "
+                            "token's account must be allowed to view users."),
     ]
     capabilities = {"assets": {"read", "write"}}
     system_of_record = {"assets"}
@@ -171,6 +178,12 @@ class SnipeItConnector(Connector):
     @classmethod
     def detect(cls, tool) -> int:
         return cls.name_score(tool, ("snipe-it", "snipeit"), ("assets.inventory",))
+
+    def domains(self) -> dict[str, list[str]]:
+        out = super().domains()
+        if self.config.get("read_accounts"):
+            out["accounts"] = ["read"]
+        return out
 
     @classmethod
     def validate_config(cls, config: dict[str, Any]) -> dict[str, Any]:
@@ -342,8 +355,21 @@ class SnipeItConnector(Connector):
         }
 
     def _check_domain(self, domain: str, op: str) -> None:
+        if domain == "accounts" and op == "read" and self.config.get("read_accounts"):
+            return
         if domain != "assets":
-            raise self.error(f"Snipe-IT cannot {op} {domain} (only assets)")
+            raise self.error(f"Snipe-IT cannot {op} {domain} (only assets" + (
+                ")" if op != "read" else ", and accounts with 'Read user accounts' on)"))
+
+    @staticmethod
+    def to_account(row: dict[str, Any]) -> dict[str, Any]:
+        """One user row as a canonical account record."""
+        name = _text(row.get("name")) or " ".join(filter(None, (_text(row.get("first_name")), _text(row.get("last_name")))))
+        activated = row.get("activated")
+        return {"external_id": str(row.get("id")), "login": _text(row.get("username")), "email": _text(row.get("email")),
+                "display_name": name or _text(row.get("username")),
+                "active": not row.get("deleted_at") and (activated in (True, 1, "1", "true") or activated is None),
+                "last_login": _date(row.get("last_login"))}
 
     # -- operations ----------------------------------------------------------------
 
@@ -389,6 +415,15 @@ class SnipeItConnector(Connector):
             writable = await self._write_check(client, checks)
             if writable:
                 domains.setdefault("assets", []).append("write")
+            if self.config.get("read_accounts"):
+                try:
+                    _, users = await self._list(client, "/users", {"sort": "id", "order": "asc"}, what="list users",
+                                                limit=1, pages=1)
+                    checks.append(check("Read user accounts", True, f"{users} user account(s)"))
+                    domains["accounts"] = ["read"]
+                except ConnectorError as exc:
+                    checks.append(check("Read user accounts", False, exc.message + " - allow the token's account to "
+                                                                                  "view users, or switch this off"))
         return self._result(checks, domains, facts)
 
     def _address_check(self, rows: list[dict[str, Any]]) -> dict[str, Any]:
@@ -468,6 +503,10 @@ class SnipeItConnector(Connector):
 
     async def pull(self, domain: str, since: float | None = None) -> list[dict[str, Any]]:
         self._check_domain(domain, "read")
+        if domain == "accounts":
+            async with self.client() as client:
+                rows, _ = await self._list(client, "/users", {"sort": "id", "order": "asc"}, what="list users")
+            return [self.to_account(row) for row in rows if row.get("id") is not None]
         async with self.client() as client:
             rows, _ = await self._list(client, "/hardware", {"sort": "id", "order": "asc"}, what="list hardware")
         return [self.to_record(row) for row in rows if row.get("id") is not None]

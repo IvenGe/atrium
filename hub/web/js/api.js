@@ -23,6 +23,8 @@ export async function api(path, { method = "GET", body } = {}) {
     const err = new Error(message || `${res.status} ${res.statusText}`);
     err.status = res.status;
     err.code = code;
+    err.retryAfter = data?.retry_after ?? detail?.retry_after ?? null; // a 429: seconds until a call may start again
+    err.thread = res.headers.get("X-Atrium-Thread"); // the conversation on the agent bus the request started, if any
     throw err;
   }
   return data;
@@ -37,6 +39,10 @@ export const del = (path) => api(path, { method: "DELETE" });
 // ---------- live events ----------
 const listeners = new Set();
 let source = null;
+let streamOk = false;
+
+/** Whether the event stream is open right now. */
+export const eventsOk = () => streamOk;
 
 /** Subscribe to event types (array or "*"); returns an unsubscribe function. */
 export function onEvent(types, fn) {
@@ -50,8 +56,12 @@ export function connectEvents(onStatus) {
   disconnectEvents();
   const es = new EventSource("/api/events");
   source = es;
-  es.onopen = () => onStatus?.(true, false);
-  es.onerror = () => { if (source === es) onStatus?.(false, es.readyState === EventSource.CLOSED); };
+  es.onopen = () => { streamOk = true; onStatus?.(true, false); };
+  es.onerror = () => {
+    if (source !== es) return;
+    streamOk = false;
+    onStatus?.(false, es.readyState === EventSource.CLOSED);
+  };
   es.onmessage = (e) => {
     let event;
     try { event = JSON.parse(e.data); } catch { return; }
@@ -67,4 +77,5 @@ export function connectEvents(onStatus) {
 export function disconnectEvents() {
   source?.close();
   source = null;
+  streamOk = false;
 }

@@ -168,7 +168,8 @@ class VulnerabilitySupervisor(FlowOwner):
     async def _start(self, flow: Flow, asset_ids: list[str], hosts: list[str], approval_id: str | None = None) -> dict[str, Any]:
         name = flow.options.get("scan_name") or f"Atrium scan {time.strftime('%Y-%m-%d %H:%M', time.gmtime())}"
         started = time.time()
-        reply = await self.connector(flow.tool_id, "action", {"name": "scan", "params": {"hosts": hosts, "name": name}})
+        reply = await self.connector(flow.tool_id, "action", {"name": "scan", "params": {"hosts": hosts, "name": name},
+                                                              "approval_id": approval_id})
         job_id = (reply.get("result") or {}).get("job_id")
         if not job_id:
             raise FlowFailure("The scanner started no scan (its answer has no job id).")

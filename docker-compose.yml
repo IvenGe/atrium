@@ -14,7 +14,9 @@ services:
     init: true  # reaps the processes of the tools the hub runs
     restart: unless-stopped
     ports:
-      # Only this machine can connect. To let others in, put a TLS reverse proxy in front (docs/AUTH.md).
+      # Only this machine can connect. To let others in, put a TLS reverse proxy in front (docs/AUTH.md) and set
+      # HUB_TRUSTED_PROXIES in .env to the address the hub sees it on (the bridge gateway, e.g. 172.18.0.1, or the
+      # proxy container's network): otherwise every client shares the proxy's address for sign-in throttling.
       - "127.0.0.1:8710:8710"
     env_file:
       - path: .env

@@ -75,7 +75,9 @@ def test_hub_auth_control():
     states = by_id(evaluate_controls(snapshot(users=[admin], oidc_enabled=True), {}))
     assert states["HB-AC-4"].status == "pass"
     control = CONTROLS_BY_ID["HB-AC-4"]
-    assert control.refs == {"ISO27001": "A.5.15 / A.8.5", "SOC2": "CC6.1", "NIS2": "21(2)(i) / 21(2)(j)"}
+    assert control.refs == {"ISO27001": "A.5.15 / A.8.5", "SOC2": "CC6.1", "NIS2": "21(2)(i) / 21(2)(j)",
+                            "CyFun2025": "PR.AA-01.1 / PR.AA-05.1 / PR.AA-05.3 / PR.AA-05.4 / PR.AA-03.2",
+                            "CyFun2023": "PR.AC-1.1 / PR.AC-4.1 / PR.AC-4.3 / PR.AC-4.4"}
     assert control.risk == ("Hub accounts are protected by passwords only", 2, 4)
 
 
@@ -96,7 +98,8 @@ def test_dormant_accounts_control():
     assert partial.status == "partial" and "never" in partial.detail and "gone" in partial.detail
     assert status(never, gone, off).status == "fail"
     control = CONTROLS_BY_ID["HB-AC-5"]
-    assert control.refs == {"ISO27001": "A.5.18", "SOC2": "CC6.2", "NIS2": "21(2)(i)"}
+    assert control.refs == {"ISO27001": "A.5.18", "SOC2": "CC6.2", "NIS2": "21(2)(i)",
+                            "CyFun2025": "PR.AA-01.3 / PR.AA-05.1", "CyFun2023": "PR.AC-1.3"}
     assert control.risk == ("Dormant accounts could be misused", 2, 3)
 
 
@@ -117,7 +120,9 @@ def test_scan_coverage_control():
     assert partial.status == "partial" and "db" in partial.detail and "nas" in partial.detail
     assert state(stale, never).status == "fail"
     control = CONTROLS_BY_ID["HB-VM-2"]
-    assert control.refs == {"ISO27001": "A.8.8", "SOC2": "CC7.1", "NIS2": "21(2)(e)"}
+    assert control.refs == {"ISO27001": "A.8.8", "SOC2": "CC7.1", "NIS2": "21(2)(e)",
+                            "CyFun2025": "ID.RA-01.1 / ID.RA-01.2 / ID.RA-01.6 / ID.RA-01.5 / ID.IM-03.9",
+                            "CyFun2023": "DE.DP-5.2 / ID.RA-1.1 / ID.RA-1.2"}
     assert control.risk == ("Vulnerabilities on unscanned assets go unnoticed", 3, 4)
 
 
@@ -140,3 +145,32 @@ def test_vulnerability_sla_control():
     assert failing.status == "fail" and "1 critical/high finding(s) past their SLA" in failing.detail
     assert vuln("critical", -1).overdue and not vuln("critical", -1, "accepted").overdue and not vuln("low", 1).overdue
     assert CONTROLS_BY_ID["HB-VM-3"].risk == ("Known critical vulnerabilities remain exploitable", 4, 5)
+
+
+def test_cloud_ai_providers_in_use_are_suppliers_of_hb_sc_1():
+    """HB-SC-1 counts the cloud AI providers agents use next to SaaS tools: each needs a supplier owner and a terms
+    review within 12 months."""
+    now = time.time()
+    saas = Tool(id="crm", name="CRM", source_type="saas", source="https://crm.example.com")
+    owned = Asset(id="1", name="CRM", source="tool:crm", owner="sales")
+
+    def ai(owner: str = "", reviewed: float | None = None) -> dict:
+        return {"id": "openai", "name": "OpenAI", "owner": owner, "reviewed_at": reviewed, "allow_cloud": True}
+
+    def sc1(**kw):
+        return by_id(evaluate_controls(snapshot(**kw), {}))["HB-SC-1"]
+
+    assert sc1().status == "na"  # neither SaaS nor a cloud AI provider in use
+    assert sc1(tools=[saas], assets=[owned]).detail == "All 1 SaaS services with an owner comply."  # unchanged
+    state = sc1(tools=[saas], assets=[owned], ai_providers=[ai()])
+    assert state.status == "partial" and "AI provider OpenAI has no supplier owner" in state.detail
+    assert "Missing: AI provider OpenAI" in state.detail
+    assert sc1(tools=[saas], ai_providers=[ai()]).status == "fail"  # neither the SaaS tool nor the provider owned
+    state = sc1(tools=[saas], assets=[owned], ai_providers=[ai("j.doe", now - 10 * 86400)])
+    assert state.status == "pass"
+    assert any(e.startswith("AI provider: OpenAI - owner j.doe, terms reviewed ") for e in state.evidence)
+    state = sc1(ai_providers=[ai("j.doe", now - 400 * 86400)])  # the review is too old
+    assert state.status == "fail" and "terms review is older than 12 months" in state.detail
+    state = sc1(ai_providers=[ai("j.doe")])
+    assert state.status == "fail" and "terms were never reviewed" in state.detail
+    assert "cloud AI model providers" in CONTROLS_BY_ID["HB-SC-1"].description

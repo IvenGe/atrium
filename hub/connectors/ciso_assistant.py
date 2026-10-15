@@ -18,8 +18,12 @@ serializers.py, pagination.py, permissions.py; iam/models.py, iam/urls.py) and i
 - assets: type PR (primary) | SP (supporting), read as the label; no address fields, so the hub writes them into the
   description ("Addresses: ...") and reads that line back. In asset and applied control descriptions the hub only
   rewrites the block below its marker line; what a person wrote above it stays;
-- applied controls: status to_do | in_progress | on_hold | active | deprecated | "--" (undefined); an evidence links
-  to applied controls through its applied_controls list;
+- applied controls: status to_do | in_progress | on_hold | active | degraded | deprecated | "--" (undefined; recent
+  versions add degraded, older ones refuse it - so a hub "partial" is sent as in_progress unless the connection asks for
+  degraded); an evidence links to applied controls through its applied_controls list; an evidence keeps its
+  attachments, links and observations in revisions, created only when one of them is sent - the hub sends an
+  observation with the check result, so the evidence gets a revision (and goes to in_review) instead of staying an
+  empty draft;
 - risk scenarios: treatment open | mitigate | accept | avoid | transfer | cancelled; current_proba / current_impact
   read as {"value": index into the matrix's probability / impact list, "name", ...}, -1 when not rated;
 - vulnerabilities (recent versions only - test() reports whether the instance has them): severity -1 undefined,
@@ -30,6 +34,33 @@ serializers.py, pagination.py, permissions.py; iam/models.py, iam/urls.py) and i
   other hub record is linked to, instead of failing on a duplicate; finding names carry host and port;
 - permissions are checked per object and folder (RBACPermissions.has_permission is always true), so write access
   cannot be probed without writing: the first push shows it.
+
+Frameworks (domain ``frameworks``, read; shapes in grcmodel.py), from the community source (core/models.py, views.py,
+library/views.py, main branch, read 2026-10-09):
+
+- frameworks/ lists the loaded frameworks (library frameworks live in the root folder, so they are read unfiltered);
+  requirement-nodes/?framework=<id> their nodes (filters: framework and urn only - nodes are matched by ref_id here,
+  since some URNs do not follow the ref_id); compliance-assessments/ (folder-filtered) the assessments, with
+  requirement-assessments/?compliance_assessment=<id> one row per node (result not_assessed | partially_compliant |
+  non_compliant | compliant | not_applicable, score, documentation_score) and global_score/ their scores;
+  requirement-mapping-sets/ the mapping sets; loaded-libraries/ which libraries are loaded (test() reports CyFun 2025,
+  CyFun 2023 and the CRA; importing a library needs CISO Assistant rights and is never done by Atrium);
+- CyFun requirement ids carry level prefixes in CyFun 2023 (BASIC_ID.AM-1.1): the hub strips them (and corrects the
+  library's R.AC-3.4 / R.AC-3.5 typos as its catalog does). The CCB's requirement text of the CyFun frameworks is not
+  read into the hub (Atrium ships its own id-only catalogs); other frameworks keep CISO Assistant's names;
+- the EU Cyber Resilience Act is available only this way (library cra-regulation-annexes, URN
+  urn:intuitem:risk:library:cra-resolution-annexes, version 3 of 2024-06-25). Its name and date suggest it was built
+  from the European Parliament's text, not the text published in the Official Journal (Regulation (EU) 2024/2847):
+  UNVERIFIED against the OJ text, so the Compliance hub shows it read-only with that caveat.
+
+Self-assessments (domain ``assessments``, write - only when an administrator switches on "Send CyFun
+self-assessments" in the connection): each hub assessment becomes a compliance assessment of the loaded CyFun
+framework (selected_implementation_groups = [the target level]); every requirement the hub scored is written with
+PATCH requirement-assessments/<id>/ (result, status, score, documentation_score, is_scored, observation), and
+requirements the hub did not score are left alone. selected_implementation_groups is a list of group ref_ids (read in
+core/cel_service.py: an audit's scope is the requirements whose implementation_groups intersect it). UNVERIFIED: the
+fields CISO Assistant requires to create a compliance assessment (name, framework, version, status and folder are
+sent; the folder default when none is sent was not read) - the first push shows a clear error if they differ.
 """
 
 from __future__ import annotations
@@ -41,8 +72,11 @@ from typing import Any
 from urllib.parse import urlsplit
 
 import httpx
+from pydantic import ValidationError
 
+from ..grc.frameworks import CATALOG_IDS, LIBRARY_NAMES, LIBRARY_URNS, load
 from .base import ASSET_TYPES, Connector, ConnectorError, ConnectorField, check, to_timestamp
+from .grcmodel import AssessmentPush
 
 PAGE = 500  # the server caps a page at PAGINATE_MAX (5000 by default)
 MAX_PAGES = 200
@@ -58,6 +92,7 @@ MARKER = "--- Managed by Atrium: text below this line is rewritten on every sync
 # hub control status -> applied control status. Assumption: "--" (undefined) is accepted on write - it is one of the
 # model's choices, although the published API reference lists only the other five.
 CONTROL_STATUS = {"pass": "active", "partial": "in_progress", "fail": "to_do", "manual": "--", "na": "--"}
+PARTIAL_STATUSES = ("in_progress", "degraded")
 VULN_SEVERITY = {"info": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
 # a scanner finding is "potential" until someone confirms it; accepted findings still exist, so they stay potential
 VULN_STATUS = {"open": "potential", "in_progress": "potential", "accepted": "potential", "false_positive": "unaffected",
@@ -79,6 +114,12 @@ PROBES = (("Assets", "assets/", "assets", ("read", "write")),
           ("Evidence", "evidences/", "controls", ("write",)),
           ("Risk scenarios", "risk-scenarios/", "risks", ("read",)),
           ("Vulnerabilities", "vulnerabilities/", "vulnerabilities", ("write",)))
+# CyFun frameworks Atrium ships its own catalog of: their requirement text is not read into the hub
+CYFUN_FRAMEWORKS = {"urn:intuitem:risk:framework:ccb-cyfun2025", "urn:intuitem:risk:framework:ccb-cff-2023-03-01"}
+LEVEL_PREFIX = re.compile(r"^(BASIC|IMPORTANT|ESSENTIAL)_", re.I)
+# typos in the library's ref_ids that Atrium's catalogs correct (CyFun 2023: R.AC-3.4 -> PR.AC-3.4)
+CYFUN_ALIASES = {c["library_ref_id"]: c["ref_id"] for key in CATALOG_IDS for c in load(key).data.get("corrections", [])}
+RESULT_NAMES = ("not_assessed", "partially_compliant", "non_compliant", "compliant", "not_applicable")
 
 
 class _Abort(ConnectorError):
@@ -230,6 +271,47 @@ def risk_record(item: dict[str, Any], levels: tuple[int | None, int | None]) -> 
             "impact": rescale(impact, levels[1]), "status": status, "treatment": treatment}
 
 
+def _count(answer: Any) -> int | None:
+    if isinstance(answer, dict) and isinstance(answer.get("count"), int):
+        return answer["count"]
+    return len(answer) if isinstance(answer, list) else None
+
+
+def hub_ref(ref_id: Any, aliases: dict[str, str] | None = None) -> str:
+    """A CISO Assistant requirement ref_id as Atrium writes it: CyFun 2023's level prefixes (BASIC_) removed."""
+    ref = LEVEL_PREFIX.sub("", str(ref_id or "").strip())
+    return (aliases or {}).get(ref, ref)
+
+
+def _node_records(nodes: list[dict[str, Any]], own_text: bool,
+                  aliases: dict[str, str] | None = None) -> list[dict[str, Any]]:
+    """Requirement nodes with their depth (from the parent links); names and descriptions only when `own_text`."""
+    parents = {str(n.get("urn") or ""): str(n.get("parent_urn") or "") for n in nodes if n.get("urn")}
+    depths: dict[str, int] = {}
+
+    def depth(urn: str) -> int:
+        chain, current = [], urn
+        while current in parents and current not in depths and current not in chain and len(chain) < 20:
+            chain.append(current)
+            current = parents[current]
+        base = depths.get(current, 0)
+        for offset, item in enumerate(reversed(chain), start=1):
+            depths[item] = base + offset
+        return depths.get(urn, 1)
+
+    out = []
+    for node in nodes:
+        urn = str(node.get("urn") or "").strip()
+        if not urn:
+            continue
+        out.append({"id": _uuid(node.get("id")) or "", "urn": urn, "ref_id": hub_ref(node.get("ref_id"), aliases),
+                    "name": node.get("name") if own_text else "", "description": node.get("description") if own_text else "",
+                    "parent_urn": node.get("parent_urn") or None, "depth": min(depth(urn), 20),
+                    "assessable": bool(node.get("assessable")),
+                    "implementation_groups": node.get("implementation_groups") or []})
+    return out
+
+
 def merge_text(current: Any, block: str) -> str:
     """A description with the person's own text (above the marker line) kept and the hub's block below it replaced."""
     own = str(current or "").split(MARKER)[0].rstrip()
@@ -271,6 +353,12 @@ def evidence_text(record: dict[str, Any]) -> str:
     if items:
         lines += [""] + [f"- {e}" for e in items[:100]]
     return "\n".join(lines)[:TEXT]
+
+
+def evidence_observation(record: dict[str, Any]) -> str:
+    when = _when(record.get("evaluated_at"))
+    line = f"Atrium check: {record.get('status') or 'manual'}" + (f" ({when})" if when else "")
+    return (line + (f" - {record['detail']}" if record.get("detail") else ""))[:2000]
 
 
 def vulnerability_name(record: dict[str, Any]) -> str:
@@ -323,14 +411,26 @@ class CisoAssistantConnector(Connector):
                        help="Where the hub creates objects, and whose assets and risk scenarios it reads. Empty: new "
                             "objects go to the Global folder and every folder the user can see is read."),
         ConnectorField(name="verify_tls", label="Verify TLS certificate", kind="bool", default=True),
+        ConnectorField(name="partial_status", label="Status of partially effective controls", kind="select",
+                       default="in_progress",
+                       choices=[{"value": "in_progress", "label": "In progress (every version)"},
+                                {"value": "degraded", "label": "Degraded (recent versions)"}],
+                       help="The applied control status a hub control that only partly passes gets."),
+        ConnectorField(name="push_assessments", label="Send CyFun self-assessments", kind="bool", default=False,
+                       help="Write the hub's CyFun self-assessments (result and both maturity scores per requirement) "
+                            "into compliance assessments in CISO Assistant. Off: frameworks and assessments are only "
+                            "read. Needs the CyFun library loaded in CISO Assistant (Atrium never imports libraries)."),
     ]
-    capabilities = {"assets": {"read", "write"}, "controls": {"write"}, "risks": {"read"}, "vulnerabilities": {"write"}}
+    capabilities = {"assets": {"read", "write"}, "controls": {"write"}, "risks": {"read"}, "vulnerabilities": {"write"},
+                    "frameworks": {"read"}, "assessments": {"write"}}
 
     def __init__(self, config: dict[str, Any], secrets: dict[str, str], transport: httpx.AsyncBaseTransport | None = None):
         super().__init__(config, secrets, transport)
         self._root: str | None = None
         self._indexes: dict[tuple[str, str], dict[str, dict[str, Any]]] = {}
         self._claimed: set[str] = set()  # objects a hub record is linked to: never adopted for another one
+        self._frameworks: list[dict[str, Any]] | None = None
+        self._no_degraded = False
 
     @classmethod
     def detect(cls, tool) -> int:
@@ -352,6 +452,17 @@ class CisoAssistantConnector(Connector):
             out["folder_id"] = folder.lower()
         else:
             out.pop("folder_id", None)
+        if out.get("partial_status") not in (None, *PARTIAL_STATUSES):
+            raise ConnectorError("The status of partially effective controls must be in_progress or degraded")
+        if "push_assessments" in out and not isinstance(out["push_assessments"], bool):
+            raise ConnectorError("Send CyFun self-assessments must be true or false")
+        return out
+
+    def domains(self) -> dict[str, list[str]]:
+        """Self-assessments are only written when an administrator switched it on in the connection."""
+        out = super().domains()
+        if not self.config.get("push_assessments"):
+            out.pop("assessments", None)
         return out
 
     # -- HTTP ----------------------------------------------------------------------
@@ -436,7 +547,12 @@ class CisoAssistantConnector(Connector):
             for name, path, domain, _ops in PROBES:  # a folder that failed its check would only add filter errors
                 ok = await self._probe(client, name, path, domain, checks, missing, self.folder if folder_ok else None)
                 readable.setdefault(domain, []).append(ok)
+            frameworks = await self._check_frameworks(client, checks, missing, self.folder if folder_ok else None)
         domains = {domain: sorted(ops) for name, path, domain, ops in PROBES if all(readable.get(domain) or [False])}
+        if frameworks:
+            domains["frameworks"] = ["read"]
+            if self.config.get("push_assessments"):
+                domains["assessments"] = ["write"]
         failed = [c["name"] for c in checks if not c["ok"]]
         ok = folder_ok and bool(domains)
         if ok:
@@ -506,11 +622,8 @@ class CisoAssistantConnector(Connector):
             else:
                 checks.append(check(name, False, exc.message))
             return False
-        if isinstance(answer, dict) and isinstance(answer.get("count"), int):
-            count = answer["count"]
-        elif isinstance(answer, list):
-            count = len(answer)
-        else:
+        count = _count(answer)
+        if count is None:
             checks.append(check(name, False, "The answer is not a list - is the URL the CISO Assistant API?"))
             return False
         where = "in the folder" if folder else "visible to this user"
@@ -518,6 +631,55 @@ class CisoAssistantConnector(Connector):
                 "risks": "pulled into the hub's risk register", "vulnerabilities": "receive hub findings"}[domain]
         checks.append(check(name, True, f"{count} {where} - {does} (write access shows on the first push)"
                             if domain != "risks" else f"{count} {where} - {does}"))
+        return True
+
+    async def _check_frameworks(self, client: httpx.AsyncClient, checks: list[dict[str, Any]], missing: list[str],
+                                folder: str | None) -> bool:
+        """Frameworks and compliance assessments readable; which libraries are loaded; whether results are sent."""
+        counts = {}
+        for name, path, params in (("frameworks", "frameworks/", {}),
+                                   ("compliance assessments", "compliance-assessments/", {"folder": folder} if folder else {})):
+            try:
+                counts[name] = _count(await self.request_json(client, "GET", path, params={**params, "limit": 1},
+                                                              what=f"list {name}"))
+            except ConnectorError as exc:
+                if exc.status == 404:
+                    missing.append("frameworks")
+                    checks.append(check("Frameworks", True, f"No {name} endpoint on this CISO Assistant version: "
+                                                            "frameworks are not read"))
+                elif exc.status == 403:
+                    checks.append(check("Frameworks", False, f"This user may not read {name} (HTTP 403) - give its "
+                                                             "role access in CISO Assistant"))
+                else:
+                    checks.append(check("Frameworks", False, exc.message))
+                return False
+        where = "in the folder" if folder else "visible to this user"
+        checks.append(check("Frameworks", True, f"{counts['frameworks']} loaded, {counts['compliance assessments']} "
+                                                f"compliance assessments {where} - shown read-only in the Compliance hub"))
+        loaded: dict[str, dict[str, Any]] = {}
+        try:
+            loaded = {str(item.get("urn") or "").lower(): item
+                      for item in await self._list(client, "loaded-libraries/", what="loaded libraries")}
+        except ConnectorError as exc:
+            checks.append(check("Libraries", True, f"Could not list the loaded libraries: {exc.message}"))
+        else:
+            have = [f"{LIBRARY_NAMES[k]} (version {loaded[u].get('version') or '?'})" for k, u in LIBRARY_URNS.items()
+                    if u in loaded]
+            lack = [LIBRARY_NAMES[k] for k, u in LIBRARY_URNS.items() if u not in loaded]
+            detail = ("Loaded: " + ", ".join(have)) if have else "None of CyFun 2025, CyFun 2023 or the CRA is loaded"
+            if lack:
+                detail += (f"; not loaded: {', '.join(lack)} - an administrator of CISO Assistant can import them "
+                           "(Catalog > Libraries); Atrium never imports libraries")
+            checks.append(check("Libraries", True, detail))
+        if self.config.get("push_assessments"):
+            cyfun = any(LIBRARY_URNS[k] in loaded for k in ("cyfun2025", "cyfun2023"))
+            checks.append(check("Self-assessments", True,
+                                "Atrium writes its CyFun self-assessments into compliance assessments (write access "
+                                "shows on the first push)" + ("" if cyfun or not loaded else
+                                                             "; load a CyFun library in CISO Assistant first")))
+        else:
+            checks.append(check("Self-assessments", True, "Not sent: an administrator can switch on 'Send CyFun "
+                                                          "self-assessments' in this connection"))
         return True
 
     async def options(self, field_name: str) -> list[dict[str, str]]:
@@ -545,7 +707,93 @@ class CisoAssistantConnector(Connector):
                 scenarios = await self._list(client, "risk-scenarios/", what="risk scenarios", folder=self.folder)
                 levels = await self._matrix_levels(client, scenarios)
                 return [risk_record(s, levels.get(_id(s.get("risk_matrix")) or "", (None, None))) for s in scenarios]
+            if domain == "frameworks":
+                return await self._pull_frameworks(client)
         return await super().pull(domain, since)
+
+    async def _optional_list(self, client: httpx.AsyncClient, path: str, what: str) -> list[dict[str, Any]]:
+        """A list that older versions or narrower roles may not have: empty instead of failing the whole read."""
+        try:
+            return await self._list(client, path, what=what)
+        except ConnectorError as exc:
+            if exc.status == 401:
+                raise
+            return []
+
+    async def _pull_frameworks(self, client: httpx.AsyncClient) -> list[dict[str, Any]]:
+        frameworks = await self._list(client, "frameworks/", what="frameworks")
+        assessments = await self._list(client, "compliance-assessments/", what="compliance assessments",
+                                       folder=self.folder)
+        libraries = {_id(item.get("id")): str(item.get("urn") or "")
+                     for item in await self._optional_list(client, "loaded-libraries/", "loaded libraries")}
+        urns = {_id(f.get("id")): str(f.get("urn") or "") for f in frameworks}
+        mapping_sets = await self._optional_list(client, "requirement-mapping-sets/", "mapping sets")
+        out = []
+        for framework in frameworks:
+            framework_id = _uuid(framework.get("id"))
+            urn = str(framework.get("urn") or "").strip()
+            if not framework_id or not urn:
+                continue
+            nodes = await self._list(client, "requirement-nodes/", {"framework": framework_id}, what="requirement nodes")
+            nodes = [n for n in nodes if _id(n.get("framework")) in (None, framework_id)]
+            own_text = urn.lower() not in CYFUN_FRAMEWORKS  # never keep the CCB's requirement text
+            requirements = _node_records(nodes, own_text, None if own_text else CYFUN_ALIASES)
+            by_node = {n["id"]: n for n in requirements if n["id"]}
+            states = []
+            for assessment in assessments:
+                if _id(assessment.get("framework")) == framework_id and _uuid(assessment.get("id")):
+                    states.append(await self._assessment_state(client, assessment, by_node))
+            out.append({
+                "external_id": framework_id, "urn": urn, "ref_id": framework.get("ref_id"), "name": framework.get("name"),
+                "description": framework.get("description") if own_text else "",
+                "provider": _label(framework.get("provider")) or "",
+                "library_urn": libraries.get(_id(framework.get("library")), ""),
+                "min_score": framework.get("min_score"), "max_score": framework.get("max_score"),
+                "implementation_groups": [{"ref_id": g.get("ref_id"), "name": g.get("name")}
+                                          for g in framework.get("implementation_groups_definition") or []
+                                          if isinstance(g, dict)],
+                "requirements": requirements, "assessments": states,
+                "mappings": [{"external_id": m.get("id"), "name": m.get("name"),
+                              "source": urns.get(_id(m.get("source_framework")), ""),
+                              "target": urns.get(_id(m.get("target_framework")), "")}
+                             for m in mapping_sets if framework_id in (_id(m.get("source_framework")),
+                                                                       _id(m.get("target_framework")))],
+            })
+        return out
+
+    async def _assessment_state(self, client: httpx.AsyncClient, assessment: dict[str, Any],
+                                by_node: dict[str, dict[str, Any]]) -> dict[str, Any]:
+        assessment_id = _uuid(assessment.get("id")) or ""
+        rows = await self._list(client, "requirement-assessments/", {"compliance_assessment": assessment_id},
+                                what="requirement assessments")
+        results: dict[str, int] = {}
+        requirements = []
+        for row in rows:
+            node = by_node.get(_id(row.get("requirement")) or "")
+            if node is None or not node["assessable"] or _id(row.get("compliance_assessment")) not in (None, assessment_id):
+                continue
+            result = str(row.get("result") or "not_assessed")
+            result = result if result in RESULT_NAMES else "not_assessed"
+            results[result] = results.get(result, 0) + 1
+            requirements.append({"urn": node["urn"], "ref_id": node["ref_id"], "result": result,
+                                 "status": row.get("status"), "score": row.get("score") if row.get("is_scored", True) else None,
+                                 "documentation_score": row.get("documentation_score")})
+        try:
+            score = await self.request_json(client, "GET", f"compliance-assessments/{assessment_id}/global_score/",
+                                            what="global score")
+        except ConnectorError as exc:
+            if exc.status == 401:
+                raise
+            score = {}
+        score = score if isinstance(score, dict) else {}
+        return {"external_id": assessment_id, "name": assessment.get("name"), "ref_id": assessment.get("ref_id"),
+                "status": assessment.get("status"), "version": assessment.get("version"),
+                "folder": _label(assessment.get("folder")) or "",
+                "selected_implementation_groups": assessment.get("selected_implementation_groups"),
+                "updated_at": assessment.get("updated_at"), "outcomes": assessment.get("computed_outcome"),
+                "scores": {"implementation": score.get("implementation_score"),
+                           "documentation": score.get("documentation_score"), "maturity": score.get("maturity_score")},
+                "results": results, "requirements": requirements}
 
     async def _matrix_levels(self, client: httpx.AsyncClient,
                              scenarios: list[dict[str, Any]]) -> dict[str, tuple[int | None, int | None]]:
@@ -583,7 +831,7 @@ class CisoAssistantConnector(Connector):
 
     async def push(self, domain: str, records: list[dict[str, Any]], links: dict[str, str]) -> list[dict[str, Any]]:
         handlers = {"assets": self._push_asset, "controls": self._push_control,
-                    "vulnerabilities": self._push_vulnerability}
+                    "vulnerabilities": self._push_vulnerability, "assessments": self._push_assessment}
         handler = handlers.get(domain)
         if handler is None:
             return await super().push(domain, records, links)
@@ -715,12 +963,25 @@ class CisoAssistantConnector(Connector):
                             folder: str | None) -> tuple[str, str]:
         ref = str(record.get("ref_id") or record.get("external_id") or "")[:REF]
         control_part, _, evidence_part = str(external or "").partition("|")
+        status = CONTROL_STATUS.get(record.get("status"), "--")
+        if record.get("status") == "partial" and self.config.get("partial_status") == "degraded" and not self._no_degraded:
+            status = "degraded"
         control = {"name": str(record.get("name") or ref)[:NAME], "ref_id": ref,
-                   "description": control_description(record), "status": CONTROL_STATUS.get(record.get("status"), "--")}
-        control_id, action = await self._upsert(client, "applied-controls/", control_part, "ref_id", control, {},
-                                                "applied control", folder, keep_own_text=True)
+                   "description": control_description(record), "status": status}
+        try:
+            control_id, action = await self._upsert(client, "applied-controls/", control_part, "ref_id", control, {},
+                                                    "applied control", folder, keep_own_text=True)
+        except ConnectorError as exc:  # a version without "degraded": fall back to in_progress for the whole push
+            if status != "degraded" or exc.status != 400 or "status" not in exc.message:
+                raise
+            self._no_degraded = True
+            control["status"] = "in_progress"
+            control_id, action = await self._upsert(client, "applied-controls/", control_part, "ref_id", control, {},
+                                                    "applied control", folder, keep_own_text=True)
         relink = control_id != _uuid(control_part)  # a new or adopted control: point the evidence at it
-        evidence = {"name": f"{ref} automated evidence (Atrium)"[:NAME], "description": evidence_text(record)}
+        # the observation creates an evidence revision (a visible record, in_review) instead of an empty draft
+        evidence = {"name": f"{ref} automated evidence (Atrium)"[:NAME], "description": evidence_text(record),
+                    "observation": evidence_observation(record)}
         linked = _uuid(evidence_part)
         if linked and await self._patch(client, "evidences/", linked,
                                         {**evidence, **({"applied_controls": [control_id]} if relink else {})}, "evidence"):
@@ -751,3 +1012,87 @@ class CisoAssistantConnector(Connector):
             if asset_id:
                 create["assets"] = [asset_id]
         return await self._upsert(client, "vulnerabilities/", external, "name", update, create, "vulnerability", folder)
+
+    async def _framework(self, client: httpx.AsyncClient, urn: str) -> dict[str, Any] | None:
+        """A loaded framework by URN (the frameworks list has no URN filter: read once per push)."""
+        if self._frameworks is None:
+            self._frameworks = await self._list(client, "frameworks/", what="frameworks")
+        return next((f for f in self._frameworks
+                     if str(f.get("urn") or "").lower() == urn.lower() and _uuid(f.get("id"))), None)
+
+    async def _push_assessment(self, client: httpx.AsyncClient, record: dict[str, Any], external: str | None,
+                               folder: str | None) -> tuple[str, str]:
+        try:
+            data = AssessmentPush.model_validate(record)
+        except ValidationError as exc:
+            raise _RecordError(f"Not a valid self-assessment record: {exc.errors()[0]['msg']}") from exc
+        framework = await self._framework(client, data.framework_urn)
+        if framework is None:
+            raise _RecordError(f"{data.framework_urn} is not loaded in CISO Assistant - an administrator of CISO "
+                               "Assistant can import the library (Catalog > Libraries); Atrium never imports libraries",
+                               status=404)
+        framework_id = _uuid(framework["id"]) or ""
+        body: dict[str, Any] = {"name": data.name[:NAME], "selected_implementation_groups": [data.level]}
+        current = None
+        if _uuid(external):
+            current = await self._get(client, "compliance-assessments/", _uuid(external) or "", "compliance assessment")
+            if current is not None and _id(current.get("framework")) != framework_id:
+                current = None  # the linked assessment is of another framework: write a new one
+        if current is None:
+            adopted = await self._adoptable(client, "compliance-assessments/", "name", body["name"], folder)
+            if adopted and _id(adopted.get("framework")) == framework_id:
+                current = adopted
+        if current is not None:
+            assessment_id = _uuid(current["id"]) or ""
+            body["observation"] = merge_text(current.get("observation"), data.summary)
+            if not await self._patch(client, "compliance-assessments/", assessment_id, body, "compliance assessment"):
+                raise _RecordError("The compliance assessment disappeared from CISO Assistant during the sync", status=404)
+            action = "updated"
+        else:
+            create = {**body, "framework": framework_id, "version": "1.0", "status": "in_progress",
+                      "observation": merge_text(None, data.summary), **({"folder": folder} if folder else {})}
+            assessment_id = await self._create(client, "compliance-assessments/", create, "compliance assessment", "name")
+            action = "created"
+        problems = await self._write_requirements(client, assessment_id, framework_id, data)
+        if problems:
+            shown = "; ".join(problems[:5]) + (f" (and {len(problems) - 5} more)" if len(problems) > 5 else "")
+            raise _RecordError(f"{len(problems)} requirement(s) could not be written: {shown}", status=400)
+        return assessment_id, action
+
+    async def _write_requirements(self, client: httpx.AsyncClient, assessment_id: str, framework_id: str,
+                                  data: AssessmentPush) -> list[str]:
+        """Write the hub's scored requirements; leave the others (and unchanged ones) alone."""
+        nodes = await self._list(client, "requirement-nodes/", {"framework": framework_id}, what="requirement nodes")
+        by_ref: dict[str, str] = {}
+        for node in nodes:
+            if node.get("assessable") and _uuid(node.get("id")) and _id(node.get("framework")) in (None, framework_id):
+                by_ref.setdefault(hub_ref(node.get("ref_id"), data.ref_aliases), _uuid(node["id"]) or "")
+        rows = await self._list(client, "requirement-assessments/", {"compliance_assessment": assessment_id},
+                                what="requirement assessments")
+        by_node = {_id(r.get("requirement")): r for r in rows
+                   if _uuid(r.get("id")) and _id(r.get("compliance_assessment")) in (None, assessment_id)}
+        if data.requirements and not by_node:
+            return ["CISO Assistant has no requirement assessments for this compliance assessment yet - run the flow "
+                    "again in a moment"]
+        problems = []
+        for requirement in data.requirements:
+            row = by_node.get(by_ref.get(requirement.ref_id, ""))
+            if row is None:
+                problems.append(f"{requirement.ref_id} is not in CISO Assistant's framework")
+                continue
+            desired: dict[str, Any] = {"result": requirement.result, "status": "done"}
+            if requirement.result != "not_applicable":
+                desired.update({"is_scored": True, "score": requirement.score,
+                                "documentation_score": requirement.documentation_score})
+            if requirement.observation or MARKER in str(row.get("observation") or ""):
+                desired["observation"] = merge_text(row.get("observation"), requirement.observation)
+            if all(row.get(k) == v for k, v in desired.items()):
+                continue
+            try:
+                await self.request_json(client, "PATCH", f"requirement-assessments/{_uuid(row['id'])}/", json=desired,
+                                        what=f"update requirement {requirement.ref_id}")
+            except ConnectorError as exc:
+                if exc.status in (None, 401, 403):
+                    raise
+                problems.append(f"{requirement.ref_id}: {exc.message}")
+        return problems

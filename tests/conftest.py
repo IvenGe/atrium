@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 from pathlib import Path
 from typing import Callable
@@ -12,10 +13,26 @@ from hub.app import create_app
 from hub.config import Settings
 
 
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    """Tests marked ``slow`` (performance budgets over large data sets) run only with HUB_SLOW_TESTS=1."""
+    if os.environ.get("HUB_SLOW_TESTS") == "1":
+        return
+    skip = pytest.mark.skip(reason="slow test: set HUB_SLOW_TESTS=1 to run it")
+    for item in items:
+        if "slow" in item.keywords:
+            item.add_marker(skip)
+
+
 @pytest.fixture(autouse=True)
 def no_llm(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Tests never call a real model."""
+    """Tests never call a real model - and never self-patch (or run the tests of) this checkout: self-patch tests
+    point hub.self_patch at a temporary repository."""
     monkeypatch.setenv("HUB_LLM", "off")
+    monkeypatch.setenv("HUB_SELF_PATCH", "off")
+    monkeypatch.setenv("HUB_BRIDGE_TESTS", "off")  # bridge patches never find a real container runtime by themselves
+    # a developer's own credentials are never used and never change a result (tests/llm_fakes.py plugs in fakes)
+    for name in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_PROFILE", "OPENAI_API_KEY", "OPENAI_BASE_URL"):
+        monkeypatch.delenv(name, raising=False)
 
 
 ADMIN_PASSWORD = "correct horse battery staple"

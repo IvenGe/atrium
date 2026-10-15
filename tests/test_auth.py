@@ -10,7 +10,6 @@ import sys
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from urllib.parse import unquote
 
 import pytest
 from conftest import ADMIN_PASSWORD, PASSWORD, make_settings
@@ -126,6 +125,98 @@ def test_password_policy(password, message):
     ("GET", "/api/llm/providers", "viewer"), ("POST", "/api/llm/providers", "admin"),
     ("PATCH", "/api/llm/providers/ollama", "admin"), ("DELETE", "/api/llm/providers/ollama", "admin"),
     ("POST", "/api/llm/providers/ollama/test", "admin"), ("POST", "/api/llm/providers/ollama", "operator"),
+    ("POST", "/api/llm/providers/openai/probe", "admin"), ("POST", "/api/llm/providers/openai/probex", "operator"),
+    ("POST", "/api/llm/providers/a/b/probe", "operator"), ("GET", "/api/llm/prices", "viewer"),
+    ("PUT", "/api/llm/prices", "admin"), ("PUT", "/api/llm/pricesx", "operator"),
+    ("GET", "/api/llm/selection", "viewer"), ("PATCH", "/api/llm/selection", "admin"),
+    ("PATCH", "/api/llm/selectionx", "operator"), ("GET", "/api/agents/x/settings", "viewer"),
+    ("PATCH", "/api/agents/x/settings", "admin"), ("PATCH", "/api/agents/agent:x/settings", "admin"),
+    ("PATCH", "/api/agents/x/settingsx", "operator"), ("PATCH", "/api/agents/x/y/settings", "operator"),
+    # agent settings beyond the model (R4-LLM stage 4): history, restore, playground, budgets, usage, conversations
+    ("GET", "/api/agents/x/settings/history", "viewer"), ("POST", "/api/agents/x/settings/restore", "admin"),
+    ("POST", "/api/agents/agent:x/settings/restore", "admin"), ("POST", "/api/agents/x/settings/restorex", "operator"),
+    ("POST", "/api/agents/x/playground", "admin"), ("POST", "/api/agents/x/playgroundx", "operator"),
+    ("POST", "/api/agents/x/budget/override", "admin"), ("POST", "/api/agents/x/budget/overrides", "operator"),
+    ("GET", "/api/agents/x/usage", "viewer"), ("GET", "/api/llm/usage", "viewer"),
+    ("GET", "/api/agents/x/conversation", "operator"), ("GET", "/api/agents/agent:x/conversation", "operator"),
+    ("DELETE", "/api/agents/x/conversation", "operator"), ("GET", "/api/agents/x/conversationx", "viewer"),
+    # escalation and notifications (R4-LLM stage 5): resuming a paused schedule is admin, the strip is a read
+    ("POST", "/api/agents/x/schedule/resume", "admin"), ("POST", "/api/agents/agent:x/schedule/resume", "admin"),
+    ("POST", "/api/agents/x/schedule/resumex", "operator"), ("GET", "/api/agents/attention", "viewer"),
+    # the Agent bus page: conversations and agents' errors (viewers read, operators acknowledge, admins clear)
+    ("GET", "/api/bus/threads", "viewer"), ("GET", "/api/bus/threads/m_0123456789", "viewer"),
+    ("GET", "/api/agents/x/errors", "viewer"), ("GET", "/api/agents/tool:x/errors", "viewer"),
+    ("POST", "/api/agents/x/errors/ae_1/ack", "operator"), ("POST", "/api/agents/x/errors/ack", "operator"),
+    ("DELETE", "/api/agents/x/errors", "admin"), ("DELETE", "/api/agents/tool:x/errors", "admin"),
+    ("DELETE", "/api/agents/x/errorsx", "operator"), ("DELETE", "/api/agents/x/y/errors", "operator"),
+    ("GET", "/api/auth/sso", "admin"), ("PUT", "/api/auth/sso", "admin"), ("DELETE", "/api/auth/sso", "admin"),
+    ("POST", "/api/auth/sso/test", "admin"), ("GET", "/api/auth/sso/test", "viewer"),
+    ("GET", "/api/people", "viewer"), ("GET", "/api/people/p_1", "viewer"), ("GET", "/api/people/leavers", "viewer"),
+    ("POST", "/api/people", "operator"), ("PATCH", "/api/people/p_1", "operator"), ("DELETE", "/api/people/p_1", "operator"),
+    ("POST", "/api/people/p_1/actions/unassign_assets", "operator"),
+    ("POST", "/api/people/p_1/actions/disable_atrium_account", "admin"),
+    ("POST", "/api/people/p_1/actions/disable_atrium_account/", "admin"),
+    ("GET", "/api/accounts", "viewer"), ("PATCH", "/api/accounts/okta|00u1", "operator"),
+    ("GET", "/api/extensions", "viewer"), ("GET", "/api/extensions/wazuh-alerts", "viewer"),
+    ("POST", "/api/extensions", "admin"), ("POST", "/api/extensions/", "admin"),
+    ("PATCH", "/api/extensions/wazuh-alerts", "admin"), ("DELETE", "/api/extensions/wazuh-alerts", "admin"),
+    ("POST", "/api/extensions/wazuh-alerts/rollback", "admin"), ("POST", "/api/extensions/a/b", "operator"),
+    ("POST", "/api/tools/wazuh/extend", "admin"), ("GET", "/api/x", "viewer"), ("GET", "/api/x/alerts", "viewer"),
+    ("GET", "/api/x/alerts/x_1", "viewer"), ("POST", "/api/x/alerts", "operator"),
+    ("PATCH", "/api/x/alerts/x_1", "operator"), ("DELETE", "/api/x/alerts/x_1", "operator"),
+    ("GET", "/api/self-patches", "viewer"), ("GET", "/api/self-patches/sp_1", "viewer"),
+    ("POST", "/api/self-patches", "admin"), ("POST", "/api/self-patches/sp_1/apply", "admin"),
+    ("POST", "/api/self-patches/sp_1", "operator"), ("POST", "/api/approvals/ap_1", "operator"),
+    ("GET", "/api/network/devices", "viewer"), ("GET", "/api/network/devices/fw1", "viewer"),
+    ("POST", "/api/network/devices/fw1/refresh", "operator"), ("POST", "/api/network/devices/fw1/backups", "operator"),
+    ("POST", "/api/network/devices/fw1/baseline", "admin"), ("DELETE", "/api/network/devices/fw1/baseline", "admin"),
+    ("POST", "/api/network/drift/dr_1/ack", "operator"), ("GET", "/api/network/backups/bk_1/download", "admin"),
+    ("GET", "/api/network/backups", "viewer"), ("PATCH", "/api/network/settings", "admin"),
+    ("GET", "/api/network/settings", "viewer"), ("GET", "/api/segmentation", "viewer"),
+    ("PATCH", "/api/segmentation/zones/z:fw1:lan", "admin"), ("PATCH", "/api/segmentation/zones/z:sw1:Gi1/0/1", "admin"),
+    ("PUT", "/api/segmentation/placements/a_1", "operator"), ("PUT", "/api/segmentation/policy", "admin"),
+    ("GET", "/api/segmentation/policy", "viewer"), ("POST", "/api/segmentation/refresh", "operator"),
+    ("GET", "/api/frameworks", "viewer"), ("GET", "/api/frameworks/cyfun2025", "viewer"),
+    ("POST", "/api/frameworks/cyfun2025/assessments", "operator"),
+    ("PATCH", "/api/frameworks/cyfun2025/assessments/fa_1", "operator"),
+    ("PATCH", "/api/frameworks/cyfun2025/assessments/fa_1/requirements/PR.AA-01.1", "operator"),
+    ("GET", "/api/frameworks/cyfun2025/assessments/fa_1/audit-pack", "viewer"),
+    ("DELETE", "/api/frameworks/cyfun2025/assessments/fa_1", "admin"),
+    ("POST", "/api/segmentation/changes/preview", "operator"), ("POST", "/api/segmentation/changes", "operator"),
+    ("GET", "/api/segmentation/changes", "viewer"), ("GET", "/api/segmentation/changes/chg_1", "viewer"),
+    ("DELETE", "/api/segmentation/changes/chg_1", "operator"), ("POST", "/api/segmentation/changes/chg_1/revert", "operator"),
+    ("POST", "/api/segmentation/changes/chg_1/emergency", "admin"), ("POST", "/api/network/backups/bk_1/restore", "operator"),
+    ("GET", "/api/network/maintenance-windows", "viewer"), ("POST", "/api/network/maintenance-windows", "admin"),
+    ("PATCH", "/api/network/maintenance-windows/mw_1", "admin"),
+    ("DELETE", "/api/network/maintenance-windows/mw_1", "admin"),
+    ("GET", "/api/integration/map", "viewer"), ("GET", "/api/integration/map/options", "viewer"),
+    ("POST", "/api/flows", "operator"), ("GET", "/api/layouts/integration", "viewer"),
+    ("PATCH", "/api/layouts/integration", "operator"), ("DELETE", "/api/layouts/segmentation", "operator"),
+    ("GET", "/api/widgets/catalog", "viewer"), ("GET", "/api/widgets/preview", "viewer"),
+    ("GET", "/api/widgets/templates/overview", "viewer"),
+    ("GET", "/api/dashboards", "viewer"), ("GET", "/api/dashboards/settings", "viewer"),
+    ("GET", "/api/dashboards/p_0123456789", "viewer"), ("GET", "/api/dashboards/s_0123456789/data", "viewer"),
+    ("POST", "/api/dashboards/mine", "viewer"), ("PUT", "/api/dashboards/mine/p_0123456789", "viewer"),
+    ("DELETE", "/api/dashboards/mine/p_0123456789", "viewer"), ("PUT", "/api/dashboards/prefs", "viewer"),
+    ("POST", "/api/dashboards/shared", "admin"), ("PUT", "/api/dashboards/shared/s_0123456789", "admin"),
+    ("DELETE", "/api/dashboards/shared/s_0123456789", "admin"), ("PUT", "/api/dashboards/default", "admin"),
+    ("POST", "/api/dashboards/mine/x", "operator"), ("PUT", "/api/dashboards/minex", "operator"),  # near misses
+    ("PUT", "/api/dashboards/mine/a/b", "operator"), ("POST", "/api/dashboards/prefs", "operator"),
+    ("GET", "/api/subsidiaries", "viewer"), ("GET", "/api/subsidiaries/helpdesk", "viewer"),
+    ("POST", "/api/tools/helpdesk/subsidiary", "operator"), ("PUT", "/api/subsidiaries/helpdesk/charter", "admin"),
+    ("PUT", "/api/subsidiaries/helpdesk/credential", "admin"), ("DELETE", "/api/subsidiaries/helpdesk/credential", "admin"),
+    ("POST", "/api/subsidiaries/helpdesk/enrollment", "admin"), ("POST", "/api/subsidiaries/helpdesk/conformance", "admin"),
+    ("POST", "/api/subsidiaries/helpdesk/rotate-key", "admin"), ("POST", "/api/subsidiaries/helpdesk/pause", "operator"),
+    ("POST", "/api/subsidiaries/pause-all", "operator"), ("POST", "/api/subsidiaries/helpdesk/resume", "admin"),
+    ("POST", "/api/subsidiaries/helpdesk/stop", "admin"), ("DELETE", "/api/subsidiaries/helpdesk", "admin"),
+    ("POST", "/api/subsidiaries/helpdesk/tasks", "operator"), ("GET", "/api/subsidiaries/helpdesk/audit", "viewer"),
+    ("POST", "/api/subsidiaries/helpdesk/audit/verify", "operator"),
+    ("POST", "/api/subsidiaries/helpdesk/reports/rp_1/promote", "operator"),
+    ("POST", "/api/subsidiary/v1/enroll", None), ("POST", "/api/subsidiary/v1/heartbeat", "subsidiary"),
+    ("GET", "/api/subsidiary/v1/inbox", "subsidiary"), ("GET", "/api/subsidiary/v1", "subsidiary"),
+    ("GET", "/api/subsidiaries/helpdesk/runs", "viewer"), ("POST", "/api/subsidiary/v1/model", "subsidiary"),
+    ("POST", "/api/subsidiary/v1/actions/ap_1/result", "subsidiary"), ("POST", "/api/subsidiary/v1/hub-request",
+                                                                     "subsidiary"),
 ])
 def test_required_role(method, path, role):
     assert required_role(method, path) == role
@@ -133,7 +224,7 @@ def test_required_role(method, path, role):
 
 # Written from the product contract on purpose, independently of hub.auth.policy.
 PUBLIC = {("GET", "/api/health"), ("GET", "/api/auth/me"), ("POST", "/api/auth/login"), ("POST", "/api/auth/setup"),
-          ("GET", "/api/auth/oidc/login"), ("GET", "/api/auth/oidc/callback")}
+          ("GET", "/api/auth/oidc/login"), ("GET", "/api/auth/oidc/callback"), ("POST", "/api/subsidiary/v1/enroll")}
 SELF_SERVICE = {("POST", "/api/auth/logout"), ("POST", "/api/auth/password"), ("GET", "/api/auth/sessions"),
                 ("DELETE", "/api/auth/sessions")}
 INTEGRATION = {("POST", "/api/bus/publish"), ("GET", "/api/health")}
@@ -156,6 +247,9 @@ def contract_role(method: str, path: str) -> str | None:
     # a tool's connection holds its API credentials; listing a field's choices uses them
     if (method, path) in {("PUT", "/api/tools/{tool_id}/connection"), ("DELETE", "/api/tools/{tool_id}/connection")}:
         return "admin"
+    # the manifest editor sets what runs on the hub machine when the tool starts, and its launch secrets
+    if (method, path) == ("PATCH", "/api/tools/{tool_id}/manifest"):
+        return "admin"
     if (method, path) == ("GET", "/api/tools/{tool_id}/connection/options/{field}"):
         return "operator"
     # agent definitions, the guardrails and the AI model providers (which may hold API keys)
@@ -164,7 +258,86 @@ def contract_role(method: str, path: str) -> str | None:
                           ("PATCH", "/api/llm/providers/{provider_id}"), ("DELETE", "/api/llm/providers/{provider_id}"),
                           ("POST", "/api/llm/providers/{provider_id}/test")}:
         return "admin"
+    # checking a model's capabilities spends tokens; the price table drives the cost estimates
+    if (method, path) in {("POST", "/api/llm/providers/{provider_id}/probe"), ("PUT", "/api/llm/prices")}:
+        return "admin"
+    # which model agents use: the suite's selection and an agent's own model settings
+    if (method, path) in {("PATCH", "/api/llm/selection"), ("PATCH", "/api/agents/{agent_id}/settings")}:
+        return "admin"
+    # an agent's settings history can be restored, its budget stop lifted, its paused schedule resumed and its
+    # playground (paid tokens) used by admins only; a person's own conversation with an agent is for operators
+    if (method, path) in {("POST", "/api/agents/{agent_id}/settings/restore"), ("POST", "/api/agents/{agent_id}/playground"),
+                          ("POST", "/api/agents/{agent_id}/budget/override"),
+                          ("POST", "/api/agents/{agent_id}/schedule/resume")}:
+        return "admin"
+    if (method, path) == ("GET", "/api/agents/{agent_id}/conversation"):
+        return "operator"
+    # an agent's recorded errors: anyone reads them, operators acknowledge them, administrators clear them
+    if (method, path) == ("DELETE", "/api/agents/{agent_id}/errors"):
+        return "admin"
+    # Atrium's own sign-in settings (they hold its client secret) - reading them too
+    if (method, path) in {("GET", "/api/auth/sso"), ("PUT", "/api/auth/sso"), ("DELETE", "/api/auth/sso"),
+                          ("POST", "/api/auth/sso/test")}:
+        return "admin"
+    # People: operators change people and links; disabling someone's Atrium account is account administration
+    if (method, path) == ("POST", "/api/people/{person_id}/actions/{action}"):
+        return "operator"  # per action: see test_required_role
+    # extensions and self-patches change Atrium itself (reading them and extension records follow the default)
+    if (method, path) in {("POST", "/api/extensions"), ("PATCH", "/api/extensions/{ext_id}"),
+                          ("DELETE", "/api/extensions/{ext_id}"), ("POST", "/api/extensions/{ext_id}/rollback"),
+                          ("POST", "/api/tools/{tool_id}/extend"), ("POST", "/api/self-patches"),
+                          ("POST", "/api/self-patches/{patch_id}/apply")}:
+        return "admin"
+    # compliance frameworks: viewers read (incl. the audit pack), operators start and score assessments, admins delete
+    if (method, path) == ("DELETE", "/api/frameworks/{framework_id}/assessments/{assessment_id}"):
+        return "admin"
+    # network devices: baselines, backup downloads (full configurations) and settings; segmentation zone roles and
+    # the policy (they decide compliance verdicts)
+    if (method, path) in {("POST", "/api/network/devices/{tool_id}/baseline"),
+                          ("DELETE", "/api/network/devices/{tool_id}/baseline"),
+                          ("GET", "/api/network/backups/{backup_id}/download"), ("PATCH", "/api/network/settings"),
+                          ("PATCH", "/api/segmentation/zones/{zone_id:path}"), ("PUT", "/api/segmentation/policy")}:
+        return "admin"
+    # device changes: operators propose, withdraw and revert; an emergency apply and maintenance windows are admin's
+    if (method, path) in {("POST", "/api/segmentation/changes/{change_id}/emergency"),
+                          ("POST", "/api/network/maintenance-windows"),
+                          ("PATCH", "/api/network/maintenance-windows/{window_id}"),
+                          ("DELETE", "/api/network/maintenance-windows/{window_id}")}:
+        return "admin"
+    # Home dashboards: everyone arranges their own (and their tabs); shared dashboards and the default are admin's
+    if (method, path) in {("POST", "/api/dashboards/mine"), ("PUT", "/api/dashboards/mine/{dash_id}"),
+                          ("DELETE", "/api/dashboards/mine/{dash_id}"), ("PUT", "/api/dashboards/prefs")}:
+        return "viewer"
+    if (method, path) in {("POST", "/api/dashboards/shared"), ("PUT", "/api/dashboards/shared/{dash_id}"),
+                          ("DELETE", "/api/dashboards/shared/{dash_id}"), ("PUT", "/api/dashboards/default")}:
+        return "admin"
+    # subsidiaries: the charter, the dedicated credential, enrollment, conformance, signing keys, resume, stop and
+    # archive are administrators'; the sidecar API is a subsidiary token's alone (enrolling is public)
+    if (method, path) in {("PUT", "/api/subsidiaries/{tool_id}/charter"), ("PUT", "/api/subsidiaries/{tool_id}/credential"),
+                          ("DELETE", "/api/subsidiaries/{tool_id}/credential"),
+                          ("POST", "/api/subsidiaries/{tool_id}/enrollment"),
+                          ("POST", "/api/subsidiaries/{tool_id}/conformance"),
+                          ("POST", "/api/subsidiaries/{tool_id}/rotate-key"), ("POST", "/api/subsidiaries/{tool_id}/resume"),
+                          ("POST", "/api/subsidiaries/{tool_id}/stop"), ("DELETE", "/api/subsidiaries/{tool_id}")}:
+        return "admin"
+    if path.startswith("/api/subsidiary/v1/"):
+        return "subsidiary"
     return "viewer" if method in ("GET", "HEAD") else "operator"
+
+
+def subsidiary_token(client) -> str:
+    """A sidecar's token for a subsidiary stored as enrollment leaves it (the master switch stays off)."""
+    from hub.models import ApiToken
+    from hub.subsidiary.models import Subsidiary
+
+    hub = client.app.state.hub
+    sub = Subsidiary(id="sub_0123456789ab", tool_id="matrix-tool", mode="sidecar_only", status="probation")
+    hub.store.put("subsidiaries", sub.model_dump(mode="json"))
+    value = service.TOKEN_PREFIX + "m" * 43
+    hub.store.put("tokens", ApiToken(name="sidecar-matrix", role="subsidiary", token_hash=service.sha256(value),
+                                     prefix="mmmmmmmm", created_by="admin", owner_id=hub.auth.find_user("admin").id,
+                                     tool_id=sub.tool_id, subsidiary_id=sub.id).model_dump(mode="json"))
+    return value
 
 
 def test_permission_matrix_covers_every_route(client, sign_in, browser):
@@ -175,6 +348,7 @@ def test_permission_matrix_covers_every_route(client, sign_in, browser):
         "operator": sign_in("operator"),
         "admin": sign_in("admin"),
         "integration": browser(headers={"Authorization": f"Bearer {token}"}),
+        "subsidiary": browser(headers={"Authorization": f"Bearer {subsidiary_token(client)}"}),
     }
     # signing out last keeps the sessions alive
     routes = sorted(api_routes(client.app), key=lambda r: r == ("POST", "/api/auth/logout"))
@@ -188,8 +362,10 @@ def test_permission_matrix_covers_every_route(client, sign_in, browser):
                 allowed = expected is None
             elif who == "integration":
                 allowed = (method, template) in INTEGRATION
+            elif who == "subsidiary":  # its own API only (enrolling included), nothing else - not even public routes
+                allowed = template.startswith("/api/subsidiary/v1/")
             else:
-                allowed = expected is None or RANK[who] >= RANK[expected]
+                allowed = expected is None or (expected != "subsidiary" and RANK[who] >= RANK[expected])
             if allowed and template == "/api/events":
                 continue  # an open event stream never ends under TestClient
             status = caller.request(method, path).status_code
@@ -207,7 +383,8 @@ def test_anonymous_requests(browser):
     assert anon.get("/").status_code == 200  # the UI itself is public; it shows the sign-in screen
     me = anon.get("/api/auth/me").json()
     assert me == {"authenticated": False, "user": None, "setup_required": False,
-                  "oidc": {"enabled": False, "label": "Sign in with SSO"}, "session": {"idle_minutes": 720, "days": 7}}
+                  "oidc": {"enabled": False, "label": "Sign in with SSO"}, "session": {"idle_minutes": 720, "days": 7},
+                  "sso_error": None}
     # the cross-site guard runs before authentication
     blocked = anon.post("/api/auth/login", json={"username": "admin", "password": ADMIN_PASSWORD}, headers={"X-Hub-Request": ""})
     assert blocked.status_code == 403 and "X-Hub-Request" in blocked.json()["detail"]
@@ -549,8 +726,19 @@ def test_self_and_last_admin_guards(client, browser):
 
     second = bot.post("/api/users", json={"username": "second", "password": PASSWORD, "role": "admin"}).json()
     assert bot.patch(url, json={"role": "operator"}).json()["role"] == "operator"
-    assert bot.patch(f"/api/users/{second['id']}", json={"disabled": True}).status_code == 400
     assert client.get("/api/users").status_code == 403  # "admin" was demoted: the new role applies at once
+    # ... to the token too: it acts for "admin" and never with more than admin's role (F2)
+    assert bot.patch(f"/api/users/{second['id']}", json={"disabled": True}).status_code == 403
+    # a token of the last enabled administrator still cannot disable, demote or delete that administrator
+    browser_second = browser()
+    assert browser_second.post("/api/auth/login", json={"username": "second", "password": PASSWORD}).status_code == 200
+    browser_second.post("/api/auth/password", json={"current_password": PASSWORD, "new_password": NEW_PASSWORD})
+    token2 = browser_second.post("/api/tokens", json={"name": "root2", "role": "admin"}).json()["token"]
+    bot2 = browser(headers={"Authorization": f"Bearer {token2}"})
+    for response in (bot2.patch(f"/api/users/{second['id']}", json={"disabled": True}),
+                     bot2.patch(f"/api/users/{second['id']}", json={"role": "operator"}), bot2.delete(f"/api/users/{second['id']}")):
+        assert response.status_code == 400
+        assert response.json()["detail"] == "At least one enabled administrator must remain."
 
 
 # -- API tokens ------------------------------------------------------------------------------
@@ -613,7 +801,7 @@ def test_people_run_commands_but_tokens_are_automation(client, browser, sign_in)
     approval = next(a for a in client.get("/api/approvals").json() if a["id"] == queued["approval_id"])
     assert approval["payload"]["origin"] == "token:ci"
 
-    olga = sign_in("operator", "olga")
+    olga = sign_in("admin", "olga")  # an operator's commands on the hub machine wait for an admin (test_security_core)
     assert olga.post("/api/commands", json={"command": command}).json()["status"] == "done"
     assert client.get("/api/commands").json()[-1]["origin"] == "user:olga"
     decided = olga.post(f"/api/approvals/{queued['approval_id']}", json={"approve": False}).json()
@@ -724,9 +912,10 @@ def test_sso_sign_in_provisions_and_syncs_accounts(client, browser):
     assert len(hub.auth.users()) == 2
 
     client.patch(f"/api/users/{user['id']}", json={"disabled": True})
-    refused = browser().get("/api/auth/oidc/callback?code=c3&state=s3", follow_redirects=False)
-    assert refused.headers["location"].startswith("/#/login?error=")
-    assert unquote(refused.headers["location"].split("error=", 1)[1]) == "This account is disabled."
+    stranger = browser()
+    refused = stranger.get("/api/auth/oidc/callback?code=c3&state=s3", follow_redirects=False)
+    assert refused.headers["location"] == "/#/login"  # the reason travels in a sealed cookie, never in the URL
+    assert stranger.get("/api/auth/me").json()["sso_error"] == "This account is disabled."
 
 
 def test_sso_failures_redirect_to_the_login_screen(client, browser):
@@ -734,9 +923,10 @@ def test_sso_failures_redirect_to_the_login_screen(client, browser):
     hub.auth.oidc = FakeOidc(identity(), error="State mismatch")
     anon = browser()
     failed = anon.get("/api/auth/oidc/callback?code=c&state=s", follow_redirects=False)
-    assert failed.status_code == 302 and unquote(failed.headers["location"]) == "/#/login?error=State mismatch"
+    assert failed.status_code == 302 and failed.headers["location"] == "/#/login"
+    assert anon.get("/api/auth/me").json()["sso_error"] == "State mismatch"
     denied = anon.get("/api/auth/oidc/callback?error=access_denied", follow_redirects=False)
-    assert "access_denied" in unquote(denied.headers["location"])
+    assert denied.headers["location"] == "/#/login" and "access_denied" in anon.get("/api/auth/me").json()["sso_error"]
     assert anon.get("/api/auth/me").json()["authenticated"] is False
     assert any(e["actor"] == "auth" and e["text"].startswith("Single sign-on failed") for e in activity(client))
 

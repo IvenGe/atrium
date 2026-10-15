@@ -179,7 +179,8 @@ def test_settings_api_root_and_detection():
     assert connectors.detect(named)[0]["kind"] == "ciso_assistant"
     entry = next(c for c in connectors.catalog() if c["kind"] == "ciso_assistant")
     assert "error" not in entry and entry["capabilities"] == {"assets": ["read", "write"], "controls": ["write"],
-                                                               "risks": ["read"], "vulnerabilities": ["write"]}
+                                                               "risks": ["read"], "vulnerabilities": ["write"],
+                                                               "frameworks": ["read"], "assessments": ["write"]}
     assert next(f for f in entry["fields"] if f["name"] == "folder_id")["options"] is True
 
 
@@ -503,6 +504,7 @@ def test_the_hub_plans_and_runs_flows_through_ciso_assistant(client, wait_for):
     risk = next(r for r in client.get("/api/grc/risks").json() if r["source"] == "sync:ciso")
     assert (risk["title"], risk["likelihood"], risk["impact"], risk["status"]) == ("Ransomware", 4, 5, "in_treatment")
 
-    assert TOKEN.encode() not in Path(hub.settings.db_path).read_bytes()
+    on_disk = b"".join(p.read_bytes() for p in Path(hub.settings.db_path).parent.glob("hub.db*"))  # + the WAL
+    assert TOKEN.encode() not in on_disk
     for path in ("/api/tools/ciso/connection", "/api/flows", "/api/activity?limit=2000", "/api/messages?limit=2000"):
         assert TOKEN not in client.get(path).text

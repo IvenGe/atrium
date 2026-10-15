@@ -18,6 +18,7 @@ from urllib.parse import quote, quote_plus, urlencode, urlsplit
 
 import httpx
 from cryptography.exceptions import InvalidSignature
+from cryptography.fernet import Fernet, InvalidToken
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import ec, padding, rsa
 from cryptography.hazmat.primitives.asymmetric.utils import encode_dss_signature
@@ -29,7 +30,7 @@ if TYPE_CHECKING:
 
 CACHE_TTL = 3600  # seconds the discovery document and the provider's signing keys are reused
 PENDING_TTL = 600  # seconds a started sign-in stays valid
-MAX_PENDING = 10_000  # started sign-ins kept in memory; the oldest give way first
+MAX_PENDING = 10_000  # finished sign-ins remembered (so a state is used once); the oldest give way first
 CLOCK_SKEW = 60
 MAX_TOKEN_SIZE = 64 * 1024
 LOCAL_HOSTS = ("localhost", "127.0.0.1")
@@ -85,6 +86,9 @@ def _b64int(value: Any) -> int:
 def _safe(value: Any) -> str:
     """A provider-supplied code (error, alg) reduced to something harmless to echo."""
     return re.sub(r"[^\w.-]", "", str(value))[:60] or "?"
+
+
+safe_code = _safe  # for the callback route's activity entry
 
 
 def _number(value: Any) -> bool:
@@ -154,6 +158,16 @@ def _email(value: Any) -> str | None:
     return None
 
 
+def _verified_email(claims: dict[str, Any]) -> str | None:
+    """The email claim, unless the provider says it is not verified (review F17: a self-service email change at the
+    provider must not make an account look like someone else's in the People app). Providers that do not send
+    email_verified at all (Entra ID work accounts) manage the address themselves, so their claim is taken."""
+    verified = claims.get("email_verified", True)
+    if verified is False or (isinstance(verified, str) and verified.strip().lower() == "false"):
+        return None
+    return _email(claims.get("email"))
+
+
 def _display_name(claims: dict[str, Any]) -> str | None:
     name = claims.get("name")
     if not isinstance(name, str) or not name.strip():
@@ -186,7 +200,11 @@ class OidcClient:
         self.enabled = bool(self.issuer and self.client_id)
         self.label = settings.oidc_label
         self.redirect_uri = f"{settings.public_url}/api/auth/oidc/callback"
-        self._pending: dict[str, _Pending] = {}  # by state; insertion order is age
+        # A started sign-in lives in its state value - nonce, PKCE verifier and expiry encrypted with a key of this
+        # client - so nothing is kept per started sign-in and a flood of anonymous starts cannot push anyone's
+        # sign-in out (review F30). Only finished ones are remembered, so each state is used once.
+        self._box = Fernet(Fernet.generate_key())
+        self._used: dict[str, float] = {}  # sha256 of a used state -> its expiry; insertion order is age
         self._config: dict[str, Any] | None = None
         self._config_at = 0.0
         self._jwks: tuple[str, float, list[dict[str, Any]]] | None = None  # (jwks_uri, fetched at, keys)
@@ -198,8 +216,8 @@ class OidcClient:
         if not self.enabled:
             raise OidcError("Single sign-on is not configured.")
         config = await self._discovery()
-        state, nonce, verifier = secrets.token_urlsafe(32), secrets.token_urlsafe(32), secrets.token_urlsafe(64)
-        self._remember(state, _Pending(nonce, verifier, time.time() + PENDING_TTL))
+        nonce, verifier = secrets.token_urlsafe(32), secrets.token_urlsafe(64)
+        state = self._seal(_Pending(nonce, verifier, time.time() + PENDING_TTL))
         scopes = self.settings.oidc_scopes.split()
         if "openid" not in scopes:
             scopes.insert(0, "openid")
@@ -217,8 +235,8 @@ class OidcClient:
             raise OidcError("Single sign-on is not configured.")
         if not state_cookie or not hmac.compare_digest(state_cookie.encode(), state.encode()):
             raise OidcError("This sign-in was not started in this browser. Start again.")
-        pending = self._pending.pop(state, None)
-        if pending is None or pending.expires_at <= time.time():
+        pending = self._take(state)
+        if pending is None:
             raise OidcError("This sign-in has expired or was already used. Start again.")
         config = await self._discovery()
         form = {"grant_type": "authorization_code", "code": code, "redirect_uri": self.redirect_uri,
@@ -234,9 +252,34 @@ class OidcClient:
         if not isinstance(id_token, str):
             raise OidcError("The identity provider did not return an ID token. Check that the openid scope is allowed.")
         claims = await self._validate(id_token, config, pending.nonce)
+        self._check_domain(claims)
         return OidcIdentity(issuer=claims["iss"], subject=claims["sub"], username=_username(claims),
-                            email=_email(claims.get("email")), name=_display_name(claims), role=self.role_for(claims),
+                            email=_verified_email(claims), name=_display_name(claims), role=self.role_for(claims),
                             claims=claims)
+
+    async def check(self) -> dict[str, Any]:
+        """Discovery and the signing keys, with every check sign-in applies to them (for the settings' Test button);
+        nothing is sent but the two public GET requests. Raises OidcError."""
+        if not self.issuer:
+            raise OidcError("Enter the issuer URL.")
+        if not self.client_id:
+            raise OidcError("Enter the client ID.")
+        self._config = None  # always fresh
+        config = await self._discovery()
+        keys = await self._signing_keys(config, refresh=True)
+        usable = [k for k in keys if k.get("use", "sig") == "sig" and k.get("kty") in ("RSA", "EC")]
+        if not usable:
+            raise OidcError("The identity provider publishes no RSA or EC signing key.")
+        claims = config.get("claims_supported") if isinstance(config.get("claims_supported"), list) else None
+        scopes = config.get("scopes_supported") if isinstance(config.get("scopes_supported"), list) else None
+        role_root = self.settings.oidc_role_claim.split(".", 1)[0]
+        return {
+            "issuer": config["issuer"], "authorization_endpoint": config["authorization_endpoint"],
+            "token_endpoint": config["token_endpoint"], "jwks_uri": config["jwks_uri"], "signing_keys": len(usable),
+            "pkce_s256": "S256" in (config.get("code_challenge_methods_supported") or ["S256"]),
+            "scopes_supported": [str(s) for s in scopes][:50] if scopes else None,
+            "role_claim_advertised": (role_root in claims) if claims is not None else None,
+        }
 
     def role_for(self, claims: dict[str, Any]) -> str:
         """The hub role for the claim named by HUB_OIDC_ROLE_CLAIM (a string or a list of strings)."""
@@ -249,15 +292,45 @@ class OidcClient:
             return "admin"
         if values & set(s.oidc_operator_values):
             return "operator"
-        return s.oidc_default_role
+        if values & set(s.oidc_viewer_values):
+            return "viewer"
+        return s.oidc_default_role  # may be "none": the sign-in is refused (review F18)
 
-    def _remember(self, state: str, pending: _Pending) -> None:
+    def _check_domain(self, claims: dict[str, Any]) -> None:
+        """HUB_OIDC_ALLOWED_DOMAINS: only accounts of these domains sign in - Google's hosted domain (hd) claim, else
+        the domain of an email the provider says is verified (review F18)."""
+        allowed = {d.strip().lower() for d in self.settings.oidc_allowed_domains if d.strip()}
+        if not allowed:
+            return
+        hd = claims.get("hd")
+        email = _email(claims.get("email")) if claims.get("email_verified") is True else None
+        domain = hd.strip().lower() if isinstance(hd, str) and hd.strip() else (email.rsplit("@", 1)[1].lower() if email else None)
+        if domain not in allowed:
+            raise OidcError("This account's domain may not sign in to Atrium." if domain
+                            else "Atrium only accepts accounts of its allowed domains, with a verified email.")
+
+    def _seal(self, pending: _Pending) -> str:
+        data = json.dumps({"n": pending.nonce, "v": pending.verifier, "e": pending.expires_at}).encode()
+        return self._box.encrypt(data).decode("ascii").rstrip("=")  # URL- and cookie-safe
+
+    def _take(self, state: str) -> _Pending | None:
+        """The sign-in a state value stands for - None when it is not one of this client's, expired or used - marked
+        used."""
+        try:
+            data = json.loads(self._box.decrypt((state + "=" * (-len(state) % 4)).encode("ascii")))
+            pending = _Pending(str(data["n"]), str(data["v"]), float(data["e"]))
+        except (InvalidToken, ValueError, KeyError, TypeError, UnicodeError):
+            return None
         now = time.time()
-        for key in [k for k, p in self._pending.items() if p.expires_at <= now]:
-            del self._pending[key]
-        while len(self._pending) >= MAX_PENDING:
-            del self._pending[next(iter(self._pending))]
-        self._pending[state] = pending
+        digest = hashlib.sha256(state.encode()).hexdigest()
+        for key in [k for k, exp in self._used.items() if exp <= now]:
+            del self._used[key]
+        if pending.expires_at <= now or digest in self._used:
+            return None
+        while len(self._used) >= MAX_PENDING:
+            del self._used[next(iter(self._used))]
+        self._used[digest] = pending.expires_at
+        return pending
 
     # -- the ID token ------------------------------------------------------------------
 

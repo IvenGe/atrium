@@ -23,10 +23,16 @@ if TYPE_CHECKING:
 
 COLLECTION = "flows"
 LINKS = "sync_links"
-OWNERS = {"assets": "module:assets", "vulnerabilities": "module:vulns", "risks": "module:grc", "controls": "module:grc"}
+OWNERS = {"assets": "module:assets", "vulnerabilities": "module:vulns", "risks": "module:grc", "controls": "module:grc",
+          "people": "module:people", "accounts": "module:people", "network": "module:network",
+          "frameworks": "module:grc", "assessments": "module:grc"}
 APPS = {"assets": "Hub Assets", "vulnerabilities": "Hub Vulnerabilities", "risks": "Hub risk register",
-        "controls": "Hub controls and evidence"}
+        "controls": "Hub controls and evidence", "people": "Hub People", "accounts": "Hub People (accounts)",
+        "network": "Hub Network", "frameworks": "Hub Compliance frameworks",
+        "assessments": "Hub framework self-assessments"}
 DEFAULT_SCHEDULE = {"pull": 60, "push": 60, "scan": 7 * 24 * 60}
+DOMAIN_SCHEDULE = {"network": 10}  # pull minutes where the default does not fit: device drift is noticed sooner, and
+# snapshots stay younger than the 15 minutes a device change needs (integration/network.py stale_after_minutes)
 REPAIR_AFTER = 3  # consecutive failures before the Hub Supervisor asks the Patch Agent for a repair
 STALE_RUN = 30 * 60  # a run marked as under way for longer than this was interrupted
 ASSET_TYPES = ("server", "workstation", "network", "software", "saas", "cloud", "data", "other")
@@ -47,13 +53,36 @@ def save(hub: "Hub", flow: Flow) -> Flow:
     return hub.save(COLLECTION, flow, "flow")
 
 
+def never_approved(hub: "Hub", flow: Flow) -> bool:
+    """A flow whose proposal was turned down - rejected in the approval queue, dismissed in its list, or proposed
+    without a pending approval any more. It neither runs nor gets enabled until a new proposal is approved."""
+    if flow.rejected:
+        return True
+    if flow.status == "proposed":
+        approval = hub.approvals.get(flow.approval_id) if flow.approval_id else None
+        return approval is None or approval.status == "rejected"
+    return False
+
+
+EXTENSIONS_OWNER = "module:extensions"  # extension domains ("x:<key>") are run by the Extensions Supervisor
+
+
 def owner(flow: Flow) -> str:
-    return OWNERS[flow.domain]
+    return OWNERS.get(flow.domain) or (EXTENSIONS_OWNER if flow.domain.startswith("x:") else OWNERS[flow.domain])
+
+
+def app_name(hub: "Hub", domain: str) -> str:
+    if domain in APPS:
+        return APPS[domain]
+    from ..extensions import registry
+
+    defn = registry.domain(hub, domain.removeprefix("x:"))
+    return f"Hub {defn.title}" if defn else f"Hub {domain.removeprefix('x:')}"
 
 
 def end_name(hub: "Hub", end: str, domain: str) -> str:
     if end == "hub":
-        return APPS[domain]
+        return app_name(hub, domain)
     tool = hub.get_tool(end.split(":", 1)[1])
     return tool.name if tool else end
 
@@ -61,7 +90,8 @@ def end_name(hub: "Hub", end: str, domain: str) -> str:
 def title(hub: "Hub", flow: Flow) -> str:
     if flow.direction == "scan":
         return f"Scan in-scope assets with {end_name(hub, flow.target, flow.domain)} -> {APPS['vulnerabilities']}"
-    return f"{end_name(hub, flow.source, flow.domain)} {flow.domain} -> {end_name(hub, flow.target, flow.domain)}"
+    what = flow.domain.removeprefix("x:")
+    return f"{end_name(hub, flow.source, flow.domain)} {what} -> {end_name(hub, flow.target, flow.domain)}"
 
 
 def key(flow: Flow) -> tuple[str, str, str, str | None]:
@@ -72,7 +102,8 @@ def make(hub: "Hub", domain: str, source: str, target: str, action: str | None =
          created_by: str = "supervisor", strategy: str = "connector", status: str = "proposed") -> Flow:
     flow = Flow(id=new_id("fl_"), domain=domain, source=source, target=target, action=action,  # type: ignore[arg-type]
                 reason=reason, created_by=created_by, strategy=strategy, status=status)  # type: ignore[arg-type]
-    flow.schedule_minutes = DEFAULT_SCHEDULE[flow.direction]
+    flow.schedule_minutes = DOMAIN_SCHEDULE.get(domain, DEFAULT_SCHEDULE[flow.direction]) if flow.direction == "pull" \
+        else DEFAULT_SCHEDULE[flow.direction]
     flow.title = title(hub, flow)
     return flow
 
@@ -166,6 +197,26 @@ def remove(hub: "Hub", flow_id: str, actor: str, note: str = "The data flow was 
     hub.store.delete(COLLECTION, flow_id)
     hub.bus.publish("flow_removed", {"id": flow_id})
     return flow
+
+
+def retire_unsupported(hub: "Hub", tool_id: str, actor: str) -> list[Flow]:
+    """The tool's connection changed: remove the enabled or proposed pulls and pushes it no longer supports (e.g.
+    "Send CyFun self-assessments" switched off), so they neither fail on every run nor get approved later; allowing
+    it again leads to a new proposal. Disabled flows stay (a rejected proposal stays rejected), and so do sync links,
+    so a flow proposed again updates the same records. Scans depend on the connector's actions, not its domains."""
+    conn = connections.get(hub, tool_id)
+    caps = connections.capabilities(conn) if conn is not None else {}
+    removed = []
+    for flow in all_flows(hub, tool_id):
+        op = {"pull": "read", "push": "write"}.get(flow.direction)
+        if op is None or flow.status == "disabled" or op in caps.get(flow.domain, []):
+            continue
+        remove(hub, flow.id, actor, "Superseded: the tool's connection no longer supports this data flow.")
+        hub.activity(actor, "warn", f"Removed data flow {flow.title or title(hub, flow)}: the connection no longer "
+                                    f"{'reads' if op == 'read' else 'writes'} {flow.domain.removeprefix('x:')}",
+                     flow_id=flow.id, tool_id=tool_id)
+        removed.append(flow)
+    return removed
 
 
 def forget_tool(hub: "Hub", tool_id: str, actor: str) -> None:

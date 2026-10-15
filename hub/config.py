@@ -8,7 +8,18 @@ from pathlib import Path
 
 AUTONOMY_LEVELS = ("manual", "assisted", "autonomous")
 USER_ROLES = ("viewer", "operator", "admin")
+# the role single sign-on gives people without an admin, operator or viewer value; "none" refuses them (review F18)
+SSO_DEFAULT_ROLES = (*USER_ROLES, "none")
 DEFAULT_MODEL = "claude-opus-5-5"
+
+
+OIDC_ENV = {
+    "oidc_issuer": "HUB_OIDC_ISSUER", "oidc_client_id": "HUB_OIDC_CLIENT_ID", "oidc_client_secret": "HUB_OIDC_CLIENT_SECRET",
+    "oidc_scopes": "HUB_OIDC_SCOPES", "oidc_role_claim": "HUB_OIDC_ROLE_CLAIM", "oidc_admin_values": "HUB_OIDC_ADMIN_VALUES",
+    "oidc_operator_values": "HUB_OIDC_OPERATOR_VALUES", "oidc_viewer_values": "HUB_OIDC_VIEWER_VALUES",
+    "oidc_default_role": "HUB_OIDC_DEFAULT_ROLE", "oidc_allowed_domains": "HUB_OIDC_ALLOWED_DOMAINS",
+    "oidc_label": "HUB_OIDC_LABEL", "oidc_allow_http": "HUB_OIDC_ALLOW_HTTP",
+}
 
 
 def _csv(value: str | None) -> list[str]:
@@ -60,6 +71,9 @@ class Settings:
     admin_username: str | None = None  # first-run administrator, created when there are no users yet
     admin_password: str | None = None
     setup_token: str | None = None  # fixed first-run setup token instead of a random one
+    # addresses (or networks) of reverse proxies whose X-Forwarded-For / -Proto headers are trusted (uvicorn's
+    # forwarded_allow_ips); None: uvicorn's FORWARDED_ALLOW_IPS, or 127.0.0.1 only (review F16)
+    trusted_proxies: str | None = None
 
     # single sign-on (OpenID Connect)
     oidc_issuer: str | None = None
@@ -69,9 +83,15 @@ class Settings:
     oidc_role_claim: str = "groups"  # dotted paths allowed, e.g. realm_access.roles
     oidc_admin_values: list[str] = field(default_factory=lambda: ["atrium-admins"])
     oidc_operator_values: list[str] = field(default_factory=lambda: ["atrium-operators"])
-    oidc_default_role: str = "viewer"
+    oidc_viewer_values: list[str] = field(default_factory=list)  # explicit viewers (with default role "none")
+    oidc_default_role: str = "viewer"  # or "none": refuse people with no admin, operator or viewer value
+    # email domains allowed to sign in (Google: the hd claim, else the domain of a verified email); empty: any
+    oidc_allowed_domains: list[str] = field(default_factory=list)
     oidc_label: str = "Sign in with SSO"
     oidc_allow_http: bool = False  # plain-http issuers are otherwise only allowed on localhost
+    # names of the oidc_* fields set by HUB_OIDC_* variables (they win over the Sign-in & SSO settings stored in the
+    # database); None: settings made in code, where every field that differs from its default counts as set
+    oidc_env: tuple[str, ...] | None = None
 
     def __post_init__(self) -> None:
         self.public_url = (self.public_url or default_public_url(self.host, self.port)).rstrip("/")
@@ -104,6 +124,7 @@ class Settings:
             admin_username=env.get("HUB_ADMIN_USERNAME") or None,
             admin_password=env.get("HUB_ADMIN_PASSWORD") or None,
             setup_token=env.get("HUB_SETUP_TOKEN") or None,
+            trusted_proxies=(env.get("HUB_TRUSTED_PROXIES") or "").strip() or None,
             oidc_issuer=env.get("HUB_OIDC_ISSUER") or None,
             oidc_client_id=env.get("HUB_OIDC_CLIENT_ID") or None,
             oidc_client_secret=env.get("HUB_OIDC_CLIENT_SECRET") or None,
@@ -111,15 +132,18 @@ class Settings:
             oidc_role_claim=env.get("HUB_OIDC_ROLE_CLAIM") or "groups",
             oidc_admin_values=_csv(env.get("HUB_OIDC_ADMIN_VALUES", "atrium-admins")),
             oidc_operator_values=_csv(env.get("HUB_OIDC_OPERATOR_VALUES", "atrium-operators")),
+            oidc_viewer_values=_csv(env.get("HUB_OIDC_VIEWER_VALUES")),
             oidc_default_role=env.get("HUB_OIDC_DEFAULT_ROLE") or "viewer",
+            oidc_allowed_domains=[d.lower() for d in _csv(env.get("HUB_OIDC_ALLOWED_DOMAINS"))],
             oidc_label=env.get("HUB_OIDC_LABEL") or "Sign in with SSO",
             oidc_allow_http=_flag(env.get("HUB_OIDC_ALLOW_HTTP")),
         )
         settings.allowed_hosts += _csv(env.get("HUB_ALLOWED_HOSTS"))
+        settings.oidc_env = tuple(name for name, var in OIDC_ENV.items() if (env.get(var) or "").strip())
         if settings.autonomy not in AUTONOMY_LEVELS:
             raise ValueError(f"HUB_AUTONOMY must be one of {', '.join(AUTONOMY_LEVELS)}")
-        if settings.oidc_default_role not in USER_ROLES:
-            raise ValueError(f"HUB_OIDC_DEFAULT_ROLE must be one of {', '.join(USER_ROLES)}")
+        if settings.oidc_default_role not in SSO_DEFAULT_ROLES:
+            raise ValueError(f"HUB_OIDC_DEFAULT_ROLE must be one of {', '.join(SSO_DEFAULT_ROLES)}")
         if settings.session_idle_minutes < 1 or settings.session_days < 1:
             raise ValueError("HUB_SESSION_IDLE_MINUTES and HUB_SESSION_DAYS must be at least 1")
         return settings

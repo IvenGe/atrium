@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 import asyncio
-import os
 import time
 from collections import deque
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from .runner import kill_tree, new_group_kwargs
+from .runner import child_env, kill_tree, new_group_kwargs
 
 if TYPE_CHECKING:
     from ..core import Hub
@@ -45,8 +44,13 @@ class ProcessManager:
         }
 
     def logs(self, tool_id: str, lines: int = 200) -> list[str]:
+        """The last `lines` lines the tool's process wrote, as everyone who may see the tool reads them (viewers too):
+        every hub secret - its launch secrets included, which the process has in its environment and may echo (a
+        `set -x` launcher, a Java server logging its -D arguments) - and every credential-looking pair masked
+        (hub.cleaned), whenever they are read: a secret set after a line was written is masked in it too."""
         mp = self._procs.get(tool_id)
-        return list(mp.lines)[-lines:] if mp else []
+        tail = list(mp.lines)[-lines:] if mp else []
+        return [str(line) for line in self.hub.cleaned(tail)] if tail else []
 
     async def start(self, tool_id: str, command: str, cwd: str | None = None, env: dict[str, str] | None = None) -> dict[str, Any]:
         current = self._procs.get(tool_id)
@@ -57,7 +61,7 @@ class ProcessManager:
             cwd=cwd or None,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
-            env={**os.environ, **(env or {})},
+            env=child_env(env),  # never the hub's own settings and credentials
             **new_group_kwargs(),
         )
         mp = ManagedProcess(tool_id=tool_id, command=command, cwd=cwd, proc=proc)

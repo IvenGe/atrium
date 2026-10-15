@@ -6,27 +6,51 @@ import asyncio
 import json
 import time
 from typing import Any, Literal
+from urllib.parse import urlsplit
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
+from fastapi.responses import JSONResponse, StreamingResponse
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, ValidationError
 
-from . import connectors, guardrails, llm_providers
+from . import agent_settings_api, bus_api, canvas_api, connectors, dashboards_api, guardrails, llm_providers, network_api
+from . import network_changes_api
+from . import people as people_app
 from .agents import teams
 from .agents import vulns as vuln_app
 from .agents.grc import control_catalog
+from .approvals import DecisionRefused
+from .auth.policy import role_allows
 from .auth.service import CurrentPrincipal, Principal
-from .bus import AgentError
+from .bus import TRACE, AgentError
+from .agents import settings as agent_settings
+from .llm import LLMUnavailable
+from .llm import resolve as llm_resolve
+from .llm import selection as llm_selection
+from .llm import usage as llm_usage
+from .llm.adapters import openai as openai_adapter
 from .connectors.base import ConnectorError
 from .core import Hub
+from .dashboards import metrics as dash_metrics
+from .dashboards import resolve as dash_resolve
+from .extensions import gaps as ext_gaps
+from .extensions import pack as ext_pack
+from .extensions import records as ext_records
+from .extensions import registry as ext_registry
+from .extensions import selfpatch
 from .grc.baseline import POLICY_TEMPLATES
 from .grc.checks import framework_scores
-from .integration import connections, flows, identity, importer, strategies
+from .grc.frameworks import api as frameworks_api
+from .grc.frameworks import sync as framework_sync
+from .integration import changes as device_changes
+from .integration import connections, flows, gapfix, identity, importer, launch_secrets, overrides, strategies
 from .integration.compatibility import suite_matrix
 from .integration.identity import SSO_STRATEGIES
-from .models import OPEN_STATES, SEVERITY_ORDER, AgentPermission, Asset, ControlState, Host, Policy, Risk, Vulnerability
+from .models import (OPEN_STATES, SEVERITY_ORDER, AgentPermission, Asset, ControlState, Host, LlmChoice, PersonStatus,
+                     Policy, Risk, Supplier, TeamLlm, Vulnerability, override_paths)
 from .secrets import SecretError
 from .store import new_id
+from .subsidiary import governance as subsidiary_governance
+from .subsidiary import routes as subsidiary_routes
 
 SlaDays = dict[Literal["critical", "high", "medium", "low"], int]
 
@@ -44,7 +68,7 @@ class CommandBody(BaseModel):
 
 
 class ChatBody(BaseModel):
-    text: str
+    text: str = Field(max_length=20_000)  # the quote check of a private chat reads it (hub/bus.py Quotes)
 
 
 class AgentPatch(BaseModel):
@@ -74,7 +98,7 @@ class AgentCreate(BaseModel):
     title: str = Field("Team agent", max_length=80)
     description: str = Field("", max_length=1000)
     instructions: str = Field("", max_length=20_000)
-    provider: str | None = Field(None, max_length=64)  # default: Claude if available, else a local provider, else rules
+    provider: str | None = Field(None, max_length=64)  # default "": the suite's model choice (hub/llm/resolve.py)
     model: str = Field("", max_length=200)
     permissions: list[AgentPermission] = ["read"]
     team: str = Field("hub", max_length=64)
@@ -89,27 +113,74 @@ class AgentRun(BaseModel):
 
 
 class TeamRequest(BaseModel):
-    designer: Literal["auto", "templates", "claude"] = "auto"
+    designer: Literal["auto", "templates", "model", "claude"] = "auto"  # "claude": the name before "model"
 
 
 class ProviderCreate(BaseModel):
+    kind: Literal["openai_compatible", "openai"] = "openai_compatible"  # "openai": an Azure OpenAI resource
+    variant: Literal["azure"] | None = None  # kind "openai" (OpenAI itself is built in)
     name: str = Field(min_length=1, max_length=80)
     id: str | None = Field(None, max_length=40)
     base_url: str = Field(llm_providers.DEFAULT_BASE_URL, max_length=500)
     default_model: str = Field("", max_length=200)
+    pinned_models: list[str] | None = Field(None, max_length=llm_providers.MAX_PINNED)  # Azure: deployment names
     api_key: str | None = Field(None, max_length=4096)
     tools: bool = True
+    structured_output: Literal["auto", "json_schema", "json_object", "prompt"] = "auto"
+    send_effort: bool = False
     timeout: float = Field(300, ge=5, le=3600)
+    requests_per_minute: int | None = Field(None, ge=0, le=100_000)  # None / 0: no limit
+    max_concurrency: int = Field(4, ge=1, le=64)
+    location: Literal["self_hosted", "third_party"] | None = None  # default: from the address
+    confirm_self_hosted: bool | None = None  # a public address is the administrator's own server
 
 
 class ProviderPatch(BaseModel):
     name: str | None = Field(None, min_length=1, max_length=80)
     base_url: str | None = Field(None, max_length=500)
     default_model: str | None = Field(None, max_length=200)
+    pinned_models: list[str] | None = Field(None, max_length=llm_providers.MAX_PINNED)
     api_key: str | None = Field(None, max_length=4096)  # empty or absent: keep the stored key
     clear_api_key: bool = False
+    enabled: bool | None = None
     tools: bool | None = None
+    structured_output: Literal["auto", "json_schema", "json_object", "prompt"] | None = None
+    send_effort: bool | None = None
     timeout: float | None = Field(None, ge=5, le=3600)
+    requests_per_minute: int | None = Field(None, ge=0, le=100_000)  # 0: no limit
+    max_concurrency: int | None = Field(None, ge=1, le=64)
+    location: Literal["self_hosted", "third_party"] | None = None
+    confirm_self_hosted: bool | None = None
+    supplier: Supplier | None = None  # the whole supplier record (owner, terms reviewed, notes): HB-SC-1
+
+
+class SelectionPatch(BaseModel):
+    """PATCH /api/llm/selection: what is sent changes (teams and purposes per key; null unsets one)."""
+
+    default: LlmChoice | None = None
+    purposes: dict[str, LlmChoice | None] | None = Field(None, max_length=3)
+    teams: dict[str, TeamLlm | None] | None = Field(None, max_length=200)
+    fallback: list[str] | None = Field(None, max_length=8)
+    language: str | None = Field(None, max_length=35)
+    version: int | None = None
+
+
+class AgentSettingsPatch(BaseModel):
+    """PATCH /api/agents/{id}/settings: the model choice ("" = inherit), per-task models and local-only, with the
+    version read (other settings come later and are refused until then)."""
+
+    model_config = {"extra": "allow"}
+    llm: LlmChoice | None = None
+    config: dict[str, Any] | None = None
+    version: int | None = None
+
+
+class ProviderProbe(BaseModel):
+    model: str = Field(min_length=1, max_length=200)
+
+
+class PricesPut(BaseModel):
+    overrides: dict[str, llm_usage.Price | None] = Field(max_length=500)  # "<provider id>:<model>"; null = default
 
 
 class SettingsPatch(BaseModel):
@@ -152,6 +223,46 @@ class ControlOverride(BaseModel):
     clear: bool = False
 
 
+class PersonBody(BaseModel):
+    display_name: str = Field(min_length=1, max_length=200)
+    email: str | None = Field(None, max_length=254)
+    login: str | None = Field(None, max_length=254)
+    title: str | None = Field(None, max_length=200)
+    department: str | None = Field(None, max_length=200)
+    manager_id: str | None = Field(None, max_length=64)
+    status: PersonStatus | None = None  # set by hand; a directory saying the person left still wins
+    groups: list[str] = Field(default_factory=list, max_length=200)
+    location: str | None = Field(None, max_length=200)
+    phone: str | None = Field(None, max_length=64)
+
+
+class PersonPatch(BaseModel):
+    """Only the fields sent change; "status": null clears a status set by hand."""
+
+    display_name: str | None = Field(None, min_length=1, max_length=200)
+    email: str | None = Field(None, max_length=254)
+    login: str | None = Field(None, max_length=254)
+    title: str | None = Field(None, max_length=200)
+    department: str | None = Field(None, max_length=200)
+    manager_id: str | None = Field(None, max_length=64)
+    status: PersonStatus | None = None
+    groups: list[str] | None = Field(None, max_length=200)
+    location: str | None = Field(None, max_length=200)
+    phone: str | None = Field(None, max_length=64)
+
+
+class PersonAction(BaseModel):
+    asset_ids: list[str] | None = Field(None, max_length=5000)  # unassign_assets: only these (default: all)
+    # disable_atrium_account: the accounts the administrator confirmed (default: the one linked account - refused
+    # when several are linked; review F27)
+    user_ids: list[str] | None = Field(None, max_length=50)
+
+
+class AccountLink(BaseModel):
+    person_id: str | None = Field(None, max_length=64)  # null: unlinked by hand
+    auto: bool = False  # true: link automatically again (by email, then login)
+
+
 class PublishBody(BaseModel):
     source: str
     event: str
@@ -179,6 +290,119 @@ class AtriumClientRequest(BaseModel):
     run_registration: bool = False
 
 
+class ExtensionStatus(BaseModel):
+    status: Literal["enabled", "disabled"]
+
+
+class ExtensionRollback(BaseModel):
+    version: str | None = Field(None, max_length=40)  # default: the version before the current one
+
+
+class ExtendRequest(BaseModel):
+    designer: Literal["auto", "templates", "model", "claude"] = "auto"  # "claude": the name before "model"
+
+
+class RecordBody(BaseModel):
+    fields: dict[str, Any] = Field(default_factory=dict)
+    asset_id: str | None = Field(None, max_length=64)  # a link set by hand (default: linked by the domain's rules)
+    person_id: str | None = Field(None, max_length=64)
+
+
+class RecordPatch(BaseModel):
+    """Only what is sent changes: a field set to null is cleared; asset_id / person_id null unlinks by hand;
+    relink=true makes both links automatic again."""
+
+    fields: dict[str, Any] | None = None
+    asset_id: str | None = Field(None, max_length=64)
+    person_id: str | None = Field(None, max_length=64)
+    relink: bool = False
+
+
+class SelfPatchRequest(BaseModel):
+    goal: str = Field(min_length=1, max_length=4000)
+    tool_id: str | None = Field(None, max_length=64)
+
+
+class ProposeRequest(BaseModel):
+    again: bool = False  # an administrator asks again for what was rejected or failed (gapfix.outlook)
+
+
+# PATCH /api/tools/{id}/manifest: only the fields sent change, null puts a field back to what the analysis finds
+# (model_fields_set tells "left out" from null); the checks are overrides.check_edit, answered 400 in plain words.
+class LaunchEdit(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    command: str | None = None
+    port: StrictInt | None = None
+    cwd: str | None = None
+    env: dict[str, str | None] | None = None  # KEY: value | null (removed)
+    secret: list[str] | None = None  # the keys of `env` whose values are secrets (kept in the private launch secrets)
+
+
+class HealthEdit(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    url: str | None = None
+
+
+class ApiEdit(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    type: str | None = None
+    base_url: str | None = None
+    spec: str | None = None
+
+
+class UiEdit(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    url: str | None = None
+
+
+class ManifestEdit(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    launch: LaunchEdit | None = None
+    health: HealthEdit | None = None
+    api: ApiEdit | None = None
+    ui: UiEdit | None = None
+
+
+# changes to Atrium itself and new agent definitions: only administrators decide them (operators may still ask for them)
+ADMIN_APPROVALS = ("extension", "self_patch", "agent_team")
+
+
+def runs_on_hub(approval: Any, hub: Hub | None = None) -> bool:
+    """A command on the hub machine, starting a tool's process, or a patch that changes what runs when a tool is
+    started (gapfix.touches_launch: its launch command, working folder, environment or launch secrets - read from the
+    stored patch, never from the approval's payload; needs `hub`): it runs with Atrium's own privileges, so only an
+    administrator approves it (F1); operators may still reject it."""
+    payload = approval.payload or {}
+    if approval.kind == "command":
+        return (payload.get("target") or "local") == "local"
+    if approval.kind == "patch":
+        patch = hub.get_patch(str(payload.get("patch_id") or "")) if hub is not None else None
+        return patch is not None and gapfix.touches_launch(patch)
+    return approval.kind == "process" and payload.get("action") != "stop"
+
+
+def subsidiary_decider(approval: Any) -> str | None:
+    """Who decides a subsidiary's approval (round4-spec 9.4): "admin" for charters, bridge patches and in-tool actions
+    of admin risk or with an external effect; "operator" for other in-tool actions; None for other approvals.
+    Approving them needs a person (never an API token); rejecting follows the same role rules."""
+    payload = approval.payload or {}
+    if approval.kind == "subsidiary_charter" or (approval.kind == "patch" and payload.get("strategy") == "atrium_bridge"):
+        return "admin"
+    if approval.kind == "subsidiary_action":
+        return "admin" if payload.get("risk") == "admin" or payload.get("external_effect") else "operator"
+    return None
+
+
+def device_repair(approval: Any) -> bool:
+    """A repair of a network device's connection (review F22): it may change only the connection's URL path, but
+    a device's connection is an administrator's to change, so only an administrator approves it."""
+    return approval.kind == "repair" and bool((approval.payload or {}).get("device"))
+
+
+EXTENSION_GUARDRAILS =("allow_extensions", "extensions_need_approval", "allow_self_patching",
+                        "self_patch_requires_tests", "self_patch_requires_approval", "self_patch_via_pull_request")
+
+
 def build_router(hub: Hub) -> APIRouter:
     router = APIRouter()
 
@@ -194,6 +418,25 @@ def build_router(hub: Hub) -> APIRouter:
     def not_found(what: str) -> HTTPException:
         return HTTPException(404, f"{what} not found")
 
+    def this_thread() -> str | None:
+        """The conversation this request's messages belong to (set by the first one, see hub/app.py)."""
+        trace = TRACE.get()
+        return trace.thread if trace is not None else None
+
+    async def ask_chat(p: Principal, recipient: str, subject: str, body: dict[str, Any]) -> Any:
+        """ask() for a chat turn: a reached AI budget or rate limit answers HTTP 429 {detail, code, retry_after}
+        (the person who asked sees why, rather than a rules answer)."""
+        try:
+            return await hub.bus.request(p.bus_id, recipient, subject, body, 900)
+        except AgentError as exc:
+            if exc.code in ("budget_exceeded", "rate_limited"):
+                headers = {"Retry-After": str(exc.retry_after)} if exc.retry_after else None
+                return JSONResponse(status_code=429, headers=headers, content={
+                    "detail": str(exc), "code": exc.code, "retry_after": exc.retry_after})
+            if exc.code == "offline":  # a subsidiary's staff member whose sidecar is offline (R4-SUB)
+                raise HTTPException(503, {"code": "offline", "message": str(exc)}) from exc
+            raise HTTPException(400, str(exc)) from exc
+
     # -- overview ------------------------------------------------------------------------
 
     @router.get("/health")
@@ -202,26 +445,10 @@ def build_router(hub: Hub) -> APIRouter:
 
     @router.get("/overview")
     async def overview() -> dict[str, Any]:
-        tools = hub.tools()
-        scores = [t.report.score for t in tools if t.report]
-        agents = hub.agents.all()
-        states = hub.all("controls", ControlState)
-        baseline = framework_scores(states)[0]["score"] if states else None
-        assets = hub.all("assets", Asset)
-        vulns = hub.all("vulnerabilities", Vulnerability)
+        # the same counts as the dashboard metrics (hub/dashboards/metrics.py), so a tile and a badge never disagree
         return {
-            "tools": len(tools),
-            "running": sum(1 for t in tools if t.running),
-            "suite_score": round(sum(scores) / len(scores)) if scores else None,
-            "agents": len(agents),
-            "agents_working": sum(1 for a in agents if a.status == "working"),
-            "approvals_pending": hub.approvals.pending_count(),
-            "assets": sum(1 for a in assets if a.status != "retired"),
-            "compliance_score": baseline,
-            "risks_open": sum(1 for r in hub.all("risks", Risk) if r.status != "closed"),
-            "vulnerabilities_open": sum(1 for v in vulns if v.status in OPEN_STATES),
-            "vulnerabilities_overdue": sum(1 for v in vulns if v.overdue),
-            "flows_enabled": sum(1 for f in flows.all_flows(hub) if f.status == "enabled"),
+            **dash_metrics.overview(dash_resolve.Snapshot(hub)),
+            "restart_required": hub.restart_required is not None,
             "llm": hub.llm.status(),
             "autonomy": hub.prefs["autonomy"],
         }
@@ -230,7 +457,7 @@ def build_router(hub: Hub) -> APIRouter:
 
     @router.get("/tools")
     async def list_tools() -> list[dict[str, Any]]:
-        return [t.model_dump(mode="json") for t in hub.tools()]
+        return [t.public() for t in hub.tools()]
 
     @router.post("/tools/import", status_code=202)
     async def import_tool(req: importer.ImportRequest, p: CurrentPrincipal) -> dict[str, Any]:
@@ -239,7 +466,7 @@ def build_router(hub: Hub) -> APIRouter:
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
         await hub.bus.tell(p.bus_id, "supervisor", "tool.import", {"tool_id": tool.id, "branch": req.branch})
-        return tool.model_dump(mode="json")
+        return tool.public()
 
     @router.get("/tools/{tool_id}")
     async def get_tool(tool_id: str) -> dict[str, Any]:
@@ -247,7 +474,7 @@ def build_router(hub: Hub) -> APIRouter:
         if tool is None:
             raise not_found("Tool")
         return {
-            **tool.model_dump(mode="json"),
+            **tool.public(),
             "patches": [p.model_dump(mode="json") for p in sorted(hub.patches(tool_id), key=lambda p: -p.created_at)],
             "process": hub.processes.status(tool_id),
         }
@@ -258,12 +485,22 @@ def build_router(hub: Hub) -> APIRouter:
         if tool is None:
             raise not_found("Tool")
         await hub.processes.stop(tool_id)
+        subsidiary_governance.forget_tool(hub, tool_id, p.actor)  # its agent team inside the tool: stopped, archived
         await hub.agents.remove(f"tool:{tool_id}")
         for patch in hub.patches(tool_id):
             hub.store.delete("patches", patch.id)
         hub.store.delete("tools", tool_id)
+        gapfix.forget(hub, tool_id)  # the reasons its gaps got no patch
+        try:
+            launch_secrets.forget(hub.settings.workspace, tool_id)  # the private values its launch needed
+        except ValueError:  # an id the secrets never accepted: there is no file to remove
+            pass
         identity.forget_tool(hub, tool_id)
         flows.forget_tool(hub, tool_id, p.actor)
+        framework_sync.forget_tool(hub, tool_id)
+        people_app.forget_tool(hub, tool_id)
+        await hub.bus.tell(p.bus_id, "module:people", "leavers")  # people it said had left keep that status
+        ext_registry.forget_tool(hub, tool_id, p.actor)
         await teams.forget_tool(hub, tool_id, p.actor)
         if tool.source_type == "github" and tool.path:
             await asyncio.to_thread(importer.remove_tree, hub.settings.workspace / "tools" / tool_id)
@@ -281,8 +518,125 @@ def build_router(hub: Hub) -> APIRouter:
         return {"status": "analysing"}
 
     @router.post("/tools/{tool_id}/patches", status_code=202)
-    async def propose_patches(tool_id: str, p: CurrentPrincipal) -> dict[str, Any]:
-        return await ask(p, "patcher", "propose", {"tool_id": tool_id}, timeout=900)
+    async def propose_patches(tool_id: str, p: CurrentPrincipal, body: ProposeRequest | None = None) -> dict[str, Any]:
+        """A propose pass for the tool's open gaps: {patches, pending, skipped: [{check, title, fix, state, reason}]}.
+        `again` (administrators): also propose what was rejected, failed twice or failed with the AI model before."""
+        again = bool(body and body.again)
+        if again and p.role != "admin":
+            raise HTTPException(403, {"code": "admin_required",
+                                      "message": "Only administrators ask again for patches that were rejected or "
+                                                 "failed. You can still propose the others."})
+        return await ask(p, "patcher", "propose", {"tool_id": tool_id, **({"again": True} if again else {})},
+                         timeout=900)
+
+    def edit_values(tool, body: ManifestEdit) -> tuple[dict[str, Any], dict[str, str | None], set[str]]:
+        """The editor's body as dotted paths -> checked value (None: back to what the analysis finds), the launch
+        environment (KEY -> value | None) and the keys whose values are secrets: those `launch.secret` marks, and any
+        whose name or value looks like a credential (overrides.secret_like) - the rest are plain constants. Raises
+        ValueError with a plain message (naming variables, never values)."""
+        values: dict[str, Any] = {}
+        env: dict[str, str | None] = {}
+        marked: list[str] = []
+        for section in ("launch", "health", "api", "ui"):
+            if section not in body.model_fields_set:
+                continue
+            part = getattr(body, section)
+            if part is None:
+                raise ValueError(f"{section}: send the fields to change (null puts one field back)")
+            for name in sorted(part.model_fields_set):
+                if name == "env":
+                    if part.env is None:
+                        raise ValueError("launch.env: send KEY: value, or KEY: null to remove one")
+                    env = {overrides.check_env_key(k): v for k, v in part.env.items()}
+                elif name == "secret":
+                    marked = [overrides.check_env_key(k) for k in part.secret or []]
+                else:
+                    path = f"{section}.{name}"
+                    values[path] = overrides.check_edit(path, getattr(part, name))
+        if not values and not env:
+            raise ValueError("Nothing to change: send at least one field")
+        if tool.manifest.kind == "saas" and (env or any(p.startswith("launch.") for p in values)):
+            raise ValueError("A SaaS service is not started by the hub: it has no launch settings")
+        if len(env) > overrides.MAX_ENV:
+            raise ValueError(f"At most {overrides.MAX_ENV} launch environment variables")
+        stray = [k for k in marked if env.get(k) is None]
+        if stray:
+            raise ValueError(f"launch.secret names {', '.join(stray)} without a new value in launch.env: type the "
+                             "value again to keep it as a secret")
+        secret = {k for k, v in env.items() if v is not None and (k in marked or overrides.secret_like(k, v))}
+        for k, v in env.items():
+            if v is not None and k not in secret:
+                overrides.check_env_value(k, v)
+        return values, env, secret
+
+    @router.patch("/tools/{tool_id}/manifest")
+    async def edit_manifest(tool_id: str, body: ManifestEdit, p: CurrentPrincipal) -> dict[str, Any]:
+        """An administrator sets how the hub starts and reaches a tool (Integration > Launch / Health / API > Edit):
+        the values become hub-side overrides (hub/integration/overrides.py) that every later analysis applies again,
+        so they win over what the analysis infers and over the tool's own hub.manifest.*. Environment values marked
+        secret (`launch.secret`), or whose name or value looks like a credential, go to the tool's private launch
+        secrets (adapters/<id>/launch/secrets.env, launch_secrets.py) - only their names reach the manifest
+        (launch.secret_env); plain constants (LOG_LEVEL=info) are launch.env overrides, never masked hub-wide. Values
+        are never shown (the API lists env key names); the activity log names paths, never values or the command.
+        null puts a field back: the override is dropped and the tool is analysed again. Answers the tool as the API
+        shows it."""
+        tool = tool_or_404(tool_id)
+        if tool.manifest is None:
+            raise HTTPException(409, f"{tool.name} has not been analysed yet")
+        try:
+            values, env, secret = edit_values(tool, body)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        current = set(override_paths(tool.manifest_overrides))
+        stored: dict[str, str | None] = {}  # what changes in the private launch secrets file
+        if env:  # secrets: names in launch.secret_env, the private file in launch.env_files; plain constants:
+            launch = tool.manifest.launch  # launch.env.<KEY> overrides. A key is one or the other, never both.
+            names = [n for n in launch.secret_env if n not in env] + [k for k in env if k in secret]
+            if len(names) > overrides.MAX_ENV:
+                raise HTTPException(400, f"At most {overrides.MAX_ENV} launch environment variables")
+            secrets_file = [launch_secrets.ENV_FILE] if names else []
+            values["launch.secret_env"] = names
+            values["launch.env_files"] = [f for f in launch.env_files if f != launch_secrets.ENV_FILE] + secrets_file
+            for k, v in env.items():
+                if k in secret:
+                    stored[k] = v
+                    if f"launch.env.{k}" in current:
+                        values[f"launch.env.{k}"] = None
+                else:
+                    stored[k] = None  # a plain value (or a removal) leaves no secret behind
+                    if v is not None or f"launch.env.{k}" in current:
+                        values[f"launch.env.{k}"] = v
+        cleared = sorted(path for path, v in values.items() if v is None
+                         and any(c == path or c.startswith(f"{path}.") for c in current))
+        try:
+            edited = overrides.set_fields(tool.model_copy(deep=True), values)  # checked as a whole before any write
+            if stored:
+                launch_secrets.put(hub.settings.workspace, tool.id, stored)  # refuses a value that would not read back
+        except ValidationError as exc:  # what the manifest model refuses (e.g. more than 8 env_files)
+            first = exc.errors()[0] if exc.errors() else {"loc": (), "msg": str(exc)}
+            where = ".".join(str(x) for x in first["loc"]) or "manifest"
+            raise HTTPException(400, f"{where}: {first['msg']}") from exc
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        launch_overrides = edited.manifest_overrides.get("launch") or {}
+        for key in ("secret_env", "env_files"):  # an emptied list is no hub-side setting
+            if launch_overrides.get(key) == []:
+                launch_overrides.pop(key)
+        edited.manifest_overrides = overrides.merge({}, edited.manifest_overrides)
+        hub.save_tool(edited)
+        if any(v is not None for v in stored.values()):
+            mask = getattr(hub.llm, "mask", None)
+            if mask is not None:  # masked in prompts and logs from now on, not after the mask's next refresh
+                mask.invalidate()
+        changed = sorted({*(path for path in values if path in overrides.EDITABLE), *(f"launch.env.{k}" for k in env)})
+        reset = {path for path, v in values.items() if v is None and not path.startswith("launch.env.")} \
+            | {f"launch.env.{k}" for k, v in env.items() if v is None}  # a constant turned secret is no reset
+        what = ", ".join(f"{path} (reset)" if path in reset else path for path in changed)  # names, never values
+        hub.activity(p.actor, "info", f"{p.actor} changed {what} of {tool.name}", tool_id=tool.id)
+        await ask(p, "supervisor", "reevaluate")
+        if cleared:  # the analysis brings back what it finds for the fields put back
+            await hub.bus.tell(p.bus_id, "supervisor", "tool.imported", {"tool_id": tool.id})
+        return (hub.get_tool(tool.id) or edited).public()
 
     @router.post("/tools/{tool_id}/start")
     async def start_tool(tool_id: str, p: CurrentPrincipal) -> dict[str, Any]:
@@ -304,8 +658,11 @@ def build_router(hub: Hub) -> APIRouter:
     async def propose_team(tool_id: str, p: CurrentPrincipal, body: TeamRequest | None = None) -> dict[str, Any]:
         """Ask the tool's supervisor to propose an AI agent team (an "agent_team" approval, or created directly)."""
         tool = hub.get_tool(tool_id)
-        if tool is None or tool.manifest is None or hub.agents.get(f"tool:{tool_id}") is None:
+        lead = hub.agents.get(f"tool:{tool_id}")
+        if tool is None or tool.manifest is None or lead is None:
             raise not_found("Tool")
+        if lead.paused:  # a paused agent answers nothing: the request would only time out
+            raise HTTPException(409, f"{lead.name} is paused - resume it to propose a team")
         return await ask(p, f"tool:{tool_id}", "team.propose", {"designer": (body or TeamRequest()).designer}, timeout=600)
 
     @router.get("/tools/{tool_id}/strategies")
@@ -328,7 +685,7 @@ def build_router(hub: Hub) -> APIRouter:
         builtin = strategies.builtin_connector(tool)
         return {**connections.public(hub, tool, connections.get(hub, tool.id)),
                 "flows": [flows.public(hub, f) for f in flows.all_flows(hub, tool.id)],
-                "can_generate": hub.llm.available and strategies.has_openapi(tool) and builtin is None,
+                "can_generate": hub.llm.ready("patcher", "generate") and strategies.has_openapi(tool) and builtin is None,
                 "has_openapi": strategies.has_openapi(tool)}
 
     @router.get("/connectors")
@@ -342,12 +699,18 @@ def build_router(hub: Hub) -> APIRouter:
     @router.put("/tools/{tool_id}/connection")
     async def put_connection(tool_id: str, body: ConnectionBody, p: CurrentPrincipal) -> dict[str, Any]:
         tool = tool_or_404(tool_id)
+        previous = connections.get(hub, tool_id)
+        before = connections.capabilities(previous) if previous is not None else {}
         try:
             conn, changed = connections.save(hub, tool_id, body.kind, body.config, body.secrets, p.actor)
         except (ValueError, ConnectorError, SecretError) as exc:
             raise HTTPException(400, getattr(exc, "message", None) or str(exc)) from exc
         what = f"; updated secret(s): {', '.join(changed)}" if changed else ""
         hub.activity(p.actor, "info", f"Saved the {conn.kind} connection of {tool.name}{what}", tool_id=tool_id)
+        flows.retire_unsupported(hub, tool_id, p.actor)  # e.g. a write switched off: its flow must not keep running
+        grew = any(set(ops) - set(before.get(d, [])) for d, ops in connections.capabilities(conn).items())
+        if grew and conn.last_test and conn.last_test.get("ok"):  # e.g. a switch turned back on that the test covers
+            await hub.bus.tell(p.bus_id, "supervisor", "flows.plan")
         if not teams.has_team_or_proposal(hub, tool_id):  # a connected tool gets an agent team proposal (once)
             await hub.bus.tell(p.bus_id, f"tool:{tool_id}", "team.propose", {"auto": True})
         return connection_view(tool)
@@ -358,6 +721,7 @@ def build_router(hub: Hub) -> APIRouter:
         if connections.get(hub, tool_id) is None:
             raise not_found("Connection")
         flows.forget_tool(hub, tool_id, p.actor)  # its flows and sync links go with it
+        framework_sync.forget_tool(hub, tool_id)  # and the frameworks read from it
         hub.activity(p.actor, "info", f"Removed the connection of {tool.name} and its data flows", tool_id=tool_id)
         return {"ok": True}
 
@@ -414,7 +778,8 @@ def build_router(hub: Hub) -> APIRouter:
             raise HTTPException(400, "A tool cannot sign in through itself")
         identity.set_choice(hub, tool_id, provider.tool_id)
         hub.activity(p.actor, "info", f"{tool.name} signs in through {provider.name}")
-        return await ask(p, "patcher", "sso.plan", {"tool_id": tool_id, "actor": p.actor}, timeout=900)
+        return await ask(p, "patcher", "sso.plan", {"tool_id": tool_id, "actor": p.actor, "explicit": True},
+                         timeout=900)
 
     @router.post("/tools/{tool_id}/sso/register")
     async def register_sso_client(tool_id: str, p: CurrentPrincipal) -> dict[str, Any]:
@@ -492,8 +857,9 @@ def build_router(hub: Hub) -> APIRouter:
                        "target": "hub" if f["target"] == "hub" else f["target"].split(":", 1)[1],
                        "type": "flow", "via": f["domain"] + (f" ({f['action']})" if f["action"] else ""),
                        "flow_id": f["id"], "status": f["status"], "failing": bool(f["failures"])} for f in all_flows]
-        return {**suite_matrix(hub.tools()), "routes": hub.toolbus.routes(), "deliveries": hub.toolbus.recent(30),
-                "flows": all_flows, "flow_links": flow_links}
+        # routes and deliveries without webhook URLs or event payloads: viewers read this, and URLs may carry tokens
+        return {**suite_matrix(hub.tools()), "routes": hub.toolbus.public_routes(),
+                "deliveries": hub.toolbus.public_recent(30), "flows": all_flows, "flow_links": flow_links}
 
     @router.post("/integration/evaluate")
     async def reevaluate(p: CurrentPrincipal) -> dict[str, Any]:
@@ -528,9 +894,33 @@ def build_router(hub: Hub) -> APIRouter:
         result = await ask(p, "supervisor", "flows.plan", timeout=120)
         return {**result, "flows": [flows.public(hub, f) for f in flows.all_flows(hub)]}
 
+    def precheck_side_decision(approval_id: str | None, approve: bool, p: Principal) -> None:
+        """Enabling (or disabling) a proposal in its own list decides its approval too: the approval's rules - the
+        second-person rule, expiry - are checked BEFORE anything changes, so this path cannot bypass them; 403
+        same_person, 409."""
+        approval = hub.approvals.get(approval_id) if approval_id else None
+        if approval is None or approval.status != "pending":
+            return
+        try:
+            hub.approvals.precheck(approval, approve, p.actor)
+        except DecisionRefused as exc:
+            raise HTTPException(403, {"code": exc.code, "message": str(exc)}) from exc
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
+
     @router.patch("/flows/{flow_id}")
     async def update_flow(flow_id: str, body: FlowPatch, p: CurrentPrincipal) -> dict[str, Any]:
         flow = flow_or_404(flow_id)
+        # A flow whose proposal was turned down (by the proposer or anyone else) is proposed again when it is
+        # switched on: never enabled here, so neither the second-person rule nor a rejection can be stepped around.
+        again = body.status == "enabled" and flow.status != "enabled" and flows.never_approved(hub, flow)
+        if flow.status == "proposed" and body.status and body.status != flow.status and not again:
+            precheck_side_decision(flow.approval_id, body.status == "enabled", p)
+        if body.status == "enabled" and flow.status != "enabled":  # the loop rule: no pull and push of one domain for one tool
+            conflict = strategies.loop_conflict(flows.all_flows(hub), *flows.key(flow), exclude=flow.id)
+            if conflict is not None:
+                message = strategies.loop_message(hub, flow.domain, flow.source, flow.target)
+                raise HTTPException(409, {"code": "flow_conflict", "flow_id": conflict.id, "message": message})
         changes = []
         if body.options is not None:
             try:
@@ -541,8 +931,12 @@ def build_router(hub: Hub) -> APIRouter:
         if body.schedule_minutes is not None:
             flow.schedule_minutes = body.schedule_minutes
             changes.append(f"every {body.schedule_minutes} min" if body.schedule_minutes else "manual only")
-        pending = flow.approval_id if flow.status == "proposed" else None
-        if body.status and body.status != flow.status:
+        pending = flow.approval_id if flow.status == "proposed" and not again else None
+        if again:
+            changes.append("proposed again" if strategies.propose_again(hub, flow, p.actor) else "enabled")
+        elif body.status and body.status != flow.status:
+            if flow.status == "proposed" and body.status == "disabled":  # dismissed: the proposal is turned down
+                flow.rejected = flow.approval_id or "dismissed"
             flow.status, flow.approval_id = body.status, None
             changes.append(body.status)
         flows.save(hub, flow)
@@ -561,6 +955,8 @@ def build_router(hub: Hub) -> APIRouter:
         flow = flow_or_404(flow_id)
         if flow.status == "proposed" and not flow.job:  # a scan started by hand on a proposed flow can still be polled
             raise HTTPException(400, "Approve or enable this proposed flow first")
+        if flows.never_approved(hub, flow) and not flow.job:
+            raise HTTPException(400, "This flow's proposal was turned down - enable it to propose it again")
         return run_result(await ask(p, flows.owner(flow), "flow.run", {"flow_id": flow_id, "trigger": "manual"}, timeout=900))
 
     @router.post("/flows/{flow_id}/repair", status_code=202)
@@ -591,8 +987,12 @@ def build_router(hub: Hub) -> APIRouter:
         return {"ok": True}
 
     @router.post("/bus/publish")
-    async def bus_publish(body: PublishBody) -> dict[str, Any]:
-        return {"deliveries": await hub.toolbus.publish(body.source, body.event, body.payload)}
+    async def bus_publish(body: PublishBody, p: CurrentPrincipal) -> dict[str, Any]:
+        if p.kind == "token" and p.role == "integration":  # a tool's token speaks for that tool only (review F31)
+            tool = hub.auth.publishing_tool(p, body.source)
+            if body.source != tool:
+                raise HTTPException(403, f"This integration token publishes events for {tool} only")
+        return {"deliveries": await hub.toolbus.publish(body.source, body.event, body.payload, by=p.actor)}
 
     # -- agents & chat -------------------------------------------------------------------
 
@@ -633,10 +1033,13 @@ def build_router(hub: Hub) -> APIRouter:
         if agent.kind == "custom":
             if given.get("paused") is not None and given.get("enabled") is None:
                 given["enabled"] = not given["paused"]
+            before = teams.get_def(hub, agent_id)
             try:
                 defn = teams.update(hub, agent_id, {k: v for k, v in given.items() if k != "paused"}, p.actor)
             except ValueError as exc:
                 raise HTTPException(400, str(exc)) from exc
+            if before is not None and any(getattr(before, k) != getattr(defn, k) for k in teams.FIELDS):
+                agent_settings.bump(hub, agent_id)  # its settings moved: a new settings version (and history entry)
             record = agent_or_404(defn.id).record()
             return {**record, "clamped": [x for x in defn.permissions if x not in record["effective_permissions"]]}
         extra = sorted(k for k in given if k not in CORE_AGENT_FIELDS)
@@ -647,6 +1050,9 @@ def build_router(hub: Hub) -> APIRouter:
         changed = ", ".join(k for k, v in given.items() if v is not None)
         if changed:
             hub.activity(p.actor, "info", f"Configured {record['name']}: {changed}", agent_id=agent_id)
+        if given.get("model") is not None or given.get("instructions") is not None:  # a new settings version
+            agent_settings.bump(hub, agent_id)
+            record = agent_or_404(agent_id).record()
         return record
 
     @router.delete("/agents/{agent_id}")
@@ -658,8 +1064,8 @@ def build_router(hub: Hub) -> APIRouter:
         return {"ok": True}
 
     @router.post("/agents/{agent_id}/chat")
-    async def chat_with_agent(agent_id: str, body: ChatBody, p: CurrentPrincipal) -> dict[str, Any]:
-        """Chat with the Hub Supervisor or any team agent (Claude, a local model, or rules)."""
+    async def chat_with_agent(agent_id: str, body: ChatBody, p: CurrentPrincipal) -> Any:
+        """Chat with the Hub Supervisor or any team agent (on its AI model - Claude, a local model - or rules)."""
         agent = agent_or_404(agent_id)
         if agent_id != "supervisor" and agent.kind != "custom":
             raise HTTPException(400, f"{agent.name} does not chat - chat with the Hub Supervisor or a team agent")
@@ -667,7 +1073,8 @@ def build_router(hub: Hub) -> APIRouter:
             raise HTTPException(409, f"{agent.name} is {'disabled' if agent.kind == 'custom' else 'paused'}")
         if not body.text.strip():
             raise HTTPException(400, "Say something")
-        return {**await ask(p, agent_id, "chat", {"text": body.text}, timeout=900), "agent_id": agent_id}
+        reply = await ask_chat(p, agent_id, "chat", {"text": body.text})
+        return reply if isinstance(reply, JSONResponse) else {**reply, "agent_id": agent_id, "thread": this_thread()}
 
     @router.post("/agents/{agent_id}/chat/reset")
     async def reset_agent_chat(agent_id: str, p: CurrentPrincipal) -> dict[str, Any]:
@@ -689,22 +1096,55 @@ def build_router(hub: Hub) -> APIRouter:
             payload["task"] = body.task.strip()
         return await ask(p, agent_id, "run", payload, timeout=900)
 
+    # Chat text is never in the message log (Bus.send keeps its routing only); rows written before that are redacted
+    # on the way out too (review D7).
+    @router.get("/agents/{agent_id}/settings")
+    async def get_agent_settings(agent_id: str) -> dict[str, Any]:
+        """The agent's model choice, what it resolves to per purpose and through which levels, and its usage."""
+        return agent_settings.view(hub, agent_or_404(agent_id))
+
+    @router.patch("/agents/{agent_id}/settings")
+    async def patch_agent_settings(agent_id: str, body: AgentSettingsPatch, p: CurrentPrincipal) -> Any:
+        agent = agent_or_404(agent_id)
+        given = {**body.model_dump(exclude_unset=True), **(body.model_extra or {})}
+        try:
+            view, lines, loosened = agent_settings.save(hub, agent, given, p.actor)
+        except agent_settings.Conflict as exc:
+            return JSONResponse(status_code=409, content={"detail": str(exc), "code": "version_conflict",
+                                                          "settings": exc.view, "version": exc.view["version"]})
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        if lines:
+            hub.activity(p.actor, "warn" if loosened else "info", f"Configured {agent.name}: " + "; ".join(lines),
+                         agent_id=agent_id, version=view["version"])
+            await hub.bus.tell(p.bus_id, "module:grc", "evaluate")  # HB-SC-1: which cloud providers are in use
+        return view
+
+    # Each row names its conversation (`thread`, GET /api/bus/threads/{thread}), also rows from before they existed.
+    # Bodies as on the Agent bus page: secrets masked, for operators and administrators only (Conversations.log_row).
     @router.get("/agents/{agent_id}/messages")
-    async def agent_messages(agent_id: str, limit: int = 100) -> list[dict[str, Any]]:
+    async def agent_messages(agent_id: str, p: CurrentPrincipal, limit: int = 100) -> list[dict[str, Any]]:
         recent = hub.store.tail("messages", 2000)
-        return [m for m in recent if agent_id in (m["sender"], m["recipient"])][-limit:]
+        mine = [m for m in recent if agent_id in (m["sender"], m["recipient"])][-limit:]
+        bodies = role_allows(p.role, "operator")
+        return [hub.conversations.log_row(m, bodies) for m in mine]
 
     @router.get("/messages")
-    async def messages(limit: int = 200) -> list[dict[str, Any]]:
-        return hub.store.tail("messages", min(limit, 2000))
+    async def messages(p: CurrentPrincipal, limit: int = 200) -> list[dict[str, Any]]:
+        bodies = role_allows(p.role, "operator")
+        return [hub.conversations.log_row(m, bodies) for m in hub.store.tail("messages", min(limit, 2000))]
 
     @router.get("/activity")
-    async def activity(limit: int = 100) -> list[dict[str, Any]]:
-        return hub.store.tail("activity", min(limit, 2000))
+    async def activity(p: CurrentPrincipal, limit: int = 100, before: int | None = None) -> list[dict[str, Any]]:
+        """The latest entries; `before` (an entry's seq) pages back to older ones, so nothing is out of reach. Entries
+        written in a person's private chat thread show its quotes to that person only (Hub.shared_append)."""
+        entries = hub.store.tail("activity", min(limit, 2000), before=before)
+        return hub.conversations.own_entries(entries, hub.llm.memory.person_of(p.bus_id), "a")
 
     @router.post("/chat")
-    async def chat(body: ChatBody, p: CurrentPrincipal) -> dict[str, Any]:
-        return await ask(p, "supervisor", "chat", {"text": body.text}, timeout=900)
+    async def chat(body: ChatBody, p: CurrentPrincipal) -> Any:
+        reply = await ask_chat(p, "supervisor", "chat", {"text": body.text})
+        return reply if isinstance(reply, JSONResponse) else {**reply, "thread": this_thread()}
 
     @router.post("/chat/reset")
     async def chat_reset(p: CurrentPrincipal) -> dict[str, Any]:
@@ -720,15 +1160,59 @@ def build_router(hub: Hub) -> APIRouter:
             if a.kind == "patch":
                 patch = hub.get_patch(a.payload.get("patch_id", ""))
                 item["patch"] = patch.model_dump(mode="json", exclude={"changes", "adapter_changes"}) if patch else None
+            elif a.kind == "extension":
+                rec = ext_registry.get(hub, a.payload.get("extension_id", ""))
+                item["extension"] = ext_registry.public(hub, rec) if rec else None
+            elif a.kind == "self_patch":
+                patch = selfpatch.get(hub, a.payload.get("self_patch_id", ""))
+                item["self_patch"] = selfpatch.public(patch) if patch else None
+            elif a.kind == "firewall":  # the change's live state (scheduled, verifying, ...) for the approval card
+                change = device_changes.get(hub, a.payload.get("change_id", ""))
+                item["firewall_change"] = {k: change.get(k) for k in device_changes.CARD_FIELDS} if change else None
+                if change and a.status == "pending":  # when it would be applied as of now: windows added since count
+                    item["firewall_change"]["maintenance"] = device_changes.maintenance_info(  # (payload: at proposal)
+                        hub, change["firewall"], time.time(), expires_at=change.get("expires_at") or a.payload.get("expires_at"))
             out.append(item)
         return out
 
     @router.post("/approvals/{approval_id}")
     async def decide(approval_id: str, body: DecisionBody, p: CurrentPrincipal) -> dict[str, Any]:
+        pending = hub.approvals.get(approval_id)
+        if pending is not None and pending.kind == "firewall" and p.role != "admin":
+            raise HTTPException(403, {"code": "admin_required",
+                                      "message": "Only administrators decide device changes (canvas-design S4)"})
+        if pending is not None and pending.kind == "firewall" and body.approve and p.kind != "user":
+            raise HTTPException(403, {"code": "person_required",
+                                      "message": "A device change is approved by an administrator on the Approvals "
+                                                 "page, not with an API token (canvas-design S4, S5)"})
+        if pending is not None and pending.kind in ADMIN_APPROVALS and p.role != "admin":
+            raise HTTPException(403, "Only administrators decide changes to Atrium itself and new agents "
+                                     "(extensions, self-patches and agent teams)")
+        decider = subsidiary_decider(pending) if pending is not None else None
+        if decider == "admin" and p.role != "admin":
+            raise HTTPException(403, {"code": "admin_required",
+                                      "message": "Only administrators decide subsidiary charters, bridge patches and "
+                                                 "high-risk changes inside a tool."})
+        if decider is not None and body.approve and p.kind != "user":
+            raise HTTPException(403, {"code": "person_required",
+                                      "message": "A subsidiary's approval is approved by a person on the Approvals "
+                                                 "page, not with an API token. A token may reject it."})
+        if pending is not None and body.approve and device_repair(pending) and p.role != "admin":
+            raise HTTPException(403, {"code": "admin_required",
+                                      "message": "Only administrators approve a repair of a network device's "
+                                                 "connection. You can still reject it."})
+        if pending is not None and body.approve and runs_on_hub(pending, hub) and p.role != "admin":
+            what = ("a patch that changes how a tool is started on the hub machine: the tool then runs" if
+                    pending.kind == "patch" else "commands on the hub machine and starting tools: they run")
+            raise HTTPException(403, {"code": "admin_required",
+                                      "message": f"Only administrators approve {what} with Atrium's own privileges. "
+                                                 "You can still reject it."})
         try:
             approval = await hub.approvals.decide(approval_id, body.approve, body.note, p.actor, sender=p.bus_id)
         except KeyError as exc:
             raise not_found("Approval") from exc
+        except DecisionRefused as exc:  # the second-person rule: a proposer may not approve their own proposal
+            raise HTTPException(403, {"code": exc.code, "message": str(exc)}) from exc
         except ValueError as exc:
             raise HTTPException(409, str(exc)) from exc
         return approval.model_dump(mode="json")
@@ -775,8 +1259,9 @@ def build_router(hub: Hub) -> APIRouter:
         return await ask(p, "operator", "run", body.model_dump(), timeout=body.timeout + 30)
 
     @router.get("/commands")
-    async def command_history(limit: int = 50) -> list[dict[str, Any]]:
-        return hub.store.tail("commands", min(limit, 500))
+    async def command_history(p: CurrentPrincipal, limit: int = 50) -> list[dict[str, Any]]:
+        entries = hub.store.tail("commands", min(limit, 500))  # a private chat's quotes: its person only, as above
+        return hub.conversations.own_entries(entries, hub.llm.memory.person_of(p.bus_id), "c")
 
     # -- assets --------------------------------------------------------------------------
 
@@ -784,11 +1269,37 @@ def build_router(hub: Hub) -> APIRouter:
     async def assets() -> list[dict[str, Any]]:
         return [a.model_dump(mode="json") for a in hub.all("assets", Asset)]
 
+    def person_or_400(person_id: str | None, what: str):
+        if not person_id:
+            return None
+        person = people_app.get(hub, person_id)
+        if person is None:
+            raise HTTPException(400, f"Unknown person for {what}: '{person_id}'")
+        return person
+
+    def link_people(data: dict[str, Any], changes: dict[str, Any]) -> dict[str, Any]:
+        """Validate person links in an asset change; a person picked as owner also fills the free-text owner."""
+        owner = person_or_400(changes.get("owner_person_id"), "the owner")
+        if owner is not None and not changes.get("owner"):
+            data["owner"] = owner.display_name
+        if "assigned_person_id" in changes:
+            person_or_400(changes.get("assigned_person_id"), "the assigned user")
+            data["assigned_source"] = "manual"
+        if changes.get("assigned_source") == "auto":
+            data["assigned_source"] = "auto"
+            data["assigned_person_id"] = people_app.assigned_person(Asset.model_validate(data),
+                                                                    people_app.Index.of(people_app.all_people(hub)))
+        return data
+
     @router.post("/assets", status_code=201)
     async def create_asset(asset: Asset, p: CurrentPrincipal) -> dict[str, Any]:
         asset.id = new_id("a_")
+        given = asset.model_dump(exclude_unset=True)
+        asset = Asset.model_validate(link_people(asset.model_dump(), given))
         hub.save("assets", asset, "asset")
         await hub.bus.tell(p.bus_id, "module:grc", "evaluate")
+        if asset.owner_person_id or asset.assigned_person_id:  # a device handed to a leaver is a leaver finding
+            await hub.bus.tell(p.bus_id, "module:people", "leavers")
         return asset.model_dump(mode="json")
 
     @router.patch("/assets/{asset_id}")
@@ -796,11 +1307,14 @@ def build_router(hub: Hub) -> APIRouter:
         current = hub.one("assets", asset_id, Asset)
         if current is None:
             raise not_found("Asset")
-        allowed = {"name", "type", "owner", "criticality", "status", "tags", "facts", "scan_scope"}
-        merged = Asset.model_validate({**current.model_dump(), **{k: v for k, v in changes.items() if k in allowed},
-                                       "updated_at": time.time()})
+        allowed = {"name", "type", "owner", "criticality", "status", "tags", "facts", "scan_scope", "owner_person_id",
+                   "assigned_person_id", "assigned_source"}
+        given = {k: v for k, v in changes.items() if k in allowed}
+        merged = Asset.model_validate(link_people({**current.model_dump(), **given, "updated_at": time.time()}, given))
         hub.save("assets", merged, "asset")
         await hub.bus.tell(p.bus_id, "module:grc", "evaluate")
+        if merged.owner_person_id or merged.assigned_person_id:
+            await hub.bus.tell(p.bus_id, "module:people", "leavers")
         return merged.model_dump(mode="json")
 
     @router.delete("/assets/{asset_id}")
@@ -823,6 +1337,116 @@ def build_router(hub: Hub) -> APIRouter:
             hub.activity(p.actor, "info", f"{len(result['changed'])} asset(s) {'put in' if body.in_scope else 'taken out of'} "
                                           "vulnerability-scan scope")
         return result
+
+    # -- people --------------------------------------------------------------------------
+
+    def person_or_404(person_id: str):
+        person = people_app.get(hub, person_id)
+        if person is None:
+            raise not_found("Person")
+        return person
+
+    async def people_changed(p: Principal) -> None:
+        await hub.bus.tell(p.bus_id, "module:grc", "evaluate")
+        await hub.bus.tell(p.bus_id, "module:people", "leavers")  # the People Supervisor reports new leaver findings
+
+    @router.get("/people")
+    async def list_people(q: str = "", status: str = "", department: str = "", source: str = "",
+                          brief: bool = False) -> dict[str, Any]:
+        """Filters: q (name, email, login, title, department, groups), status (comma-separated), department, source
+        (a tool id or "manual"). brief=1: id, name, email, title, status and initials only (for pickers)."""
+        return people_app.listing(hub, q=q[:200], status=status[:100], department=department[:200], source=source[:64],
+                                  short=brief)
+
+    @router.get("/people/leavers")
+    async def list_leavers() -> dict[str, Any]:
+        return {"leavers": people_app.leavers(hub),
+                "actions": [{"id": k, **v} for k, v in people_app.ACTIONS.items()]}
+
+    @router.get("/people/{person_id}")
+    async def get_person(person_id: str) -> dict[str, Any]:
+        return people_app.detail(hub, person_or_404(person_id))
+
+    @router.post("/people", status_code=201)
+    async def create_person(body: PersonBody, p: CurrentPrincipal) -> dict[str, Any]:
+        try:
+            person = people_app.create(hub, body.model_dump(), p.actor)
+        except LookupError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(400, str(exc).removeprefix("Value error, ")) from exc
+        await people_changed(p)
+        return people_app.detail(hub, person)
+
+    @router.patch("/people/{person_id}")
+    async def update_person(person_id: str, body: PersonPatch, p: CurrentPrincipal) -> dict[str, Any]:
+        person = person_or_404(person_id)
+        changes = body.model_dump(exclude_unset=True)
+        if "display_name" in changes and not changes["display_name"]:
+            raise HTTPException(400, "A person needs a name")
+        try:
+            person = people_app.update(hub, person, changes, p.actor)
+        except LookupError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        await people_changed(p)
+        return people_app.detail(hub, person)
+
+    @router.delete("/people/{person_id}")
+    async def delete_person(person_id: str, p: CurrentPrincipal) -> dict[str, Any]:
+        people_app.delete(hub, person_or_404(person_id), p.actor)
+        await people_changed(p)
+        return {"ok": True}
+
+    @router.post("/people/{person_id}/actions/{action}")
+    async def person_action(person_id: str, action: str, p: CurrentPrincipal,
+                            body: PersonAction | None = None) -> dict[str, Any]:
+        """unassign_assets (operator) or disable_atrium_account (admin; the role is checked by the policy)."""
+        person = person_or_404(person_id)
+        if action == "unassign_assets":
+            result = people_app.unassign_assets(hub, person, p.actor, (body or PersonAction()).asset_ids)
+        elif action == "disable_atrium_account":
+            try:
+                result = people_app.disable_atrium_account(hub, person, p, (body or PersonAction()).user_ids)
+            except LookupError as exc:
+                raise HTTPException(409, str(exc)) from exc
+        else:
+            raise HTTPException(404, f"Unknown action '{action}': use {', '.join(people_app.ACTIONS)}")
+        await people_changed(p)
+        return {**result, "person": people_app.detail(hub, person)}
+
+    @router.get("/accounts")
+    async def list_accounts(tool_id: str | None = None, person_id: str | None = None,
+                            unlinked: bool = False) -> list[dict[str, Any]]:
+        """User accounts in the tools (and directory entries), with the person each is linked to."""
+        by_id = {x.id: x for x in people_app.all_people(hub)}
+        names = people_app.source_names(hub)
+        out = []
+        for account in people_app.all_accounts(hub, tool_id):
+            if person_id and account.person_id != person_id or unlinked and account.person_id:
+                continue
+            out.append({**account.model_dump(mode="json"), "tool": names.get(account.tool_id, account.tool_id),
+                        "person": people_app.brief(by_id.get(account.person_id or ""))})
+        return sorted(out, key=lambda a: (a["tool"].lower(), (a["login"] or a["email"] or "").lower()))
+
+    @router.patch("/accounts/{account_id:path}")
+    async def link_account(account_id: str, body: AccountLink, p: CurrentPrincipal) -> dict[str, Any]:
+        account = hub.one(people_app.ACCOUNTS, account_id, people_app.Account)
+        if account is None:
+            raise not_found("Account")
+        if body.auto:
+            account.person_source = "auto"
+            account.person_id = people_app.Index.of(people_app.all_people(hub)).match(account.email, account.login)
+        else:
+            person = person_or_400(body.person_id, "the account") if body.person_id else None
+            account.person_id, account.person_source = (person.id if person else None), "manual"
+        people_app.save_account(hub, account)
+        hub.activity(p.actor, "info", f"Account {account.login or account.external_id} in {account.tool_id}: "
+                                      + (f"linked to {account.person_id}" if account.person_id else "not linked"),
+                     person_id=account.person_id)
+        await people_changed(p)
+        return account.model_dump(mode="json")
 
     # -- vulnerabilities -----------------------------------------------------------------
 
@@ -915,6 +1539,9 @@ def build_router(hub: Hub) -> APIRouter:
 
         @router.post(f"/grc/{collection}", status_code=201, name=f"create_{collection}")
         async def create_item(data: dict[str, Any], p: CurrentPrincipal) -> dict[str, Any]:
+            owner = person_or_400(data.get("owner_person_id"), "the owner")
+            if owner is not None and not data.get("owner"):
+                data = {**data, "owner": owner.display_name}
             item = model.model_validate({**data, "id": new_id(prefix)})
             if isinstance(item, Risk):
                 item.reviewed_at = time.time()
@@ -928,6 +1555,9 @@ def build_router(hub: Hub) -> APIRouter:
             if current is None:
                 raise not_found(event.capitalize())
             data = {**current.model_dump(), **{k: v for k, v in changes.items() if k not in ("id", "score")}}
+            owner = person_or_400(changes.get("owner_person_id"), "the owner")
+            if owner is not None and not changes.get("owner"):
+                data["owner"] = owner.display_name
             if isinstance(current, Risk):
                 data["reviewed_at"] = time.time()
             if isinstance(current, Policy):
@@ -952,17 +1582,21 @@ def build_router(hub: Hub) -> APIRouter:
     async def policy_templates() -> dict[str, Any]:
         return POLICY_TEMPLATES
 
+    # compliance frameworks: CyFun catalogs, self-assessments, audit packs, frameworks read from CISO Assistant
+    router.include_router(frameworks_api.build_router(hub))
+
     # -- settings ------------------------------------------------------------------------
 
     @router.get("/settings")
     async def get_settings() -> dict[str, Any]:
         prefs = hub.prefs
-        return {**prefs, "guardrail_catalog": guardrails.catalog(prefs["guardrails"]), "llm": hub.llm.status(),
+        return {**prefs, "model": hub.llm.default_model("anthropic"),  # Claude's default model (its provider record)
+                "guardrail_catalog": guardrails.catalog(prefs["guardrails"]), "llm": hub.llm.status(),
                 "data_dir": str(hub.settings.data_dir), "version": __import__("hub").__version__}
 
     @router.patch("/settings")
     async def patch_settings(body: SettingsPatch, p: CurrentPrincipal) -> dict[str, Any]:
-        values = body.model_dump(exclude={"vuln_sla_days", "guardrails"})
+        values = body.model_dump(exclude={"vuln_sla_days", "guardrails", "model"})
         if body.vuln_sla_days:
             if any(not 1 <= days <= 3650 for days in body.vuln_sla_days.values()):
                 raise HTTPException(400, "SLA days must be between 1 and 3650")
@@ -974,8 +1608,15 @@ def build_router(hub: Hub) -> APIRouter:
                 hub.update_prefs(p.actor, **values)
             if body.guardrails:
                 guardrails.update(hub, p.actor, body.guardrails)
+            if body.model is not None:  # compatibility: the default model of the Claude provider
+                llm_providers.save(hub, "anthropic", {"default_model": body.model}, p.actor)
+                hub.activity(p.actor, "info", "Changed the AI provider Claude: default model", provider_id="anthropic")
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
+        changed = [k for k, v in values.items() if v is not None] + (["model"] if body.model is not None else []) \
+            + (["guardrails"] if body.guardrails else [])
+        if changed:  # key names only, never values: every signed-in principal gets the event
+            hub.bus.publish("settings", {"keys": changed})
         if body.vuln_sla_days:
             await hub.bus.tell(p.bus_id, "module:vulns", "sla.recompute")
         await hub.bus.tell(p.bus_id, "module:grc", "evaluate")
@@ -990,6 +1631,7 @@ def build_router(hub: Hub) -> APIRouter:
             guardrails.update(hub, p.actor, body)
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
+        hub.bus.publish("settings", {"keys": ["guardrails"]})  # key names only, never values
         await hub.bus.tell(p.bus_id, "module:grc", "evaluate")
         return await get_settings()
 
@@ -1002,9 +1644,54 @@ def build_router(hub: Hub) -> APIRouter:
         return provider
 
     def providers_view() -> dict[str, Any]:
-        return {"providers": [llm_providers.public(x) for x in llm_providers.all_providers(hub)],
-                "choices": teams.provider_choices(hub), "anthropic": hub.llm.status(),
-                "default_base_url": llm_providers.DEFAULT_BASE_URL, "kinds": ["openai_compatible"]}
+        """Every provider record in card order (`records`: Claude, OpenAI, Azure OpenAI, local servers), the model
+        servers people added (`providers`), the built-in ones, what agents can run on (`choices`) and the status of
+        the provider layer (`anthropic`: the name before it covered every provider)."""
+        status = hub.llm.status()
+        records = [{**llm_providers.public(x), "caps": {  # what is known per model: stored, learned or documented
+            m: hub.llm.caps(x.id, m).model_dump(mode="json", exclude_none=True, exclude={"at"})
+            for m in dict.fromkeys([hub.llm.default_model(x.id), *x.pinned_models, *x.models]) if m}}
+            for x in llm_providers.ordered(hub)]
+        return {"records": records, "providers": [llm_providers.public(x) for x in llm_providers.local(hub)],
+                "builtin": [r for r in records if r["id"] in llm_providers.BUILTIN],
+                "choices": teams.provider_choices(hub), "anthropic": status, "llm": status,
+                "default_base_url": llm_providers.DEFAULT_BASE_URL, "kinds": ["openai", "openai_compatible"],
+                "selection": llm_resolve.selection(hub.llm).model_dump(mode="json"),
+                "guardrails": {"allow_cloud_llm": hub.llm.cloud_allowed()},
+                "known_models": {"openai": list(openai_adapter.KNOWN_MODELS)}}
+
+    def provider_title(provider: Any) -> str:
+        return f"{'AI' if provider.kind != 'openai_compatible' else 'local model'} provider {provider.name}"
+
+    def provider_changes(before: Any, after: Any, body: BaseModel, key_changed: bool) -> list[str]:
+        """What a PATCH changed, as words for the activity log - never a key value."""
+        sent = body.model_dump(exclude={"api_key", "clear_api_key", "confirm_self_hosted", "supplier"}, exclude_none=True)
+        names = {"base_url": "base URL", "default_model": "default model", "pinned_models": "model list",
+                 "structured_output": "structured output", "send_effort": "effort setting", "enabled": "on/off"}
+        out = [names.get(k, k.replace("_", " ")) for k in sent if getattr(before, k, None) != getattr(after, k, None)]
+        if before.supplier != after.supplier:  # HB-SC-1 evidence: who answers for the supplier, and the last review
+            s = after.supplier
+            reviewed = time.strftime("%Y-%m-%d", time.gmtime(s.reviewed_at)) if s.reviewed_at else None
+            out.append(f"supplier owner {s.owner or 'none'}, "
+                       + (f"terms reviewed {reviewed}" if reviewed else "terms not reviewed"))
+        if key_changed:
+            out.append("API key removed" if after.api_key is None else "API key set")
+        return out
+
+    def provider_users(provider_id: str) -> list[str]:
+        """Who chose the provider: agents (custom, or a core agent's override) and the suite's model selection."""
+        def per_task(config: dict[str, Any]) -> set[str]:
+            return {str((c or {}).get("provider") or "") for c in (config.get("purposes") or {}).values()}
+
+        users = [d.name for d in teams.defs(hub) if provider_id in (d.provider, *(c.provider for c in d.config.purposes.values()))]
+        users += [(hub.agents.get(d["id"]).name if hub.agents.get(d["id"]) else d["id"]) for d in hub.store.list("agents")
+                  if d.get("provider") == provider_id or provider_id in per_task(d.get("config") or {})]
+        sel = llm_resolve.selection(hub.llm)
+        if sel.default.provider == provider_id:
+            users.append("the suite default")
+        users += [f"the {k} default" for k, v in sel.purposes.items() if v.provider == provider_id]
+        users += [f"the {teams.team_name(hub, k)} team" for k, v in sel.teams.items() if v.provider == provider_id]
+        return users + (["the fallback chain"] if provider_id in sel.fallback else [])
 
     @router.get("/llm/providers")
     async def list_llm_providers() -> dict[str, Any]:
@@ -1017,47 +1704,389 @@ def build_router(hub: Hub) -> APIRouter:
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
         key = "; API key set" if provider.api_key else ""
-        hub.activity(p.actor, "info", f"Added the local model provider {provider.name} ({provider.base_url}){key}",
+        hub.activity(p.actor, "info", f"Added the {provider_title(provider)} ({provider.base_url}){key}",
                      provider_id=provider.id)
+        self_hosted_marked(provider, None, p.actor)
         return llm_providers.public(provider)
+
+    def self_hosted_marked(provider: Any, before: Any, actor: str) -> None:
+        host = urlsplit(provider.base_url).hostname or provider.base_url
+        if provider.location_confirmed and not (before is not None and before.location_confirmed
+                                                and urlsplit(before.base_url).hostname == host):
+            hub.activity(actor, "warn", f"Marked {provider.name} as self-hosted (public address {host}): its agents "
+                         "count as running on own hardware", provider_id=provider.id)
 
     @router.patch("/llm/providers/{provider_id}")
     async def update_llm_provider(provider_id: str, body: ProviderPatch, p: CurrentPrincipal) -> dict[str, Any]:
-        provider_or_404_llm(provider_id)
+        before = provider_or_404_llm(provider_id)
         try:
             provider, key_changed = llm_providers.save(hub, provider_id, body.model_dump(), p.actor)
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
-        changed = [k for k, v in body.model_dump(exclude={"api_key", "clear_api_key"}).items() if v is not None]
-        what = ", ".join(changed + (["API key"] if key_changed else []))
-        hub.activity(p.actor, "info", f"Changed the local model provider {provider.name}" + (f": {what}" if what else ""),
-                     provider_id=provider.id)
+        what = ", ".join(provider_changes(before, provider, body, key_changed))
+        hub.activity(p.actor, "warn" if before.enabled and not provider.enabled else "info",
+                     f"Changed the {provider_title(provider)}" + (f": {what}" if what else ""), provider_id=provider.id)
+        self_hosted_marked(provider, before, p.actor)
         return llm_providers.public(provider)
 
     @router.delete("/llm/providers/{provider_id}")
     async def delete_llm_provider(provider_id: str, p: CurrentPrincipal) -> dict[str, Any]:
         provider = provider_or_404_llm(provider_id)
-        users = [d.name for d in teams.defs(hub) if d.provider == provider_id]
+        if provider_id in llm_providers.BUILTIN:
+            raise HTTPException(409, f"{provider.name} is built in - remove its API key instead")
+        users = provider_users(provider_id)
         if users:
             raise HTTPException(409, f"{provider.name} is used by {', '.join(users[:5])}"
                                      f"{' and more' if len(users) > 5 else ''} - move them to another provider first")
         llm_providers.delete(hub, provider_id)
-        hub.activity(p.actor, "info", f"Removed the local model provider {provider.name}", provider_id=provider_id)
+        hub.activity(p.actor, "info", f"Removed the {provider_title(provider)}", provider_id=provider_id)
         return {"ok": True}
 
     @router.post("/llm/providers/{provider_id}/test")
     async def test_llm_provider(provider_id: str, p: CurrentPrincipal) -> dict[str, Any]:
-        result = await llm_providers.test(hub, provider_or_404_llm(provider_id))
+        provider = provider_or_404_llm(provider_id)
+        result = await llm_providers.test(hub, provider)
         hub.activity(p.actor, "info" if result["ok"] else "warn",
-                     f"Tested the local model provider {result['provider']['name']}: {result['detail']}",
-                     provider_id=provider_id)
+                     f"Tested the {provider_title(provider)}: {result['detail']}", provider_id=provider_id)
         return result
+
+    @router.post("/llm/providers/{provider_id}/probe")
+    async def probe_llm_provider(provider_id: str, body: ProviderProbe, p: CurrentPrincipal) -> dict[str, Any]:
+        """Check what one model supports (tools, JSON schema output) with two tiny calls; the result is stored."""
+        provider = provider_or_404_llm(provider_id)
+        model = body.model.strip()
+        try:
+            caps, used = await hub.llm.probe(provider_id, model, person=p.actor)
+        except LLMUnavailable as exc:
+            hub.activity(p.actor, "warn", f"Checked {model} on the {provider_title(provider)}: {exc}",
+                         provider_id=provider_id)
+            raise HTTPException(409, str(exc)) from exc
+        said = {True: "yes", False: "no", None: "unknown"}
+        tokens = used.input_tokens + used.cached_input_tokens + used.output_tokens
+        hub.activity(p.actor, "info", f"Checked {model} on the {provider_title(provider)}: tools {said[caps.tools]}, "
+                     f"JSON {said[caps.json_schema]} ({tokens} tokens)", provider_id=provider_id)
+        return {"model": model, "caps": caps.model_dump(mode="json"), "tokens": tokens,
+                "provider": llm_providers.public(provider_or_404_llm(provider_id))}
+
+    @router.get("/llm/prices")
+    async def llm_prices() -> dict[str, Any]:
+        """USD per 1M tokens: shipped (dated, with sources), set by administrators, and what applies."""
+        return llm_usage.price_view(hub)
+
+    @router.put("/llm/prices")
+    async def put_llm_prices(body: PricesPut, p: CurrentPrincipal) -> dict[str, Any]:
+        try:
+            changed = llm_usage.set_overrides(hub, body.overrides, p.actor)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        if changed:
+            hub.activity(p.actor, "info", "AI prices changed: " + "; ".join(changed)[:900])
+        return llm_usage.price_view(hub)
+
+    @router.get("/llm/selection")
+    async def get_llm_selection() -> dict[str, Any]:
+        """The suite's model choice (default, per purpose, per team, fallback chain) and what every agent runs on."""
+        return llm_selection.view(hub)
+
+    @router.patch("/llm/selection")
+    async def patch_llm_selection(body: SelectionPatch, p: CurrentPrincipal) -> Any:
+        try:
+            sel, lines, loosened = llm_selection.save(hub, body.model_dump(exclude={"version"}, exclude_unset=True),
+                                                      p.actor, body.version)
+        except llm_selection.Conflict as exc:
+            return JSONResponse(status_code=409, content={"detail": str(exc), "code": "version_conflict",
+                                                          "selection": exc.current.model_dump(mode="json")})
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        if lines:
+            hub.activity(p.actor, "warn" if loosened else "info", "AI model selection: " + "; ".join(lines)[:900],
+                         version=sel.version)
+            await hub.bus.tell(p.bus_id, "module:grc", "evaluate")  # HB-SC-1: which cloud providers are in use
+        return llm_selection.view(hub)
+
+    # -- extensions ----------------------------------------------------------------------
+
+    def extension_or_404(ext_id: str) -> ext_registry.ExtensionRecord:
+        rec = ext_registry.get(hub, ext_id)
+        if rec is None:
+            raise not_found("Extension")
+        return rec
+
+    def domains_view() -> list[dict[str, Any]]:
+        out = []
+        for key, (defn, pack_id) in ext_registry.active_domains(hub).items():
+            items = ext_records.all_records(hub, key)
+            out.append({**defn.model_dump(mode="json"), "extension_id": pack_id, "collection": ext_records.collection(key),
+                        "count": sum(1 for r in items if not r.stale), "stale": sum(1 for r in items if r.stale)})
+        return out
+
+    @router.get("/extensions")
+    async def list_extensions() -> dict[str, Any]:
+        """Packs with their items and versions, the extension domains (apps), the gaps tools leave, the guardrails."""
+        recs = sorted(ext_registry.records(hub), key=lambda r: ({"proposed": 0, "enabled": 1}.get(r.status, 2), r.id))
+        values = hub.prefs["guardrails"]
+        return {"extensions": [ext_registry.public(hub, r) for r in recs], "domains": domains_view(),
+                "gaps": [{**g.as_dict(), "tool": t.name} for t in hub.tools() for g in ext_gaps.detect(hub, t)],
+                "allowed": ext_registry.allowed(hub), "kinds": list(ext_pack.KINDS),
+                "guardrails": {k: values.get(k) for k in EXTENSION_GUARDRAILS},
+                "self_patching": selfpatch.availability(hub), "restart_required": hub.restart_required}
+
+    @router.get("/extensions/{ext_id}")
+    async def get_extension(ext_id: str) -> dict[str, Any]:
+        """One pack with every version's JSON and its history."""
+        return ext_registry.public(hub, extension_or_404(ext_id), full=True)
+
+    @router.post("/extensions", status_code=201)
+    async def upload_extension(body: dict[str, Any], p: CurrentPrincipal, enable: bool = False) -> dict[str, Any]:
+        """Upload a pack (JSON): a new pack, or a new version of one (active at once when the pack is enabled)."""
+        try:
+            pack = ext_pack.parse(body)
+            rec = ext_registry.upload(hub, pack, p.actor, enable)
+        except LookupError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        if rec.status == "enabled":
+            await ext_registry.changed(hub, p.bus_id)
+        return ext_registry.public(hub, rec)
+
+    @router.patch("/extensions/{ext_id}")
+    async def set_extension_status(ext_id: str, body: ExtensionStatus, p: CurrentPrincipal) -> dict[str, Any]:
+        rec = extension_or_404(ext_id)
+        pending = rec.approval_id if rec.status == "proposed" else None
+        if pending and body.status != rec.status:
+            precheck_side_decision(pending, body.status == "enabled", p)
+        try:
+            rec = ext_registry.set_status(hub, ext_id, body.status, p.actor)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        if pending:  # deciding here also settles the proposal in the approval queue
+            try:
+                await hub.approvals.decide(pending, body.status == "enabled", f"{body.status.capitalize()} in Extensions",
+                                           p.actor, sender=p.bus_id)
+            except (KeyError, ValueError):
+                pass
+        await ext_registry.changed(hub, p.bus_id)
+        return ext_registry.public(hub, ext_registry.get(hub, ext_id) or rec)
+
+    @router.post("/extensions/{ext_id}/rollback")
+    async def rollback_extension(ext_id: str, p: CurrentPrincipal, body: ExtensionRollback | None = None) -> dict[str, Any]:
+        extension_or_404(ext_id)
+        try:
+            rec = ext_registry.rollback(hub, ext_id, p.actor, (body or ExtensionRollback()).version)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        await ext_registry.changed(hub, p.bus_id)
+        return ext_registry.public(hub, rec)
+
+    @router.delete("/extensions/{ext_id}")
+    async def delete_extension(ext_id: str, p: CurrentPrincipal, purge: bool = False) -> dict[str, Any]:
+        """Remove a pack with all its versions; purge=true also removes the records of the domains it defined."""
+        extension_or_404(ext_id)
+        removed = ext_registry.remove(hub, ext_id, p.actor, purge)
+        await ext_registry.changed(hub, p.bus_id)
+        return {"ok": True, "purged": removed}
+
+    @router.post("/tools/{tool_id}/extend")
+    async def extend_for_tool(tool_id: str, p: CurrentPrincipal, body: ExtendRequest | None = None) -> dict[str, Any]:
+        """Ask the Patch Agent to close the tool's hub-side gaps with an extension pack (and, with an AI model, a self-patch
+        when only code can close one)."""
+        tool = hub.get_tool(tool_id)
+        if tool is None or tool.manifest is None:
+            raise not_found("Tool")
+        return await ask(p, "patcher", "extension.propose", {"tool_id": tool_id,
+                                                              "designer": (body or ExtendRequest()).designer}, timeout=900)
+
+    # -- extension domains: records ------------------------------------------------------
+
+    def domain_or_404(key: str):
+        found = ext_registry.active_domains(hub).get(key.removeprefix("x:"))
+        if found is None:
+            raise not_found("Extension domain")
+        return found
+
+    def record_or_404(key: str, record_id: str) -> ext_records.ExtRecord:
+        record = ext_records.get(hub, key, record_id)
+        if record is None:
+            raise not_found("Record")
+        return record
+
+    def typed_fields(defn: ext_pack.DomainItem, given: dict[str, Any]) -> dict[str, Any]:
+        """Values a person entered, typed by the domain's fields (None clears one); 400 for anything that does not fit."""
+        out: dict[str, Any] = {}
+        for name, value in given.items():
+            spec = defn.field(name)
+            if spec is None:
+                raise HTTPException(400, f"{defn.title} has no field '{name}'")
+            if value is None or value == "":
+                out[name] = None
+                continue
+            typed = ext_records.coerce_value(spec, value)
+            if typed is None:
+                expected = f"one of {', '.join(spec.values)}" if spec.type == "enum" else f"a valid {spec.type}"
+                raise HTTPException(400, f"{spec.label} must be {expected}")
+            out[name] = typed
+        return out
+
+    def link_target(kind: str, value: str | None) -> str | None:
+        if not value:
+            return None
+        if kind == "asset" and hub.one("assets", value, Asset) is None:
+            raise HTTPException(400, f"Unknown asset '{value}'")
+        if kind == "person" and people_app.get(hub, value) is None:
+            raise HTTPException(400, f"Unknown person '{value}'")
+        return value
+
+    def record_view(record: ext_records.ExtRecord, pack_id: str | None = None) -> dict[str, Any]:
+        return {**ext_records.public(hub, record), "extension_id": pack_id}
+
+    @router.get("/x")
+    async def extension_domains() -> list[dict[str, Any]]:
+        """The enabled extension domains - each is an app in the sidebar."""
+        return domains_view()
+
+    @router.get("/x/{domain}")
+    async def list_extension_records(domain: str, q: str = "", asset_id: str = "", person_id: str = "", source: str = "",
+                                     stale: bool = False, limit: int = 1000) -> dict[str, Any]:
+        """Filters: q (title, external id and every field), asset_id, person_id, source (a tool id or "manual");
+        stale=true includes records their tool no longer reports."""
+        defn, pack_id = domain_or_404(domain)
+        return {"domain": {**defn.model_dump(mode="json"), "extension_id": pack_id},
+                **ext_records.listing(hub, defn, q=q[:200], asset_id=asset_id[:64], person_id=person_id[:64],
+                                      source=source[:64], include_stale=stale, limit=limit)}
+
+    @router.post("/x/{domain}", status_code=201)
+    async def create_extension_record(domain: str, body: RecordBody, p: CurrentPrincipal) -> dict[str, Any]:
+        defn, pack_id = domain_or_404(domain)
+        fields = {k: v for k, v in typed_fields(defn, body.fields).items() if v is not None}
+        missing = [f.label for f in defn.fields if f.required and f.name not in fields]
+        if missing:
+            raise HTTPException(400, f"Required: {', '.join(missing)}")
+        record = ext_records.ExtRecord(domain=defn.key, fields=fields, title=ext_records.title_of(defn, fields))
+        if body.asset_id:
+            record.asset_id, record.asset_source = link_target("asset", body.asset_id), "manual"
+        if body.person_id:
+            record.person_id, record.person_source = link_target("person", body.person_id), "manual"
+        ext_records.Linker(hub).apply(defn, record)
+        ext_records.save(hub, record)
+        hub.activity(p.actor, "info", f"Added {defn.singular or defn.title} '{record.title}'", domain=defn.key,
+                     record_id=record.id)
+        await hub.bus.tell(p.bus_id, "module:grc", "evaluate")
+        return record_view(record, pack_id)
+
+    @router.get("/x/{domain}/{record_id}")
+    async def get_extension_record(domain: str, record_id: str) -> dict[str, Any]:
+        defn, pack_id = domain_or_404(domain)
+        return {**record_view(record_or_404(defn.key, record_id), pack_id), "domain_def": defn.model_dump(mode="json")}
+
+    @router.patch("/x/{domain}/{record_id}")
+    async def update_extension_record(domain: str, record_id: str, body: RecordPatch, p: CurrentPrincipal) -> dict[str, Any]:
+        defn, pack_id = domain_or_404(domain)
+        record = record_or_404(defn.key, record_id)
+        given = body.model_dump(exclude_unset=True)
+        changed = []
+        if body.fields:
+            merged = {**record.fields, **typed_fields(defn, body.fields)}
+            fields = {k: v for k, v in merged.items() if v is not None}
+            missing = [f.label for f in defn.fields if f.required and f.name not in fields]
+            if missing:
+                raise HTTPException(400, f"Required: {', '.join(missing)}")
+            record.fields, record.title = fields, ext_records.title_of(defn, fields, record.external_id)
+            changed.append("fields")
+        if "asset_id" in given:
+            record.asset_id, record.asset_source = link_target("asset", body.asset_id), "manual"
+            changed.append("asset")
+        if "person_id" in given:
+            record.person_id, record.person_source = link_target("person", body.person_id), "manual"
+            changed.append("person")
+        if body.relink:
+            record.asset_source = record.person_source = "auto"
+            changed.append("links automatic")
+        ext_records.Linker(hub).apply(defn, record)
+        ext_records.save(hub, record)
+        if changed:
+            hub.activity(p.actor, "info", f"Changed {defn.singular or defn.title} '{record.title}': {', '.join(changed)}"
+                         + (" (its tool may overwrite pulled fields on the next pull)" if record.source != "manual"
+                            and "fields" in changed else ""), domain=defn.key, record_id=record.id)
+        await hub.bus.tell(p.bus_id, "module:grc", "evaluate")
+        return record_view(record, pack_id)
+
+    @router.delete("/x/{domain}/{record_id}")
+    async def delete_extension_record(domain: str, record_id: str, p: CurrentPrincipal) -> dict[str, Any]:
+        defn, _ = domain_or_404(domain)
+        record = record_or_404(defn.key, record_id)
+        ext_records.delete(hub, defn.key, record_id)
+        if record.source != "manual":
+            flows.drop_link(hub, record.source, ext_records.collection(defn.key), record_id)
+        hub.activity(p.actor, "info", f"Removed {defn.singular or defn.title} '{record.title}'", domain=defn.key)
+        await hub.bus.tell(p.bus_id, "module:grc", "evaluate")
+        return {"ok": True}
+
+    # -- self-patches (changes to Atrium's own code) -------------------------------------
+
+    def self_patch_or_404(patch_id: str) -> selfpatch.SelfPatch:
+        patch = selfpatch.get(hub, patch_id)
+        if patch is None:
+            raise not_found("Self-patch")
+        return patch
+
+    @router.get("/self-patches")
+    async def list_self_patches() -> dict[str, Any]:
+        return {"patches": [selfpatch.public(x, diff=False) for x in selfpatch.all_patches(hub)],
+                "restart_required": hub.restart_required, "availability": selfpatch.availability(hub)}
+
+    @router.get("/self-patches/{patch_id}")
+    async def get_self_patch(patch_id: str) -> dict[str, Any]:
+        return selfpatch.public(self_patch_or_404(patch_id))
+
+    @router.post("/self-patches", status_code=202)
+    async def request_self_patch(body: SelfPatchRequest, p: CurrentPrincipal) -> dict[str, Any]:
+        """Ask the Patch Agent (an AI model) for a change to Atrium's own code; it appears in Approvals once its tests ran."""
+        state = selfpatch.availability(hub)
+        if not state["allowed"]:
+            raise HTTPException(400, "Self-patching is switched off (guardrail allow_self_patching)")
+        if not state["model"]:
+            raise HTTPException(400, "Self-patches need an AI model - configure one in Settings > AI providers (or "
+                                     "set ANTHROPIC_API_KEY)")
+        if not state["git_checkout"]:
+            raise HTTPException(400, "Atrium does not run from a git checkout, so it cannot patch itself")
+        if body.tool_id and hub.get_tool(body.tool_id) is None:
+            raise not_found("Tool")
+        await hub.bus.tell(p.bus_id, "patcher", "self_patch.propose", {"goal": body.goal.strip(), "tool_id": body.tool_id})
+        hub.activity(p.actor, "info", f"Asked the Patch Agent for a change to Atrium: {body.goal.strip()[:200]}")
+        return {"accepted": True, "detail": "The Patch Agent writes the change on a branch and runs the tests; it "
+                                            "appears in Approvals when they are done."}
+
+    @router.post("/self-patches/{patch_id}/apply")
+    async def apply_self_patch(patch_id: str, p: CurrentPrincipal) -> dict[str, Any]:
+        """Apply an approved self-patch again (after a refusal such as a dirty working tree)."""
+        patch = self_patch_or_404(patch_id)
+        if patch.status != "approved":
+            raise HTTPException(400, f"The self-patch is {patch.status}: only an approved one that could not be "
+                                     "applied can be applied again")
+        result = await selfpatch.apply(hub, patch, p.actor)
+        if result.get("busy"):
+            raise HTTPException(409, result["detail"])
+        if result["ok"] and patch.approval_id:
+            hub.approvals.complete(patch.approval_id, True, result)
+        return {**result, "self_patch": selfpatch.public(selfpatch.get(hub, patch_id) or patch)}
+
+    # -- Network app and segmentation map (hub/network_api.py) ----------------------------
+
+    network_api.add_routes(router, hub, ask)
+    network_changes_api.add_routes(router, hub, ask)  # device changes and maintenance windows (R3-NETCHANGE)
+    canvas_api.add_routes(router, hub, ask)  # integration map, Connect options, POST /flows, layouts (R3-CANVAS-BE)
+    dashboards_api.add_routes(router, hub)  # Home dashboards, widgets and their data (R4-DASH)
+    agent_settings_api.add_routes(router, hub)  # agent settings history, playground, budgets, usage (R4-LLM 4)
+    bus_api.add_routes(router, hub)  # the Agent bus page: conversations and agents' errors
+    subsidiary_routes.add_routes(router, hub, ask)  # subsidiaries and their sidecars' API (R4-SUB)
 
     # -- live events (SSE) ---------------------------------------------------------------
 
     @router.get("/events")
     async def events(request: Request, p: CurrentPrincipal) -> StreamingResponse:
         queue = hub.bus.subscribe()
+        bodies = role_allows(p.role, "operator")  # a "message" event's body: as GET /api/messages shows it
 
         async def stream():
             checked = time.monotonic()
@@ -1073,7 +2102,7 @@ def build_router(hub: Hub) -> APIRouter:
                     except asyncio.TimeoutError:
                         yield ": keep-alive\n\n"
                         continue
-                    yield f"data: {json.dumps(event, default=str)}\n\n"
+                    yield f"data: {json.dumps(hub.conversations.event(event, bodies), default=str)}\n\n"
             finally:
                 hub.bus.unsubscribe(queue)
 

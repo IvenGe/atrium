@@ -2,13 +2,19 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 from typing import Any
 
 from ..bus import Message
+from ..extensions import controls as extension_controls
 from ..grc.baseline import CONTROLS, CONTROLS_BY_ID
 from ..grc.checks import Snapshot, evaluate_controls, framework_scores
+from ..grc.frameworks import assessments as framework_assessments
+from ..grc.frameworks import sync as framework_sync
 from ..integration import flows
+from ..integration import network as network_app
+from .. import people
 from ..models import Asset, ControlState, Flow, Patch, Policy, Risk, Vulnerability
 from ..store import new_id
 from .fabric import FlowOwner
@@ -19,15 +25,20 @@ TREATMENTS = ("mitigate", "accept", "transfer", "avoid")
 class GrcSupervisor(FlowOwner):
     role = "module-supervisor"
     title = "GRC Supervisor"
-    max_concurrency = 1  # evaluations must not interleave
+    # Data flows run in the usual slots; an evaluation (and the summary) never waits behind them - a pull from a slow
+    # GRC tool can take minutes - and evaluations are serialised by their own lock instead (_evaluating).
+    unthrottled_subjects = frozenset({"evaluate", "summary"})
     description = ("Responsible for the Compliance hub: evaluates controls against live hub state, collects evidence, "
                    "maps it to ISO 27001, SOC 2 and NIS2, opens or closes risks when controls fail or recover, pushes "
-                   "controls and evidence to GRC tools and pulls their risk scenarios into the risk register.")
-    flow_domains = ("controls", "risks")
+                   "controls and evidence to GRC tools and pulls their risk scenarios into the risk register; reads "
+                   "the frameworks and assessments GRC tools hold and, when an administrator allows it, sends them the "
+                   "hub's CyFun self-assessments.")
+    flow_domains = ("controls", "risks", "frameworks", "assessments")
     permissions = ("read", "tool_api", "flows", "grc_write", "agents")
 
     def __init__(self, hub):
         super().__init__(hub, "module:grc", "GRC Supervisor", scope="grc")
+        self._evaluating = asyncio.Lock()  # evaluations must not interleave
 
     def snapshot(self) -> Snapshot:
         hub = self.hub
@@ -37,7 +48,41 @@ class GrcSupervisor(FlowOwner):
             audit_entries=hub.store.count("activity") + hub.store.count("messages"),
             users=hub.auth.users(), oidc_enabled=hub.auth.oidc.enabled,
             vulnerabilities=hub.all("vulnerabilities", Vulnerability), guardrails=hub.prefs["guardrails"],
+            people=people.all_people(hub), accounts=people.all_accounts(hub),
+            extension_results=extension_controls.evaluate(hub), network=self._network_facts(),
+            frameworks=self._framework_facts(), ai_providers=self._ai_providers(),
+            subsidiaries=self._subsidiary_facts(),
         )
+
+    def _subsidiary_facts(self) -> dict[str, Any]:
+        try:
+            from ..subsidiary import governance
+
+            return governance.compliance_facts(self.hub)
+        except Exception as exc:  # the other controls must still be evaluated
+            self.log("warn", f"Subsidiary compliance facts unavailable: {exc.__class__.__name__}: {exc}")
+            return {}
+
+    def _ai_providers(self) -> list[dict[str, Any]]:
+        try:
+            return self.hub.llm.suppliers()
+        except Exception as exc:  # the other controls must still be evaluated
+            self.log("warn", f"AI provider facts unavailable: {exc.__class__.__name__}: {exc}")
+            return []
+
+    def _framework_facts(self) -> list[dict[str, Any]]:
+        try:
+            return framework_assessments.control_summaries(self.hub)
+        except Exception as exc:  # the other controls must still be evaluated
+            self.log("warn", f"Framework self-assessments unavailable: {exc.__class__.__name__}: {exc}")
+            return []
+
+    def _network_facts(self) -> dict[str, Any]:
+        try:
+            return network_app.compliance_facts(self.hub)
+        except Exception as exc:  # the other controls must still be evaluated
+            self.log("warn", f"Network compliance facts unavailable: {exc.__class__.__name__}: {exc}")
+            return {}
 
     # -- data flows ------------------------------------------------------------------
 
@@ -48,6 +93,13 @@ class GrcSupervisor(FlowOwner):
             return {"counts": await self.push_records(flow, records, label=lambda r: r["ref_id"])}
         if flow.domain == "risks" and flow.direction == "pull":
             return await self._pull_risks(flow)
+        if flow.domain == "frameworks" and flow.direction == "pull":
+            records, info = await self.pull_records(flow)
+            counts = framework_sync.store(self.hub, flow.tool_id, records, flow.options.get("retire_missing", True))
+            return {"counts": {**counts, "dropped": info["dropped"]}}
+        if flow.domain == "assessments" and flow.direction == "push":
+            records = framework_sync.push_records(self.hub)
+            return {"counts": await self.push_records(flow, records, label=lambda r: r["name"])}
         raise ValueError(f"The GRC Supervisor cannot {flow.direction} {flow.domain}")
 
     async def _pull_risks(self, flow: Flow) -> dict[str, Any]:
@@ -96,6 +148,10 @@ class GrcSupervisor(FlowOwner):
         return {"counts": counts}
 
     async def on_evaluate(self, body: dict[str, Any], msg: Message) -> dict[str, Any]:
+        async with self._evaluating:
+            return self._evaluate()
+
+    def _evaluate(self) -> dict[str, Any]:
         overrides = {s.id: s for s in self.hub.all("controls", ControlState)}
         states = evaluate_controls(self.snapshot(), overrides)
         changed = []

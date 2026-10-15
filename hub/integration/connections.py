@@ -36,7 +36,7 @@ class Connection(BaseModel):
     config: dict[str, Any] = {}
     secrets: dict[str, str] = {}  # field name -> Fernet token
     endpoint: str = ""  # Connector.endpoint(config) the secrets were entered for
-    generated: bool = False  # a generic_rest mapping Claude generated from the tool's OpenAPI spec
+    generated: bool = False  # a generic_rest mapping an AI model generated from the tool's OpenAPI spec
     created_by: str = ""
     created_at: float = Field(default_factory=time.time)
     updated_by: str = ""
@@ -220,11 +220,24 @@ def update_config(hub: "Hub", tool_id: str, changes: dict[str, Any], actor: str,
     return _put(hub, conn)
 
 
+def drop_mapping(hub: "Hub", tool_id: str, actor: str) -> Connection | None:
+    """Take every domain out of a generic REST connection (an extension that mapped the last ones was disabled): the
+    connection and its credentials stay, and it reads nothing until someone maps a domain again. The "at least one
+    domain" rule of a saved mapping does not apply here."""
+    conn = get(hub, tool_id)
+    if conn is None or "mapping" not in conn.config:
+        return conn
+    return _put(hub, conn.model_copy(update={"config": {k: v for k, v in conn.config.items() if k != "mapping"},
+                                             "last_test": None, "updated_by": actor, "updated_at": time.time()}))
+
+
 def record_test(hub: "Hub", tool_id: str, result: dict[str, Any]) -> None:
     conn = get(hub, tool_id)
     if conn is None:
         return
     conn.last_test = {k: result.get(k) for k in ("ok", "detail", "checks", "domains")} | {"at": time.time()}
+    if "network_write" in result:  # what a network device and its credential allow (hub/integration/network.py)
+        conn.last_test["network_write"] = result["network_write"]
     _put(hub, conn)
 
 
@@ -258,15 +271,21 @@ def build(hub: "Hub", tool_id: str, config_override: dict[str, Any] | None = Non
 
 
 def capabilities(conn: Connection) -> dict[str, list[str]]:
-    """Domains and operations of a connection: what its last successful test reported, else what the connector
-    declares for these settings."""
-    if conn.last_test and conn.last_test.get("ok") and conn.last_test.get("domains"):
-        return {d: sorted(ops) for d, ops in conn.last_test["domains"].items() if ops}
+    """Domains and operations of a connection: what the connector declares for its current settings, narrowed to what
+    its last successful test reported (a test is kept while the endpoint stays the same, so a setting switched off
+    since - e.g. CISO Assistant's "Send CyFun self-assessments" - must not keep its domain)."""
     try:
         cls = connectors.connector_class(conn.kind)
-        return cls(conn.config, {}).domains()
+        declared = cls(conn.config, {}).domains()
     except Exception:
-        return {}
+        declared = None
+    if conn.last_test and conn.last_test.get("ok") and conn.last_test.get("domains"):
+        tested = {d: sorted(ops) for d, ops in conn.last_test["domains"].items() if ops}
+        if declared is None:
+            return tested
+        narrowed = {d: [op for op in ops if op in declared.get(d, [])] for d, ops in tested.items()}
+        return {d: ops for d, ops in narrowed.items() if ops}
+    return declared or {}
 
 
 def public(hub: "Hub", tool: Tool, conn: Connection | None) -> dict[str, Any]:

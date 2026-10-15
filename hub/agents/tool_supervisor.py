@@ -10,15 +10,20 @@ from urllib.parse import urlparse
 
 import httpx
 
+from ..approvals import sender_person
 from ..bus import Message
 from ..connectors.base import ConnectorError, check, normalize, redact
-from ..integration import connections
-from ..integration.analyzer import analyze_repo, analyze_saas, list_files, readme_summary
-from ..models import AGENT_PERMISSIONS, Manifest, Tool
+from ..connectors.netmodel import RESERVED_ACTIONS, ChangeError, parse_ops
+from ..integration import changes, connections, known_tools, network, overrides, patches
+from ..integration.analyzer import analyze_repo, analyze_saas, list_files, read_repo_file, readme_summary
+from ..models import AGENT_PERMISSIONS, Manifest, Tool, override_paths
 from . import teams
 from .base import BaseAgent
 
 PUSH_ACTIONS = ("created", "updated", "skipped", "failed")
+# approval kind of a side-effecting connector action -> the only agent that may ask for it (it applies that kind's
+# approval policy), so team agents and other modules cannot bypass it; people may run them directly
+ACTION_ROUTES = {"scan": "module:vulns"}
 
 ENRICH_SCHEMA = {
     "type": "object",
@@ -36,6 +41,7 @@ class ToolSupervisor(BaseAgent):
     role = "tool-supervisor"
     title = "Tool Supervisor"
     uses_llm = True
+    purposes = ("generate",)
     description = ("Responsible for one application: understands it, keeps its manifest current, watches its health, "
                    "starts and stops it, and reports integration problems to the Hub Supervisor.")
     default_instructions = (
@@ -64,6 +70,13 @@ class ToolSupervisor(BaseAgent):
     # -- requests --------------------------------------------------------------------
 
     async def on_analyze(self, body: dict[str, Any], msg: Message) -> dict[str, Any]:
+        """Analyse the tool's folder (or SaaS address) afresh, then apply the hub-side overrides - what applied
+        patches and administrators set (hub/integration/overrides.py) - on top: nothing else of the previous manifest
+        is kept, so ``native`` and ``known`` always describe the folder as it is now. An applied code patch's settings
+        (a health URL, single sign-on) join the overrides only once its change is found in the folder - its branch
+        merged (patches.merged_now) - never while it waits unmerged. The AI model refines the
+        description and capabilities only of a tool that neither ships its own manifest nor is a product Atrium's
+        profiles describe (a capability-only profile - "gitlab", "redis" - still gets the model's description)."""
         tool = self._tool()
         tool.status = "analyzing"
         self.hub.save_tool(tool)
@@ -73,26 +86,34 @@ class ToolSupervisor(BaseAgent):
             if not tool.path or not Path(tool.path).is_dir():
                 raise ValueError("The tool's files are not available")
             manifest, notes = await asyncio.to_thread(analyze_repo, Path(tool.path), tool.id, tool.name)
-        if tool.manifest:  # keep hub-side decisions (applied patches, adopted manifest) across re-analysis
-            manifest = self._carry_over(tool.manifest, manifest)
-        if self.hub.llm.available and not manifest.native and tool.path:
+        if (self.hub.llm.ready(self.id, "generate") and not manifest.native and not known_tools.describes(manifest)
+                and tool.path):
             try:
-                manifest = await self._enrich(manifest, Path(tool.path))
-                notes.append("Description and capabilities refined with Claude.")
+                manifest, label = await self._enrich(manifest, Path(tool.path))
+                notes.append(f"Description and capabilities refined with {label}.")
             except Exception as exc:
-                notes.append(f"LLM enrichment skipped: {exc}")
-        tool = self._tool()
+                notes.append(f"AI model enrichment skipped: {exc}")
+        tool = self._tool()  # as it is now: a patch may have been applied while the folder was read
+        for patch in await patches.merged_now(tool, self.hub.patches(tool.id)):  # code a person merged meanwhile:
+            tool.manifest_overrides = overrides.merge(tool.manifest_overrides, patch.manifest_update)  # what it sets
+            patch.merged = True  # applies from now on, like any applied patch's settings
+            self.hub.save_patch(patch)
+            notes.append(f"'{patch.title}' is merged into the tool's folder: what it sets applies now.")
+        manifest = overrides.apply(manifest, tool.manifest_overrides)
+        kept = override_paths(tool.manifest_overrides)
+        if kept:
+            notes.append(f"Kept {len(kept)} hub-side setting(s): {', '.join(kept)}")
         tool.manifest, tool.notes, tool.status, tool.error = manifest, notes, "ready", None
         if manifest.native and manifest.name:
             tool.name = manifest.name  # a tool that names itself in its manifest wins
         self.hub.save_tool(tool)
         self.log("info", f"Analysed {tool.name}: {manifest.kind}, stack {', '.join(manifest.stack) or 'unknown'}, "
                          f"SSO {manifest.auth.sso}, provides {', '.join(manifest.provides) or 'nothing detected'}")
-        return {"manifest": manifest.model_dump(mode="json"), "notes": notes}
+        return {"manifest": manifest.public(), "notes": notes}  # the bus log is readable by viewers (F24)
 
     async def on_describe(self, body: dict[str, Any], msg: Message) -> dict[str, Any]:
         tool = self._tool()
-        return {"tool": tool.model_dump(mode="json"), "process": self.hub.processes.status(tool.id)}
+        return {"tool": tool.public(), "process": self.hub.processes.status(tool.id)}
 
     async def on_health(self, body: dict[str, Any], msg: Message) -> dict[str, Any]:
         tool = self._tool()
@@ -109,7 +130,9 @@ class ToolSupervisor(BaseAgent):
         return tool.health
 
     async def on_start(self, body: dict[str, Any], msg: Message) -> dict[str, Any]:
-        return await self.ask("operator", "launch", {"tool_id": self.tool_id})
+        # whoever asked: a person directly, or the person an agent relays (chat) - the Operator Agent judges by them (F1)
+        person = msg.sender if sender_person(msg.sender) else body.get("requested_by")
+        return await self.ask("operator", "launch", {"tool_id": self.tool_id, "requested_by": person})
 
     async def on_stop(self, body: dict[str, Any], msg: Message) -> dict[str, Any]:
         return await self.ask("operator", "stop_tool", {"tool_id": self.tool_id})
@@ -117,10 +140,10 @@ class ToolSupervisor(BaseAgent):
     # -- the tool's agent team ------------------------------------------------------------
 
     async def on_team_propose(self, body: dict[str, Any], msg: Message) -> dict[str, Any]:
-        """Propose an AI agent team for this tool, from the templates for what the tool is or designed by Claude.
-        `designer`: "auto" (Claude when available, else the templates), "templates" or "claude". Proposals the hub
-        makes by itself (`auto`) happen once per tool and always use the templates: no model cost behind a background
-        trigger."""
+        """Propose an AI agent team for this tool, from the templates for what the tool is or designed by the AI model.
+        `designer`: "auto" (the AI model when one is available, else the templates), "templates" or "model" ("claude"
+        is accepted for it). Proposals the hub makes by itself (`auto`) happen once per tool and always use the
+        templates: no model cost behind a background trigger."""
         tool = self._tool()
         auto = bool(body.get("auto"))
         if auto and teams.has_team_or_proposal(self.hub, tool.id):
@@ -131,33 +154,79 @@ class ToolSupervisor(BaseAgent):
             return {"proposed": False, "approval_id": pending, "created": [], "members": [], "skipped": [],
                     "detail": f"A team proposal for {tool.name} is already waiting for approval."}
         designer = "templates" if auto else str(body.get("designer") or "auto")
-        if designer not in ("auto", "templates", "claude"):
-            raise ValueError("designer is auto, templates or claude")
-        if designer == "claude" and not self.hub.llm.available:
-            raise ValueError("Designing a team with Claude needs ANTHROPIC_API_KEY; use the templates instead")
+        designer = "model" if designer == "claude" else designer
+        if designer not in ("auto", "templates", "model"):
+            raise ValueError("designer is auto, templates or model")
+        ready = self.hub.llm.ready(self.id, "generate")
+        if designer == "model" and not ready:
+            raise ValueError("Designing a team needs an AI model (Settings > AI providers); use the templates instead")
         category = teams.classify(self.hub, tool)
         space = teams.room(self.hub, tool.id)
-        members, rationale, used = None, "", "templates"
-        if designer != "templates" and self.hub.llm.available and space != 0:
+        members, rationale, used, generated_by = None, "", "templates", None
+        if designer != "templates" and ready and space != 0:
             try:
-                members, rationale = await teams.design_with_claude(self.hub, tool, category, self.model,
-                                                                     8 if space is None else space)
-                used = "claude"
+                members, rationale, generated_by = await teams.design_with_model(
+                    self.hub, tool, category, 8 if space is None else space, self.id)
+                used = "model"
             except Exception as exc:  # the templates always work
-                self.log("warn", f"Claude could not design a team for {tool.name}, using the templates: {exc}")
+                self.log("warn", f"The AI model could not design a team for {tool.name}, using the templates: {exc}")
         if members is None:
             members = teams.template_members(self.hub, tool, category)
             roles = ", ".join(m["title"].lower() for m in members)
-            rationale = (f"{tool.name} looks like a {teams.CATEGORIES[category].lower()} tool, so its team gets: {roles}."
+            rationale = (f"{tool.name} looks like a {(teams.category_title(self.hub, category) or category).lower()} tool, "
+                         f"so its team gets: {roles}."
                          if category else f"No specialised template fits {tool.name}; every tool gets a maintainer.")
+        asker = teams.get_def(self.hub, msg.sender)  # a team agent asked: the members get no more than it has
+        if asker is not None:
+            rationale += f" Requested by {asker.name}."
         result = teams.propose_members(self.hub, requested_by=self.id, parent=self.id, members=members, designer=used,
-                                       rationale=rationale, tool_id=tool.id, category=category)
+                                       rationale=rationale, tool_id=tool.id, category=category,
+                                       on_behalf_of=asker.id if asker else None, generated_by=generated_by)
         if result["proposed"]:
             self.log("info", result["detail"], tool_id=tool.id)
         return result
 
     async def on_approval_decided(self, body: dict[str, Any], msg: Message) -> None:
-        teams.settle(self.hub, str(body.get("approval_id")), bool(body.get("approved")))
+        approval_id, approved = str(body.get("approval_id")), bool(body.get("approved"))
+        approval = self.hub.approvals.get(approval_id)
+        kind = approval.kind if approval is not None else None
+        if kind == "subsidiary_charter":  # it leads the tool's subsidiary: the charter comes into force
+            from ..subsidiary import charter
+
+            if approved:
+                await charter.settle(self.hub, approval_id)
+            else:
+                charter.rejected(self.hub, approval_id)
+            return
+        if kind == "subsidiary_action" and approval is not None:  # a grant, or (API-only) the write itself
+            from ..subsidiary import actions
+
+            await actions.decided(self.hub, approval, approved, self)
+            return
+        teams.settle(self.hub, approval_id, approved)
+
+    async def push_record(self, domain: str, record: dict[str, Any]) -> dict[str, Any]:
+        """An approved in-tool write of the tool's API-only subsidiary: one record pushed with the connection's own
+        credential (the subsidiary's sidecar only reads). {action, external_id, error} or {failure}."""
+        async def run(connector):
+            if "write" not in connector.domains().get(domain, []):
+                raise ConnectorError(f"{connector.title} cannot write {domain}")
+            items = [i for i in await connector.push(domain, [record], {}) if isinstance(i, dict)]
+            item = items[0] if items else {"action": "failed", "error": "the connector returned nothing"}
+            action = item.get("action") if item.get("action") in PUSH_ACTIONS else "failed"
+            return {"action": action, "external_id": item.get("external_id"),
+                    "error": redact(item["error"], connector.secrets)[:1000] if item.get("error") else None}
+
+        return await self._connector("push", run)
+
+    async def on_subsidiary_escalation(self, body: dict[str, Any], msg: Message) -> None:
+        """An escalation from the tool's subsidiary (its text stays in its report: untrusted, never in a prompt)."""
+        if msg.sender not in (f"subsidiary:{self.tool_id}", "hub"):
+            return
+        severity = str(body.get("severity") or "warning")
+        self.log("error" if severity == "critical" else "warn",
+                 f"The {self._tool().name} subsidiary escalated a matter ({severity}): see its reports",
+                 report_id=str(body.get("report_id") or ""), subsidiary_id=str(body.get("subsidiary_id") or ""))
 
     # -- the tool's own API (connector) ------------------------------------------------
     # Only this agent decrypts the tool's credentials. Failures come back as {"failure": {message, status, excerpt}}
@@ -181,8 +250,11 @@ class ToolSupervisor(BaseAgent):
                       for c in result.get("checks") or [] if isinstance(c, dict)]
             domains = {str(d): sorted({str(o) for o in ops if o in ("read", "write")})
                        for d, ops in (result.get("domains") or {}).items() if isinstance(ops, (list, set, tuple))}
-            return {"ok": bool(result.get("ok")), "detail": redact(result.get("detail", ""), connector.secrets),
-                    "checks": checks, "domains": {d: ops for d, ops in domains.items() if ops}}
+            out = {"ok": bool(result.get("ok")), "detail": redact(result.get("detail", ""), connector.secrets),
+                   "checks": checks, "domains": {d: ops for d, ops in domains.items() if ops}}
+            if "network" in out["domains"]:  # what this device and credential allow (never more than declared)
+                out["network_write"] = network.narrow_write(connector, result.get("network_write", ...))
+            return out
 
         result = await self._connector("test", run, body.get("config"))
         if "failure" in result:
@@ -209,6 +281,8 @@ class ToolSupervisor(BaseAgent):
         async def run(connector):
             if "read" not in connector.domains().get(domain, []):
                 raise ConnectorError(f"{connector.title} cannot read {domain}")
+            if domain == "network" and msg.sender != "module:network":  # untrusted device text: never to other agents
+                raise ConnectorError("Device configuration is read by the Network Supervisor only")
             records, errors = normalize(domain, await connector.pull(domain, since))
             return {"records": records, "errors": [redact(e, connector.secrets) for e in errors[:50]],
                     "dropped": len(errors)}
@@ -232,49 +306,235 @@ class ToolSupervisor(BaseAgent):
 
         return await self._connector("push", run)
 
+    def _action_refusal(self, name: str, kind: str, body: dict[str, Any], msg: Message) -> str | None:
+        """Why a side-effecting action may not run for this sender (None: it may)."""
+        if msg.sender.startswith(("user:", "token:")):
+            return None
+        route = ACTION_ROUTES.get(kind)
+        if msg.sender != route:
+            return (f"'{name}' changes something, so it only runs through the {kind} approval path "
+                    f"({route or 'none'}), not for {msg.sender}")
+        approval_id = body.get("approval_id")
+        if approval_id:
+            approval = self.hub.approvals.get(str(approval_id))
+            if (approval is None or approval.kind != kind or approval.status not in ("approved", "done")
+                    or approval.payload.get("tool_id") not in (None, self.tool_id)):
+                return f"the approval given for '{name}' does not cover it"
+        return None
+
     async def on_connector_action(self, body: dict[str, Any], msg: Message) -> dict[str, Any]:
         name, params = str(body.get("name")), dict(body.get("params") or {})
 
         async def run(connector):
+            if name in RESERVED_ACTIONS:  # device changes and backups only go through the network change path
+                raise ConnectorError(f"'{name}' is not a connector action: device changes need an approved change")
             if name not in connector.actions:
                 raise ConnectorError(f"{connector.title} has no action '{name}'")
+            kind = connector.side_effect_actions.get(name)
+            refusal = self._action_refusal(name, kind, body, msg) if kind else None
+            if refusal:
+                raise ConnectorError(f"Refused: {refusal}")
             result = await connector.action(name, params)
             return {"result": result if isinstance(result, dict) else {"value": result}}
 
         return await self._connector("action", run)
 
-    # -- internals -------------------------------------------------------------------
+    # -- network devices: configuration backups (device changes: see hub/integration/network.py) ---------------
+
+    async def on_network_backup(self, body: dict[str, Any], msg: Message) -> dict[str, Any]:
+        """Take a configuration backup and store it encrypted (collection device_backups). Only the Network
+        Supervisor asks; the reply carries the backup's metadata - the content never travels on the bus."""
+        if msg.sender != "module:network":
+            raise ValueError("Device backups are taken by the Network Supervisor")
+
+        async def run(connector):
+            if not connector.implements("backup"):
+                raise ConnectorError(f"{connector.title} cannot take configuration backups")
+            taken = await connector.backup()
+            try:
+                meta = network.store_backup(self.hub, self.tool_id, taken, reason=str(body.get("reason") or "manual"),
+                                            actor=str(body.get("actor") or msg.sender), change_id=body.get("change_id"))
+            except ValueError as exc:  # empty, too large or a checksum mismatch: the message never quotes content
+                raise ConnectorError(f"The backup of {connector.title} was not stored: {exc}") from exc
+            return {"backup": meta}
+
+        return await self._connector("backup", run)
+
+    # -- network devices: guarded changes (only for the Network Supervisor; see hub/integration/changes.py) ------
+    # Each call builds a new connector instance (a new connection), re-loads the change and its approval from the
+    # store and checks them again (S8) before touching the device. Replies carry no token, backup or secret.
 
     @staticmethod
-    def _carry_over(old: Manifest, new: Manifest) -> Manifest:
-        if old.native:
-            new.native = True
-        if old.health.url and not new.health.url:
-            new.health = old.health
-        if old.auth.provider or (old.auth.notes and "adapter" in old.auth.notes):  # connected by an SSO patch
-            new.auth = old.auth.model_copy(update={"env_keys": new.auth.env_keys})
-        if old.launch.port and old.launch.env.get("PORT") == str(old.launch.port):
-            new.launch.port, new.launch.env, new.ui.url = old.launch.port, old.launch.env, old.ui.url
-        new.events.emits = sorted(set(new.events.emits) | set(old.events.emits))
-        return new
+    def _from_network(msg: Message) -> None:
+        if msg.sender != "module:network":
+            raise ValueError("Device changes are made only by the Network Supervisor, for approved changes")
 
-    async def _enrich(self, manifest: Manifest, root: Path) -> Manifest:
+    async def _change_call(self, op: str, call) -> dict[str, Any]:
+        async def run(connector):
+            try:
+                return await call(connector)
+            except ChangeError as exc:  # what the device holds now travels with the failure
+                return {"failure": {"message": connector.redact(exc.message), "status": exc.status, "excerpt": None,
+                                    "code": exc.code, "state": exc.state}}
+
+        return await self._connector(op, run)
+
+    def _load_backup(self, backup_id: str | None):
+        if not backup_id:
+            return None
+        try:
+            return network.load_backup(self.hub, backup_id)
+        except (KeyError, ValueError) as exc:
+            raise ChangeError(f"The Atrium backup {backup_id} cannot be used: {exc}", code="invalid",
+                              state="unchanged") from exc
+
+    def _change(self, body: dict[str, Any], stage: str, backup_id: str | None = None) -> dict[str, Any]:
+        change = changes.get(self.hub, str(body.get("change_id") or ""))
+        problem = changes.authorize(self.hub, change, stage, backup_id)
+        if problem or change is None or change["firewall"] != self.tool_id:
+            raise ValueError(f"Refused: {problem or 'the change is for another device'}")
+        return change
+
+    @staticmethod
+    def _refused(exc: ValueError) -> dict[str, Any]:
+        """A refused apply / restore: nothing was sent to the device."""
+        return {"failure": {"message": str(exc), "status": None, "excerpt": None, "code": "failed",
+                            "state": "unchanged"}}
+
+    async def on_network_preview(self, body: dict[str, Any], msg: Message) -> dict[str, Any]:
+        """{ops} -> {steps, notes, problems}: the connector checks a proposed change against the device (no side
+        effects); the snapshot is the hub's current one (the Network Supervisor just re-read the device)."""
+        self._from_network(msg)
+        ops = parse_ops(body.get("ops"))
+        snap = network.snapshot(self.hub, self.tool_id)
+        if snap is None:
+            raise ValueError("The device has no snapshot")
+
+        async def call(connector):
+            result = await connector.preview_change(ops, snap["record"])
+            return {"steps": texts(connector, result.get("steps"), 100), "notes": texts(connector, result.get("notes")),
+                    "problems": texts(connector, result.get("problems"))}
+
+        return await self._change_call("preview", call)
+
+    async def on_network_apply(self, body: dict[str, Any], msg: Message) -> dict[str, Any]:
+        """{change_id} -> {applied: {rollback_until, revision, created, disabled, enabled, notes}}; the token is kept
+        in the store for confirm / rollback."""
+        self._from_network(msg)
+        try:
+            change = self._change(body, "apply")
+        except ValueError as exc:
+            return self._refused(exc)
+        kinds = changes.needed_kinds(change["op"], change["ops"])
+
+        async def call(connector):
+            spec = network.write_capability(self.hub, self.tool_id)
+            if spec is None or spec["rollback"] == "none" or any(k not in spec["ops"] for k in kinds):
+                raise ChangeError(f"{connector.title} cannot make this change on this connection", code="unsupported",
+                                  state="unchanged")
+            backup = self._load_backup(change.get("backup_id"))
+            result = await connector.apply_change(change["ops"], change["base_revision"], backup)
+            if not isinstance(result, dict):
+                raise ChangeError("apply_change answered no result", code="failed", state="unknown")
+            if result.get("token"):
+                changes.store_token(self.hub, change["id"], str(result["token"])[:4096])
+            applied = changes.applied_summary(result)
+            applied["notes"] = [connector.redact(n) for n in applied["notes"]]
+            return {"applied": applied}
+
+        return await self._change_call("apply", call)
+
+    async def on_network_confirm(self, body: dict[str, Any], msg: Message) -> dict[str, Any]:
+        self._from_network(msg)
+        change = self._change(body, "confirm")
+        token = changes.token(self.hub, change["id"])
+
+        async def call(connector):
+            if not token:
+                raise ChangeError("There is no token to confirm", code="failed", state="unknown")
+            result = await connector.confirm_change(token)
+            return {"confirmed": bool((result or {}).get("confirmed")), "notes": texts(connector, (result or {}).get("notes"))}
+
+        return await self._change_call("confirm", call)
+
+    async def on_network_rollback(self, body: dict[str, Any], msg: Message) -> dict[str, Any]:
+        self._from_network(msg)
+        change = self._change(body, "rollback")
+        token = changes.token(self.hub, change["id"])
+
+        async def call(connector):
+            if not token:
+                raise ChangeError("The device never acknowledged the change: there is nothing to roll back with",
+                                  code="failed", state="unknown")
+            try:
+                backup = self._load_backup(change.get("backup_id"))
+            except ChangeError:
+                backup = None
+            result = await connector.rollback_change(token, backup)
+            return {"rolled_back": bool((result or {}).get("rolled_back")),
+                    "method": texts(connector, [(result or {}).get("method") or ""])[0] or None,
+                    "notes": texts(connector, (result or {}).get("notes"))}
+
+        return await self._change_call("rollback", call)
+
+    async def on_network_restore(self, body: dict[str, Any], msg: Message) -> dict[str, Any]:
+        """{change_id, recover?: bool}: an approved restore change puts its backup back; with `recover`, the change's
+        own pre-change backup is restored after its rollback did not revert the device."""
+        self._from_network(msg)
+        recover = bool(body.get("recover"))
+        if recover:
+            current = changes.get(self.hub, str(body.get("change_id") or "")) or {}
+            backup_id = current.get("backup_id")
+            change = self._change(body, "recover", backup_id)
+        else:
+            try:
+                change = self._change(body, "restore")
+            except ValueError as exc:
+                return self._refused(exc)
+            backup_id = (change.get("request") or {}).get("backup_id")
+
+        async def call(connector):
+            # a restore change is a write: never on a connection that is read only, has no rollback mechanism or whose
+            # test narrowed the capability away (S2). Recovering a change's own pre-change backup stays possible.
+            if not recover and (network.write_capability(self.hub, self.tool_id) is None
+                                or connector.write_capability() is None):
+                raise ChangeError(f"{connector.title} cannot restore a configuration on this connection (it is read "
+                                  "only or cannot make changes safely)", code="unsupported", state="unchanged")
+            backup = self._load_backup(backup_id)
+            if backup is None:
+                raise ChangeError("No backup to restore", code="invalid", state="unchanged")
+            result = await connector.restore_backup(backup)
+            return {"restored": bool((result or {}).get("restored")), "notes": texts(connector, (result or {}).get("notes"))}
+
+        return await self._change_call("restore", call)
+
+    # -- internals -------------------------------------------------------------------
+
+    async def _enrich(self, manifest: Manifest, root: Path) -> tuple[Manifest, str]:
+        """The manifest with a description and capabilities the AI model read from the repository, and the model's
+        label."""
         files = "\n".join(f.as_posix() for f in list_files(root, 300))
         readme = ""
         for name in ("README.md", "readme.md", "README.rst", "README"):
-            if (root / name).is_file():
-                readme = (root / name).read_text(encoding="utf-8", errors="replace")[:8000]
+            text = read_repo_file(root, name, 32_000)  # never through a symbolic link out of the repository
+            if text is not None:
+                readme = text[:8000]
                 break
         prompt = (
             f"<inferred_manifest>\n{manifest.model_dump_json(include={'name', 'stack', 'provides', 'consumes', 'auth'})}\n"
             f"</inferred_manifest>\n<readme>\n{readme or readme_summary(root)}\n</readme>\n<files>\n{files}\n</files>"
         )
-        result = await self.hub.llm.json(system=self.instructions, prompt=prompt, schema=ENRICH_SCHEMA,
-                                         model=self.model, effort="low", max_tokens=4000)
+        result, meta = await self.hub.llm.json(self.id, "generate", system=self.instructions, prompt=prompt,
+                                               schema=ENRICH_SCHEMA, effort="low", max_output_tokens=4000)
         manifest.description = result["description"][:400] or manifest.description
         manifest.provides = sorted(set(manifest.provides) | {c for c in result["provides"] if c and len(c) < 40})
         manifest.consumes = sorted(set(manifest.consumes) | {c for c in result["consumes"] if c and len(c) < 40})
-        return manifest
+        return manifest, meta.provider_label
+
+
+def texts(connector: Any, values: Any, limit: int = 20) -> list[str]:
+    """Connector-provided strings for a change's record: made safe as text (``changes.device_text``), secrets masked."""
+    return [connector.redact(t) for t in changes.device_text(values, limit)]
 
 
 async def probe(url: str, expect_status: int = 200) -> tuple[bool, str]:

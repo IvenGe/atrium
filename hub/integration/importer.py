@@ -12,7 +12,7 @@ from urllib.parse import urlparse
 from pydantic import BaseModel
 
 from ..execution.runner import run_exec
-from ..models import Tool
+from ..models import Tool, url_credentials
 
 if TYPE_CHECKING:
     from ..core import Hub
@@ -64,18 +64,31 @@ def derive_name(req: ImportRequest) -> str:
     return core.capitalize()
 
 
+def refuse_credentials(url: str, what: str) -> None:
+    """Import addresses are shown to every viewer, logged and sent to the asset tools, so they never carry a credential
+    (review F3), like the URL fields of connections."""
+    found = url_credentials(url)
+    if found:
+        raise ValueError(f"The {what} must not contain credentials ({', '.join(found)}). For a private repository the "
+                         "hub uses this machine's own git credentials (a credential helper or an SSH key, e.g. "
+                         "git@host:owner/repo.git); a SaaS tool's API credentials go in its Connection tab.")
+
+
 def validate(req: ImportRequest) -> ImportRequest:
     if req.source_type == "github":
         req.source = normalize_git_url(req.source)
+        refuse_credentials(req.source, "repository URL")
     elif req.source_type == "saas":
         req.source = normalize_saas_url(req.source)
-        if req.openapi_url:
-            normalize_saas_url(req.openapi_url)
+        refuse_credentials(req.source, "service URL")
     else:
         path = Path(req.source.strip()).expanduser()
         if not path.is_dir():
             raise ValueError(f"Folder not found: {path}")
         req.source = str(path.resolve())
+    if req.openapi_url:
+        normalize_saas_url(req.openapi_url)
+        refuse_credentials(req.openapi_url, "OpenAPI URL")
     if req.branch and (req.branch.startswith("-") or not re.match(r"^[\w./-]+$", req.branch)):
         raise ValueError("Invalid branch name")
     return req
