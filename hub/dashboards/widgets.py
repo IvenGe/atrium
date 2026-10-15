@@ -263,11 +263,12 @@ def resolve_agents(ctx: ResolveContext, cfg: AgentsConfig) -> dict[str, Any]:
     return {"rows": rows, "total": len(rows), "href": "#/agents"}
 
 
-def needs_admin(approval: Approval) -> bool:
-    """Whether only an administrator may approve it (the rules of POST /api/approvals/{id}, read from there)."""
+def needs_admin(approval: Approval, hub: Any = None) -> bool:
+    """Whether only an administrator may approve it (the rules of POST /api/approvals/{id}, read from there; `hub`
+    lets runs_on_hub read a patch's stored copy: one that changes how a tool is started is an administrator's)."""
     from ..api import ADMIN_APPROVALS, device_repair, runs_on_hub
 
-    return approval.kind in ADMIN_APPROVALS or approval.kind == "firewall" or runs_on_hub(approval) \
+    return approval.kind in ADMIN_APPROVALS or approval.kind == "firewall" or runs_on_hub(approval, hub) \
         or device_repair(approval)
 
 
@@ -280,7 +281,7 @@ def resolve_approvals(ctx: ResolveContext, cfg: ApprovalsConfig) -> dict[str, An
     pending = [a for a in ctx.snap.approvals if a.status == "pending" and (not cfg.kinds or a.kind in cfg.kinds)]
     return {"pending": len(pending), "href": "#/approvals",
             "rows": [{"id": a.id, "kind": a.kind, "title": clean(a.title, 200), "requested_by": clean(a.requested_by, 80),
-                      "created_at": a.created_at, "needs_admin": needs_admin(a)} for a in pending[:cfg.limit]]}
+                      "created_at": a.created_at, "needs_admin": needs_admin(a, ctx.hub)} for a in pending[:cfg.limit]]}
 
 
 # -- metric, note and links -----------------------------------------------------------------

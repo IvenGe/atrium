@@ -247,6 +247,9 @@ def contract_role(method: str, path: str) -> str | None:
     # a tool's connection holds its API credentials; listing a field's choices uses them
     if (method, path) in {("PUT", "/api/tools/{tool_id}/connection"), ("DELETE", "/api/tools/{tool_id}/connection")}:
         return "admin"
+    # the manifest editor sets what runs on the hub machine when the tool starts, and its launch secrets
+    if (method, path) == ("PATCH", "/api/tools/{tool_id}/manifest"):
+        return "admin"
     if (method, path) == ("GET", "/api/tools/{tool_id}/connection/options/{field}"):
         return "operator"
     # agent definitions, the guardrails and the AI model providers (which may hold API keys)

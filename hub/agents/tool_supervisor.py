@@ -14,9 +14,9 @@ from ..approvals import sender_person
 from ..bus import Message
 from ..connectors.base import ConnectorError, check, normalize, redact
 from ..connectors.netmodel import RESERVED_ACTIONS, ChangeError, parse_ops
-from ..integration import changes, connections, network
+from ..integration import changes, connections, known_tools, network, overrides, patches
 from ..integration.analyzer import analyze_repo, analyze_saas, list_files, read_repo_file, readme_summary
-from ..models import AGENT_PERMISSIONS, Manifest, Tool
+from ..models import AGENT_PERMISSIONS, Manifest, Tool, override_paths
 from . import teams
 from .base import BaseAgent
 
@@ -70,6 +70,13 @@ class ToolSupervisor(BaseAgent):
     # -- requests --------------------------------------------------------------------
 
     async def on_analyze(self, body: dict[str, Any], msg: Message) -> dict[str, Any]:
+        """Analyse the tool's folder (or SaaS address) afresh, then apply the hub-side overrides - what applied
+        patches and administrators set (hub/integration/overrides.py) - on top: nothing else of the previous manifest
+        is kept, so ``native`` and ``known`` always describe the folder as it is now. An applied code patch's settings
+        (a health URL, single sign-on) join the overrides only once its change is found in the folder - its branch
+        merged (patches.merged_now) - never while it waits unmerged. The AI model refines the
+        description and capabilities only of a tool that neither ships its own manifest nor is a product Atrium's
+        profiles describe (a capability-only profile - "gitlab", "redis" - still gets the model's description)."""
         tool = self._tool()
         tool.status = "analyzing"
         self.hub.save_tool(tool)
@@ -79,15 +86,23 @@ class ToolSupervisor(BaseAgent):
             if not tool.path or not Path(tool.path).is_dir():
                 raise ValueError("The tool's files are not available")
             manifest, notes = await asyncio.to_thread(analyze_repo, Path(tool.path), tool.id, tool.name)
-        if tool.manifest:  # keep hub-side decisions (applied patches, adopted manifest) across re-analysis
-            manifest = self._carry_over(tool.manifest, manifest)
-        if self.hub.llm.ready(self.id, "generate") and not manifest.native and tool.path:
+        if (self.hub.llm.ready(self.id, "generate") and not manifest.native and not known_tools.describes(manifest)
+                and tool.path):
             try:
                 manifest, label = await self._enrich(manifest, Path(tool.path))
                 notes.append(f"Description and capabilities refined with {label}.")
             except Exception as exc:
                 notes.append(f"AI model enrichment skipped: {exc}")
-        tool = self._tool()
+        tool = self._tool()  # as it is now: a patch may have been applied while the folder was read
+        for patch in await patches.merged_now(tool, self.hub.patches(tool.id)):  # code a person merged meanwhile:
+            tool.manifest_overrides = overrides.merge(tool.manifest_overrides, patch.manifest_update)  # what it sets
+            patch.merged = True  # applies from now on, like any applied patch's settings
+            self.hub.save_patch(patch)
+            notes.append(f"'{patch.title}' is merged into the tool's folder: what it sets applies now.")
+        manifest = overrides.apply(manifest, tool.manifest_overrides)
+        kept = override_paths(tool.manifest_overrides)
+        if kept:
+            notes.append(f"Kept {len(kept)} hub-side setting(s): {', '.join(kept)}")
         tool.manifest, tool.notes, tool.status, tool.error = manifest, notes, "ready", None
         if manifest.native and manifest.name:
             tool.name = manifest.name  # a tool that names itself in its manifest wins
@@ -494,19 +509,6 @@ class ToolSupervisor(BaseAgent):
         return await self._change_call("restore", call)
 
     # -- internals -------------------------------------------------------------------
-
-    @staticmethod
-    def _carry_over(old: Manifest, new: Manifest) -> Manifest:
-        if old.native:
-            new.native = True
-        if old.health.url and not new.health.url:
-            new.health = old.health
-        if old.auth.provider or (old.auth.notes and "adapter" in old.auth.notes):  # connected by an SSO patch
-            new.auth = old.auth.model_copy(update={"env_keys": new.auth.env_keys})
-        if old.launch.port and old.launch.env.get("PORT") == str(old.launch.port):
-            new.launch.port, new.launch.env, new.ui.url = old.launch.port, old.launch.env, old.ui.url
-        new.events.emits = sorted(set(new.events.emits) | set(old.events.emits))
-        return new
 
     async def _enrich(self, manifest: Manifest, root: Path) -> tuple[Manifest, str]:
         """The manifest with a description and capabilities the AI model read from the repository, and the model's

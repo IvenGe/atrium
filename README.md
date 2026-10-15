@@ -154,7 +154,9 @@ deterministically. With an AI model - Claude, OpenAI (or Azure OpenAI), or a loc
 
 - the Hub Supervisor understands plain language and plans multi-step work using the other agents,
 - the Patch Agent writes real source-code patches (e.g. adds a `/healthz` endpoint in the
-  project's own framework), generic REST connectors from OpenAPI specs, extension packs and self-patches,
+  project's own framework) after reading the files it changes, proposes how to start a program Atrium does not know
+  from its README (an administrator reviews and approves it), and writes generic REST connectors from OpenAPI specs,
+  extension packs and self-patches,
 - Tool Supervisors refine descriptions and capabilities from the README and can design agent teams.
 
 For Claude, set `ANTHROPIC_API_KEY` (or run `ant auth login`) before starting the hub, or put it in a `.env`
@@ -216,13 +218,18 @@ flowchart LR
    assigns a Tool Supervisor.
 2. **Analyse** - the Tool Supervisor infers a [hub manifest](docs/MANIFEST.md): stack, launch
    command, port, health endpoint, API, SSO, capabilities provided/consumed, events. A tool that
-   ships its own `hub.manifest.yaml` is *native*.
+   ships its own `hub.manifest.yaml` is *native*. Well-known products (Keycloak, authentik, Grafana, ...) are
+   recognised by a built-in profile that knows how they start, their health check and their API
+   ([known products](docs/INTEGRATIONS.md#known-products)).
 3. **Score** - the Hub Supervisor scores every tool against the rest of the suite (manifest,
    launchable, health, API, SSO, events, port conflicts, dependencies).
 4. **Patch** - each gap goes to the Patch Agent, which proposes a patch: a commit on a new branch
    in a separate git worktree (your checkout is never touched), an adapter kept by the hub
    (health probe, native SSO configuration plus the client registration at the identity provider, oauth2-proxy, event
-   poller, API wrapper), or a manifest override (new port).
+   poller, API wrapper), or a hub-side setting (how the hub starts the tool, a new port). A gap no patch can close
+   says why and what to do next, and a rejected or failed patch is not proposed again by itself
+   ([proposals](docs/INTEGRATIONS.md#proposals)); administrators set a tool's launch command, health check and API by
+   hand in its Integration tab ([Edit](docs/INTEGRATIONS.md#setting-it-by-hand)).
 5. **Extend** - when Atrium itself lacks something for the tool (a place for a SIEM's alerts or a service desk's
    tickets, a connector, an SSO recipe), the Patch Agent proposes an extension pack; when only code can help, a
    tested change to Atrium on its own branch.
@@ -356,7 +363,8 @@ hub/
                    Windows Defender Firewall, and a fake firewall for development)
   extensions/      extension packs, their registry and records, compliance rules, gap detection and templates,
                    packs written by Claude, self-patching
-  integration/     analyzer, compatibility scoring, importer, patch planner, identity providers and the SSO catalog,
+  integration/     analyzer, known-product profiles, compatibility scoring, importer, patch planner and gap outcomes,
+                   hub-side manifest settings and launch secrets, identity providers and the SSO catalog,
                    tool event bus, connections, data flows, strategy planner, the integration map (canvas.py), the
                    network read model, segmentation, device changes and maintenance windows
   execution/       command policy, local/SSH runners and SSH sessions for device connectors, tool process manager

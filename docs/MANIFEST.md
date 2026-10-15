@@ -16,6 +16,60 @@ as for a repository, from what a well-known tool recognised by its id, name or h
 or Okta is an identity provider (`auth.oidc`, `auth.saml`, `identity.source`), Snipe-IT an asset inventory
 (`assets.inventory`).
 
+## Where the values come from
+
+Four layers make a tool's manifest, from low to high; a higher one wins:
+
+1. **The analyzer's generic heuristics**: the stack, dependencies, ports, launch rules (`package.json`, a Python
+   entry point, a `bin/*.sh` launcher, ...), a health route found in the code, an OpenAPI spec in the folder.
+2. **A known-product profile** ([INTEGRATIONS.md](INTEGRATIONS.md#known-products)): when the analyzer recognises a
+   well-known product (Keycloak by its `bin/kc.sh` or its parent `pom.xml`, Grafana by its name, ...), the profile fills
+   the fields that are still **empty**: how it starts, its port, its health check, its API, its capabilities.
+3. **The tool's own `hub.manifest.*`**: always beats 1 and 2.
+4. **Hub-side settings** (`Tool.manifest_overrides`): what applied patches set (a launch command, a health URL, a moved
+   port, single sign-on) and what administrators set in the [manifest editor](#editing-it-by-hand). They are applied
+   again after every analysis, so a **Re-analyse** never loses them. The API lists their paths as `overridden`
+   (`launch.env.<KEY>` names a key, never its value).
+
+Rules that keep the manifest honest:
+
+- **Hub-only keys.** `id`, `native`, `known` and `adopted` are set by the hub only; a tool's own file cannot claim them
+  (they are dropped from it). `native` is true only while the folder ships its own manifest, recomputed by every
+  analysis. `known` names the recognised product: `{profile, shape, by, version}` - `shape` is `release`, `source`,
+  `compose`, `saas` or `other`, `by` is `marker`, `name`, `image` (the image its compose file's main service runs) or
+  `host`. `adopted` says where a manifest the hub drafted
+  (the `add_manifest` patch) waits - its branch (`hub/add-manifest-...`) or folder - until someone merges it; until
+  then the tool is not native, and the **Hub manifest** check says so.
+- **`TODO` placeholders are no value.** A string starting with `TODO` (any case) at `launch.command`, `launch.setup`,
+  `health.url`, `api.base_url`, `api.spec` or `ui.url` is ignored, with the note
+  `Ignored a TODO placeholder in hub.manifest.yaml: <path>`; the checks treat it as missing.
+- **Secrets never live in a manifest.** `launch.secret_env` lists environment variable *names* whose values the hub
+  keeps in its private `adapters/<id>/launch/secrets.env` (mode 0600, folder 0700): an admin password a
+  `launch_command` patch generates when it is applied, or a value an administrator marks as secret in the editor (a
+  variable named like a credential - `PASSWORD`, `TOKEN`, `API_KEY`, `SECRET`, ... - always is). The file is listed in
+  `launch.env_files`, so the Operator puts the values into the tool's environment when it starts the tool; they appear
+  nowhere else (API answers, the activity log, the bus, patches, prompts - and command output and the tool's process
+  log mask them). A plain constant an administrator sets (`LOG_LEVEL=info`) is a hub-side `launch.env` value instead:
+  never shown either, but no secret. A secret shorter than 8 characters or of one kind of character (`admin`, `8080`)
+  is kept just as private but not masked in texts - masking such a word would rewrite every text that contains it.
+  The API shows `launch.env_keys`: the names of `launch.env` and `launch.secret_env`, never their values.
+
+### Editing it by hand
+
+Administrators set how the hub starts and reaches a tool in **Integration > Launch / Health / API > Edit** (the
+**Edit** button on those check rows, or **Edit** on the Adapters card): the launch command, port, working folder and
+environment (not for SaaS), the health URL, the API type, base URL and spec, and the portal URL. Each value becomes a
+hub-side setting (layer 4 above). A field set by an administrator or an approved patch shows that, with a **Reset**
+that puts it back to what the analysis finds (the tool is analysed again). Environment values are write-only: the
+editor shows the names with a "set" badge and an empty "unchanged" input.
+
+`PATCH /api/tools/{id}/manifest` (administrators only; body and checks in
+[INTEGRATIONS.md](INTEGRATIONS.md#setting-it-by-hand)).
+
+## The fields
+
+A complete manifest; every field is optional, and what a tool leaves out is inferred.
+
 ```yaml
 name: CRM App
 description: Tracks customers, deals and follow-ups.
@@ -31,6 +85,7 @@ launch:
   port: 4000
   env: {NODE_ENV: production}
   env_files: [subsidiary/bridge.env]   # adapter files of public KEY=value lines merged into the environment
+  secret_env: [CRM_ADMIN_PASSWORD]     # names only: the values stay in the hub's adapters/<id>/launch/secrets.env
   test: npm test --silent              # the tool's own tests (a bridge patch runs them in a container only)
 
 health:
@@ -204,4 +259,5 @@ subsidiary's sidecar relays the declared ones, published as `subsidiary:<tool id
 
 The hub delivers the envelope `{source, event, payload, ts}` as a JSON `POST` to the
 `events.webhook_url` of every tool whose `events.listens` matches the event name. The API and the UI
-never show that URL (only `events.has_webhook`), nor the values of `launch.env` (only `launch.env_keys`).
+never show that URL (only `events.has_webhook`), nor the values of `launch.env` or `launch.secret_env` (only
+`launch.env_keys`).

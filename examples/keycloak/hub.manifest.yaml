@@ -1,0 +1,10 @@
+# Native hub manifest: what Atrium needs to know beyond its built-in Keycloak profile.
+# Atrium still recognises Keycloak (capabilities, single sign-on, the admin API connector) and starts it with
+# `docker compose up` from this folder; this file only pins the addresses of this compose setup.
+name: Keycloak
+description: Single sign-on for every tool in the suite (development mode).
+health:
+  url: http://localhost:9000/health/ready   # the management port (Keycloak 25 and later, KC_HEALTH_ENABLED=true)
+api:
+  type: rest
+  base_url: http://localhost:8080/admin/realms

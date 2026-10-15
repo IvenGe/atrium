@@ -11,8 +11,8 @@ from ..approvals import sender_person
 from ..bus import Message
 from ..extensions import gaps as extension_gaps
 from ..extensions import registry as extension_registry
-from ..integration import connections, flows, identity, importer, strategies
-from ..integration.compatibility import evaluate_suite, suite_matrix
+from ..integration import connections, flows, gapfix, identity, importer, strategies
+from ..integration.compatibility import EvalContext, evaluate_suite, suite_matrix
 from ..integration.identity import SSO_STRATEGIES
 from ..llm import Limited, LLMUnavailable, Msg, ReplyMeta
 from ..models import AGENT_PERMISSIONS, AgentConfig, strip_url_credentials
@@ -27,6 +27,18 @@ def fallback_note(label: str, why: str) -> str:
     why = why.rstrip(". ")
     said = why if why.startswith(label) else f"{label} unavailable: {why}"
     return f"{said}. Falling back to built-in commands."
+
+
+def patch_reply(name: str, result: dict[str, Any]) -> str:
+    """The rules chat's answer to `patch <tool>`: what the Patch Agent proposed, what still waits for approval and why
+    each other gap got no patch."""
+    created, pending, skipped = result.get("patches") or [], result.get("pending") or [], result.get("skipped") or []
+    text = f"The Patch Agent proposed {len(created)} patch(es) for {name}"
+    text += f"; {len(pending)} more wait for approval" if pending else ""
+    text += "; see Approvals." if created or pending else "."
+    if skipped:
+        text += "\n\nNot proposed:\n" + "\n".join(f"- {s.get('title')}: {s.get('reason')}" for s in skipped)
+    return text
 
 
 HELP = (
@@ -269,8 +281,27 @@ class HubSupervisor(BaseAgent):
         return {"checked": len(results), "results": results}
 
     def reevaluate(self) -> None:
+        """Score every tool again. The API check counts a connector that reaches the tool (strategies.connector_api),
+        an open check whose applied patch has no effect yet says why instead of offering a fix (gapfix.waiting: code
+        on an unmerged branch, an API skeleton nothing runs), and each open check's detail ends with what happened to
+        the patches tried for it (gapfix.history_note: the patches and stored outcomes are read once per tool, not per
+        check)."""
         tools = self.hub.tools()
-        for tool_id, report in evaluate_suite(tools, identity.load_prefs(self.hub)).items():
+        prefs = identity.load_prefs(self.hub)
+        patches: dict[str, list] = {}
+        for patch in self.hub.patches():
+            patches.setdefault(patch.tool_id, []).append(patch)
+        stored: dict[str, dict] = {}
+
+        def note(tool, check):
+            if tool.id not in stored:
+                stored[tool.id] = (self.hub.store.get(gapfix.OUTCOMES, tool.id) or {}).get("fixes") or {}
+            return gapfix.history_note(self.hub, tool, check, others=[t for t in tools if t.id != tool.id],
+                                       items=patches.get(tool.id, []), stored=stored[tool.id], idp=prefs)
+
+        ctx = EvalContext(builtin_api=lambda t: strategies.connector_api(self.hub, t), note=note,
+                          waiting=lambda t, check_id: gapfix.waiting(t, check_id, patches.get(t.id, [])))
+        for tool_id, report in evaluate_suite(tools, prefs, ctx).items():
             tool = self.hub.get_tool(tool_id)
             if tool and tool.manifest:
                 tool.report = report
@@ -362,9 +393,10 @@ class HubSupervisor(BaseAgent):
                 return f"{tool.name}: score {result['score']} ({result['level']}), {result['gaps']} gap(s)."
             if verb == "patch":
                 result = await self.ask("patcher", "propose", {"tool_id": tool.id}, timeout=600)
-                return f"The Patch Agent proposed {len(result['patches'])} patch(es) for {tool.name}; see Approvals."
+                return patch_reply(tool.name, result)
             result = await self.ask(f"tool:{tool.id}", verb, {"requested_by": person}, timeout=60)
-            return f"{verb.capitalize()} {tool.name}: {result.get('status', result)}"
+            return (f"{verb.capitalize()} {tool.name}: {result.get('status', result)}"
+                    + (f" - {result['reason']}" if result.get("reason") else ""))
         match = re.match(r"^(?:run|exec)\s+(?:on\s+([\w.-]+)\s*:\s*)?(.+)$", text.strip(), re.IGNORECASE | re.DOTALL)
         if match:
             host_name, command = match.group(1), match.group(2).strip()

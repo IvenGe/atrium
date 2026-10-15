@@ -43,6 +43,226 @@ flowchart LR
 The **Integration map** (Integration hub > Map) draws all of this and lets operators connect tools by dragging
 ([below](#integration-map)).
 
+Before any of this, each imported tool is checked: how the hub starts it, its health check, its API, its events
+([Checks and fixes](#checks-and-fixes)). Well-known products are recognised ([Known products](#known-products)); what
+no patch can close, an administrator sets by hand ([Setting it by hand](#setting-it-by-hand)).
+
+## Checks and fixes
+
+Every imported tool gets a compatibility report: one check per aspect (Hub manifest, Launchable from the hub - or
+Reachable for SaaS -, Health check, Programmable API, Single sign-on, Emits events, Port is free, Dependencies) and a
+score. An open check names the one fix that can close it (`fix`, a patch strategy the Patch Agent plans) or none, and
+then its detail says what a person can do instead. There is no fix chip that cannot close its gap and no pass that is
+not true. Whatever program is imported, each gap ends in one of two ways: it is closed automatically or with one
+approval, or the check, the **Adapters and patches** card, the propose toast and the activity log say exactly what is
+missing and offer a next step that works - a launch command an AI model proposes for review, or the
+[manifest editor](#setting-it-by-hand).
+
+### Known products
+
+When the analyzer recognises a well-known product it applies a built-in profile (`hub/integration/known_tools.py`):
+the profile fills the manifest fields that are still empty - never one the tool's own `hub.manifest.*` or a hub-side
+setting sets ([MANIFEST.md](MANIFEST.md#where-the-values-come-from)). A product is recognised by a marker file first,
+then by the tool's id or name, then by the image its root compose file's main service runs (the services that publish
+ports: one product Atrium describes, beside backing services such as PostgreSQL or Redis - an "iam-stack" folder
+running `quay.io/keycloak/keycloak` is Keycloak; a folder with its own app image beside a Keycloak is not), then
+(SaaS) by its host name. A `pom.xml` marker counts the project's own coordinates only: a Keycloak theme or extension
+that names `keycloak-parent` as its `<parent>` or imports it as a BOM is not Keycloak. The id or name must name the
+product itself - alone, or
+followed by a version or a packaging word such as `server`, `main` or `docker` ("Keycloak 26.0.5",
+"mattermost-server"): a project merely named after a product ("keycloak-theme", "prometheus-node-exporter") is not that
+product and gets none of its facts, only the capabilities its name gave before profiles existed. The folder's *shape* -
+a release folder, a source
+checkout, a compose folder or a SaaS service - decides what applies, and the version (from `version.txt`, the compose
+image tag or the root `pom.xml`) picks the facts of that version. The tool's notes say what was recognised
+("Recognised Keycloak 26.0.5 (release folder).") and the **Manifest** tab shows it.
+
+| Product | Recognised by | What Atrium knows |
+| --- | --- | --- |
+| Keycloak | `bin/kc.sh` / `bin/kc.bat` (release), a `pom.xml` of `keycloak-parent` (source), its name or host (a compose folder: its service running `quay.io/keycloak/keycloak`) | port 8080; health `/health/ready` with `KC_HEALTH_ENABLED=true` (from 17; on the management port 9000 from 25); admin REST API `/admin/realms` (`/auth/admin/realms` before 17, the OpenAPI document from 17); the built-in Keycloak (admin API) connector; a release folder starts with `bin/kc.sh start-dev` (Java 17 or later); a source checkout runs the official image `quay.io/keycloak/keycloak:26.0` (Docker on the hub machine) |
+| authentik | name | port 9000, health `/-/health/ready/`, API `/api/v3`; it runs as a server and a worker with PostgreSQL: import its compose folder |
+| ZITADEL | name | port 8080, health `/debug/ready`; needs PostgreSQL: import its compose folder |
+| Authelia | name | port 9091, health `/api/health`; import the folder that holds its `configuration.yml` |
+| Grafana, Prometheus, MinIO, Gitea, n8n, Mattermost | name | port and health path (3000 `/api/health`; 9090 `/-/ready`; 9000 `/minio/health/live`; 3000 `/api/healthz`; 5678 `/healthz`; 8065 `/api/v4/system/ping`) |
+| Okta, Snipe-IT, CISO Assistant, OPNsense, MikroTik RouterOS, FortiGate | name or host | the API's base path (`/api/v1`, `/api/v1`, `/api`, `/api`, `/rest`, `/api/v2`) and the built-in connector |
+| OpenVAS / Greenbone, pfSense, PAN-OS, Cisco IOS XE | name | the built-in connector (their APIs are GMP, XML or NETCONF) |
+
+Appliances and hosted services (Okta, the firewalls) are never started by the hub. Forgejo, GitLab, Rocket.Chat,
+Nextcloud, Uptime Kuma, Wiki.js, BookStack, Outline, GLPI, Zammad, osTicket, Vaultwarden, Mailpit, MailHog,
+PostgreSQL, Redis and OpenLDAP are recognised for their capabilities only. A tool never consumes what it provides.
+
+A server product imported as its **source code** is not built by the hub. When its profile has a container recipe
+(Keycloak), the `launch_command` patch starts the official image instead, for example:
+
+```
+docker run --rm --name atrium-keycloak -p 127.0.0.1:8080:8080 -p 127.0.0.1:9000:9000 -e KC_HEALTH_ENABLED=true -e KC_BOOTSTRAP_ADMIN_USERNAME=admin -e KC_BOOTSTRAP_ADMIN_PASSWORD quay.io/keycloak/keycloak:26.0 start-dev
+```
+
+The recipe publishes its ports on the loopback address only: Docker's own rules would otherwise publish them past a
+host firewall, and the hub reaches the container through `http://localhost` anyway. To reach it from elsewhere, an
+administrator widens the `-p` flags in Integration > Launch > Edit.
+
+The admin password (`KC_BOOTSTRAP_ADMIN_PASSWORD`, `KEYCLOAK_ADMIN_PASSWORD` before 26) is generated when the patch is
+applied and kept in the hub's private `adapters/<id>/launch/secrets.env`; the command names it, never its value. One
+administrator approval closes both **Launchable from the hub** and **Health check**.
+
+For any other program the generic analysis still applies: launch rules per stack, a `bin/*.sh` launcher (the one
+named like the tool, or `run`, `start`, `server` or `startup`; the only script of a release folder - built jars, no
+source - unless its name says it does something else: deploy, stop, build, test, install, backup, ...), Maven and
+Gradle builds (Quarkus and Spring Boot: port 8080), health routes found in the code and an OpenAPI spec anywhere in
+the folder. A tool's own `hub.manifest.*` that sets another port moves the portal, API and health addresses Atrium
+derived from the default port with it, unless the file sets them too.
+
+### Which fix each check offers
+
+- **Hub manifest**: pass when the folder ships its own manifest ("Ships its own hub manifest."), or when a built-in
+  profile describes the product ("Described by Atrium's built-in Keycloak profile; ..."). A manifest adopted but not
+  merged yet: warn, no fix - merge it and **Re-analyse**. Otherwise `add_manifest`: a draft (no `TODO` in it; what is
+  unknown stays empty and the patch says what is missing) on a branch of the tool's repository; applying it records
+  `adopted`, never `native`.
+- **Launchable from the hub** (not SaaS): pass with a launch command (a `TODO` placeholder is none). Otherwise
+  `launch_command`: the product's recipe, a command the Patch Agent's AI model proposes from the README and build files,
+  or - without either - the reason and the editor (Integration > Launch > Edit). Never `add_manifest`.
+- **Health check**, the first rule that applies:
+  1. `health_config` - the product serves its own health check once an environment variable is set, and the hub
+     starts it with a command it passes the environment to (a release folder);
+  2. `launch_command` - the recipe of that patch switches the health check on;
+  3. a compose folder: `health_probe` with a note naming the environment and port to add to `docker-compose.yml`, or
+     `launch_command` when no port is known;
+  4. source code in a stack the code patcher handles (Python, Node, Go, Ruby, PHP, Rust, Java; not a built release)
+     with a known port: `health_endpoint` (a code patch written by the AI model; without one, a probe) - never for a
+     product whose health endpoint Atrium knows, nor when the launch command runs a container or a compose file (the
+     source change would never run): the probe, with the note on what to add;
+  5. a port, a portal or an API address is known: `health_probe`;
+  6. otherwise `launch_command` ("No port or address is known yet: set how it starts first.").
+- **Programmable API**: pass when the manifest has an API, the profile knows the product's API, or a built-in (or
+  saved) connector reaches it - the detail names it ("REST API (Keycloak admin REST API); built-in connector: Keycloak
+  (admin API)"). A product's built-in connector counts for the product Atrium recognised, or once a connection is
+  saved; one found by a name alone (a project named after a host firewall, a theme named after a product) is offered
+  on the Data flows card but proves no API. A closed-source tool: `api_adapter` - a skeleton service full of `TODO`s
+  that the hub does not run, so applying it is no pass: the check then warns, with no fix, "An API adapter skeleton
+  was generated (adapters/<id>/api/adapter.py); fill in its TODOs and run it, then set the API in Integration > API >
+  Edit." Otherwise warn with no fix: "No API detected. If it has one, an administrator sets it in
+  Integration > API > Edit."
+- **Emits events**: pass when the tool provides webhooks or declares its own events. A poller the hub generated (it
+  publishes `<id>.changed` only while it runs, with an integration token): warn, no fix. A product whose events the
+  poller cannot read (Keycloak: per-realm events behind its admin API): warn with that note, no fix. An address is
+  known: `event_adapter` - it never polls a made-up address. Otherwise `launch_command`.
+- **Single sign-on**, **Port is free** and **Dependencies**: as described in
+  [Single sign-on](#single-sign-on-to-the-suites-identity-provider) and [MANIFEST.md](MANIFEST.md).
+
+A check's detail also carries one sentence on earlier attempts at its fix: waiting for approval, rejected, failed
+(with the last error), applied but still open.
+
+A **code patch** (`health_endpoint`, `sso_code`) is committed on a new branch of the tool's repository (in a separate
+worktree; the checkout is never touched). What it sets - a health URL, single sign-on - applies only once the change
+is in the tool's folder: until then its check warns, with no fix, "'<title>' was applied on branch <branch>, not
+merged yet: merge it into <folder> and Re-analyse (or set it by hand in Integration > Health > Edit)." The analysis
+that finds the change (the branch merged into the
+checkout, or every file it writes holding its content) applies what it sets (`Patch.merged`).
+
+### Proposals
+
+**Propose patches** (`POST /api/tools/{id}/patches`, also sent after every import and re-analysis) decides per fix,
+without a model call, what happens (`hub/integration/gapfix.py`):
+
+- a patch of that fix waits for approval: nothing new (`pending`). The health fixes also wait for a
+  `launch_command` patch that sets the health check too (one approval closes both, so no second patch is proposed
+  for the same gap);
+- the latest one was **rejected**: not proposed again until the tool changes (a new port, a launch command, another
+  recognised version - the manifest inputs the plan reads) or an administrator asks again;
+- it **failed** twice: not proposed again; the reason names the last error and the next step;
+- it was **applied** but the gap is still open: not proposed again; the reason says why;
+- the AI model's attempt failed before (a provider error, or a proposal the checks refused - a launch command, or
+  OpenID Connect sign-in written into the code when no SSO proxy fits either): not paid for again until the tool
+  changes or an administrator asks again;
+- no patch can be planned: the reason, in plain words, naming what a person must supply (`needs_input`: the
+  [manifest editor](#setting-it-by-hand)) or what to do first;
+- otherwise the patch is planned and proposed.
+
+The answer is `{patches: [new ids], pending: [ids still waiting], skipped: [{check, title, fix, state, reason}]}`, and
+the UI says it as "N proposed; M waiting for approval; not proposed: <title>: <reason>" ("No new patches needed" only
+when nothing is new, waiting or skipped). Each reason is logged once in the activity log while it stays the same
+(`<tool>: '<title>' was not proposed - <reason>`, a warning, never an agent error). The tool is `needs_patch` while a
+patch waits, else `ready`. When something was rejected or failed, an administrator gets **Propose again** (the body
+`{"again": true}`; 403 for other roles).
+
+A propose pass that proposed something or changed a reason scores the suite again, so each check's detail says what
+waits for approval and why its gap got no patch. An approved patch whose gap was closed another way while it waited
+(an administrator set the value by hand, or another patch closed it) is set aside rather than applied - it would only
+replace what closed the gap: the patch is marked rejected with the error "Not applied: ...", the approval fails with
+that reason, and the gap is proposed again if it opens again.
+
+Single sign-on is also re-planned for every tool when an identity provider is imported, re-analysed or removed, or
+the suite default changes. Such a sweep follows the same rules: a rejected SSO patch, one that failed twice, or a
+failed AI attempt for the selected provider is not proposed again. Only a person choosing the tool's provider
+(`POST /api/tools/{id}/sso`) or an administrator's **Propose again** plans it regardless. **Port is free**: the
+`reassign_port` patch moves a tool only through what its launch reads - a container command's published host port,
+a known product's own variable (`KC_HTTP_PORT`, `GF_SERVER_HTTP_PORT`, `N8N_PORT`), `SERVER_PORT` (Spring Boot),
+`QUARKUS_HTTP_PORT` (Quarkus) or else `PORT`; a compose folder or a product whose port Atrium cannot set needs a
+person (Integration > Launch > Edit).
+
+A patch that changes what runs on the hub machine when the tool starts - its launch command, setup, working folder,
+environment files, launch secrets or environment (other than a port variable holding a port number) - is approved
+by an administrator only and is never applied automatically, also in autonomous mode or for a team agent; operators
+may still reject it. An AI-proposed launch command is titled "Launch command proposed by <provider> - check it before
+approving", names the files it was read from, and shows the command on the approval card with an **AI-proposed**
+badge above the model's reasoning. A model's command must also pass a stricter floor than one an administrator types
+(a README can steer the model): one plain command - no `;`, `&&`, `|`, redirection or `$( )` - that starts a file of
+the tool's folder or a known build tool or runtime (`./mvnw`, `npm`, `java -jar`, `docker run`, ...), with no network
+fetcher (`curl`, `wget`, `nc`, `npx`, ...), no inline code (`python -c`, `node -e`, `sh -c`), no `sudo`, and no
+privileged container, host network or host folder mount.
+
+### The Adapters card
+
+The **Adapters and patches** card (Integration tab and Integration hub) shows what a propose pass would do:
+
+| State | When | Button |
+| --- | --- | --- |
+| `pending` | patches wait for approval (the detail adds what no patch can close meanwhile) | **Edit** when such a gap is on launch, health or API |
+| `available` | a patch can be proposed for an open gap | **Propose patches** |
+| `needs_input` | every open gap is skipped or needs input: the detail lists `<title>: <reason>` | **Edit** (administrators) when a gap is on launch, health or API |
+| `active` | patches applied and nothing left | - |
+| `not_needed` | no gap needs an adapter or a patch | - |
+
+### Setting it by hand
+
+Administrators set how the hub starts and reaches a tool in the **manifest editor**: the **Edit** button on the
+Launch, Health and API check rows of a tool's Integration tab, or **Edit** on the Adapters card. It has a Launch
+section (command, port, working folder and environment; not for SaaS), Health URL, API (type, base URL, spec) and
+Portal URL. What is set here becomes a hub-side setting that every analysis applies again, over what the analysis
+infers and over the tool's own manifest. A field set by an administrator or an approved patch says so and has a
+**Reset**. Environment values are write-only: the names are shown with a "set" badge, the value input stays empty
+("unchanged"), and a **Secret** box marks a value to keep in the hub's private launch secrets.
+
+| Route | Role | Body and answer |
+| --- | --- | --- |
+| `PATCH /api/tools/{id}/manifest` | admin | `{"launch": {"command", "port", "cwd", "env": {KEY: value or null}, "secret": [KEY, ...]}, "health": {"url"}, "api": {"type", "base_url", "spec"}, "ui": {"url"}}`: a field left out stays, `null` puts it back to what the analysis finds (the tool is analysed again); unknown fields: 422; answers the tool as `GET /api/tools/{id}` shows it, with `overridden` |
+| `POST /api/tools/{id}/patches` | operator; `{"again": true}` admin | a propose pass, see [Proposals](#proposals) |
+| `POST /api/tools/{id}/start` | operator (administrators start directly; others wait for an administrator's approval) | without a launch command: `{"status": "needs_input", "reason": "Launch needs a launch command: approve the launch_command patch or set it in Integration > Launch > Edit."}` (plus " One is waiting on the Approvals page." when one is) |
+
+The editor refuses with 400 and a plain message:
+
+- a launch command longer than 500 characters, on more than one line, with a NUL, a `TODO` placeholder, or one the
+  command policy blocks;
+- a port outside 1 to 65535; a working folder outside the tool's folder;
+- an environment variable name that is not letters, digits and `_` (not starting with a digit), more than 16 of them,
+  or a value on several lines or starting or ending with a quote or a blank;
+- a health URL that is not `http(s)://...` or `tcp://host:port`, an API base URL or portal URL that is not
+  `http(s)://...`, and any of them with credentials in it (user info, or a query parameter named like a token);
+- an API spec that is neither an `http(s)` address nor a path inside the tool's folder; an API type other than rest,
+  graphql, grpc or none; launch settings for a SaaS tool.
+
+Environment values listed in `launch.secret` - and any whose name reads like a credential (`PASSWORD`, `TOKEN`,
+`API_KEY`, `SECRET`, ...) or whose value is an address with credentials - go to the tool's private
+`adapters/<id>/launch/secrets.env` (0600); their names go to `launch.secret_env`, and the file to `launch.env_files`,
+so the Operator passes them to the tool when it starts it. They are masked in texts when they are at least 8
+characters of two kinds or more (a weak value such as `admin` stays private but is not masked: masking a plain word
+would rewrite every prompt and output that contains it). Other values are plain hub-side constants (`launch.env`),
+never shown either. A `launch.secret` name without a value in `launch.env` is refused.
+The activity log says `<who> changed <paths> of <tool>` - field paths only, never a value or the command. After a
+change the suite is scored again. Removing a tool removes its launch secrets.
+
 ## Connections
 
 A **connection** tells the hub how to reach a tool's own API: a connector kind, its settings and its credentials. Each
@@ -412,8 +632,9 @@ failures, with an enable switch, **Run now** and **Repair**. A tool's **Connecti
 
 For each tool the hub shows how far each way of integrating it has got: identity / single sign-on, events, data
 flows, a generated connector, and adapters and patches. Each item has a state (`active`, `pending`, `failing`,
-`needs_decision`, `available`, `needs_claude`, `unavailable` or `not_needed`), a detail and, where it applies, the
-action that moves it on. It appears in the Integration hub and on a tool's **Integration** tab.
+`needs_decision`, `needs_input`, `available`, `needs_model`, `unavailable` or `not_needed`), a detail and, where it
+applies, the action that moves it on (for adapters and patches: [the Adapters card](#the-adapters-card)). It appears in
+the Integration hub and on a tool's **Integration** tab.
 
 ### Repairs
 
@@ -682,7 +903,7 @@ status with **Connect** buttons, and per-provider settings. The tool page's **In
 | `PUT /api/identity-providers/default` | admin | `{tool_id}`: the suite default |
 | `PATCH /api/identity-providers/{tool_id}` | admin | a provider's settings (realm, slug, public URL) |
 | `POST /api/identity-providers/{tool_id}/atrium` | admin | generate the client Atrium itself signs in with (see below) |
-| `POST /api/tools/{id}/sso` | operator | `{provider}`: use this provider for the tool (replaces a pending SSO patch) |
+| `POST /api/tools/{id}/sso` | operator | `{provider}`: use this provider for the tool (replaces a pending SSO patch); answers `{provider, strategy, superseded, patches, pending, skipped}` - `skipped` gives the reason when no patch could be planned (e.g. an SSO proxy needs the tool's port first), in the shape of a [propose pass](#proposals) |
 | `POST /api/tools/{id}/sso/register` | operator | run the provider registration of an applied SSO patch |
 
 ### Atrium's own sign-in through the provider

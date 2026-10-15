@@ -1,15 +1,17 @@
-import { del, get, post } from "../api.js";
+import { del, get, patch as patchJson, post } from "../api.js";
 import { mountConnection } from "../connection.js";
 import { openExtend } from "../extensions.js";
+import { API_TYPES, EDITABLE_CHECKS, FIELDS, OVERRIDE_NOTE, editBody, formFrom, validate } from "../manifest-edit.js";
 import { loadIdentity, openProviderPicker, runRegistration, statusBadge } from "../sso.js";
-import { strategyCards, wireStrategies } from "../strategies.js";
+import { proposeToast, strategyCards, takeEditRequest, wireStrategies } from "../strategies.js";
 import { statusInfo } from "../subsidiary-model.js";
 import {
-  actions, appIcon, badge, confirmDialog, diffView, emptyState, field, html, icon, modal, ring, setHTML, timeAgo, toast,
+  actions, appIcon, badge, confirmDialog, diffView, emptyState, field, html, icon, modal, options, ring, setHTML, timeAgo, toast,
 } from "../ui.js";
 import { openGiveTeam } from "./subsidiaries.js";
 
 const KIND_LABEL = { oss: "Source code", closed: "Closed source", saas: "SaaS" };
+const SHAPE_LABEL = { release: "release folder", source: "source code", compose: "compose folder", saas: "SaaS service", other: "folder" };
 const SOURCE_ICON = { github: "branch", local: "folder", saas: "cloud" };
 
 // ---------- import dialog ----------
@@ -104,9 +106,12 @@ function ssoControls(tool, idp) {
 
 function checksPanel(tool, idp) {
   if (!tool.report) return html`<p class="muted">Not analysed yet.</p>`;
+  const editable = (c) => tool.manifest && EDITABLE_CHECKS.includes(c.id);
   return html`${tool.report.checks.map((c) => html`<div class="check-row">
       <div class="ico ${c.status}">${icon(CHECK_ICON[c.status])}</div>
-      <div style="flex:1;min-width:0"><div class="row" style="gap:8px"><b>${c.title}</b>${c.fix ? html`<span class="badge accent">${icon("wrench")}${c.fix.replace(/_/g, " ")}</span>` : ""}</div>
+      <div style="flex:1;min-width:0"><div class="row" style="gap:8px"><b>${c.title}</b>${c.fix ? html`<span class="badge accent">${icon("wrench")}${c.fix.replace(/_/g, " ")}</span>` : ""}
+        ${editable(c) ? html`<span class="spacer"></span><button class="btn sm" data-act="edit-manifest" data-section="${c.id}" data-min-role="admin"
+          title="Set it by hand: kept through every re-analysis">${icon("wrench")}Edit</button>` : ""}</div>
       <div class="muted" style="overflow-wrap:anywhere">${c.detail}</div>${c.id === "sso" ? ssoControls(tool, idp) : ""}</div></div>`)}`;
 }
 
@@ -123,11 +128,16 @@ function manifestPanel(tool) {
   const m = tool.manifest;
   if (!m) return html`<p class="muted">Not analysed yet.</p>`;
   const list = (items) => (items?.length ? items.map((x) => html`<span class="badge">${x}</span> `) : html`<span class="faint">none</span>`);
+  const source = m.native ? badge("native manifest", "ok") : m.known ? badge("built-in profile", "info") : badge("inferred", "warn");
   return html`<dl class="kv" style="margin-bottom:16px">
-      <dt>Kind</dt><dd>${KIND_LABEL[m.kind]}${m.native ? html` ${badge("native manifest", "ok")}` : html` ${badge("inferred", "warn")}`}</dd>
+      <dt>Kind</dt><dd>${KIND_LABEL[m.kind]} ${source}</dd>
+      ${m.known ? html`<dt>Recognised</dt><dd>${m.known.profile} (${SHAPE_LABEL[m.known.shape] || m.known.shape}${m.known.version ? `, version ${m.known.version}` : ""})</dd>` : ""}
+      ${m.adopted ? html`<dt>Adopted manifest</dt><dd><span class="mono" style="overflow-wrap:anywhere">${m.adopted}</span> <span class="faint">(not merged yet)</span></dd>` : ""}
+      ${tool.overridden?.length ? html`<dt>Set hub-side</dt><dd>${list(tool.overridden)} <span class="faint">(${OVERRIDE_NOTE}; kept through every analysis)</span></dd>` : ""}
       <dt>Version</dt><dd>${m.version || "unknown"}</dd><dt>License</dt><dd>${m.license || "unknown"}</dd>
       <dt>Stack</dt><dd>${list(m.stack)}</dd>
       <dt>Launch</dt><dd class="mono">${m.launch.setup ? html`${m.launch.setup} &amp;&amp; ` : ""}${m.launch.command || "-"}${m.launch.port ? html` <span class="faint">(port ${m.launch.port})</span>` : ""}</dd>
+      ${m.launch.env_keys?.length ? html`<dt>Environment</dt><dd>${list(m.launch.env_keys)} <span class="faint">(names only: values are never shown)</span></dd>` : ""}
       <dt>Health</dt><dd class="mono">${m.health.url || "-"}</dd>
       <dt>API</dt><dd>${m.api.type}${m.api.endpoints ? ` - ${m.api.endpoints} operations` : ""}${m.api.base_url ? html` <span class="mono faint">${m.api.base_url}</span>` : ""}</dd>
       <dt>SSO</dt><dd>${m.auth.sso}${m.auth.notes ? html` <span class="faint">(${m.auth.notes})</span>` : ""}</dd>
@@ -143,12 +153,142 @@ function patchesPanel(tool) {
       <div class="row" style="justify-content:space-between"><div class="row" style="gap:8px">${icon("wrench")}<b>${p.title}</b>${badge(p.status)}<span class="badge">${p.target}</span></div>
         <span class="faint" style="font-size:12px">${timeAgo(p.created_at)}</span></div>
       <p class="muted" style="margin:6px 0;white-space:pre-line">${p.rationale}</p>
+      ${p.approval_id ? html`<p style="font-size:12.5px"><a href="#/approvals">${p.status === "proposed" ? "Waiting for approval - review it on the Approvals page" : "Its approval"}</a></p>` : ""}
       ${ssoPlan(p.sso)}
       ${p.branch ? html`<p style="font-size:12.5px;overflow-wrap:anywhere">Branch <code>${p.branch}</code> in worktree <code>${p.location}</code></p>`
         : p.location ? html`<p style="font-size:12.5px;overflow-wrap:anywhere">Written to <code>${p.location}</code></p>` : ""}
       ${p.error ? html`<p style="color:var(--bad)">${p.error}</p>` : ""}
       <details><summary class="muted" style="cursor:pointer;font-size:12.5px">Show diff</summary><div style="margin-top:8px">${diffView(p.diff)}</div></details>
     </div>`)}`;
+}
+
+// ---------- manifest editor (administrators) ----------
+
+const domId = (path) => `me-${path.replace(/[^A-Za-z0-9_-]/g, "-")}`;
+
+/**
+ * The administrators' manifest editor: how the hub starts the tool (not for SaaS), its health check, its API and its
+ * portal address (PATCH /api/tools/{id}/manifest). What is set here is a hub-side setting every analysis keeps; a
+ * field set by an administrator or an approved patch can be reset (back to what Atrium finds). Environment values are
+ * write-only, never shown - only their names are; the ones marked secret (or named like a credential) are kept in the
+ * hub's private launch secrets, the others are plain hub-side constants. `focus`: the section to start in
+ * (launch | health | api).
+ */
+function openManifestEditor(tool, { focus, done } = {}) {
+  const original = formFrom(tool);
+  const f = original.fields;
+  const saas = tool.manifest?.kind === "saas";
+  const reset = new Set();
+  const resetButton = (path, label) => html`<button type="button" class="btn sm" data-reset="${path}" aria-label="Reset ${label}">Reset</button>`;
+  const note = (path, label) => (original.overridden.has(path)
+    ? html`<span class="row hint" style="gap:6px" data-note="${path}"><span>${OVERRIDE_NOTE}</span>${resetButton(path, label)}</span>` : "");
+  const error = (path) => html`<span class="hint warn-text" data-error="${path}" hidden></span>`;
+  const row = (path, label, control, hint = "") => html`<div class="field" data-field="${path}"><label for="${domId(path)}">${label}</label>
+    ${control}${hint ? html`<span class="hint">${hint}</span>` : ""}${note(path, label)}${error(path)}</div>`;
+  const text = (path, placeholder, cls = "") => html`<input id="${domId(path)}" name="${path}" value="${f[path]}" placeholder="${placeholder}"
+    class="${cls}" autocomplete="off" spellcheck="false">`;
+  const envRows = original.env.map((e) => html`<div class="row" style="gap:8px;margin-bottom:6px" data-env="${e.key}">
+      <code style="min-width:0;overflow-wrap:anywhere">${e.key}</code>${badge("set", "ok")}${e.secret ? badge("secret") : ""}
+      <input type="password" name="env:${e.key}" placeholder="unchanged" autocomplete="new-password" aria-label="New value of ${e.key}" style="flex:1 1 160px;min-width:0">
+      <label class="check"><input type="checkbox" name="secret:${e.key}" ${e.secret ? "checked" : ""}><span>Secret</span></label>
+      ${e.overridden ? resetButton(`launch.env.${e.key}`, e.key) : ""}</div>${error(`launch.env.${e.key}`)}`);
+  const launch = saas ? "" : html`<section data-section="launch"><h3 style="margin:0 0 8px">Launch</h3>
+    ${row("launch.command", "Command", text("launch.command", "e.g. ./mvnw spring-boot:run", "mono"),
+      "Runs on the hub machine, with Atrium's privileges, when someone starts the tool. One line.")}
+    <div class="form-grid">
+      ${row("launch.port", "Port", html`<input id="${domId("launch.port")}" name="launch.port" type="number" min="1" max="65535" inputmode="numeric" value="${f["launch.port"]}">`)}
+      ${row("launch.cwd", "Working folder", text("launch.cwd", "."), "Inside the tool's folder.")}</div>
+    <div class="field"><label>Environment</label>${envRows}
+      <div class="row" style="gap:8px">
+        <input name="env-new-key" class="mono" placeholder="NEW_VARIABLE" aria-label="New variable name" autocomplete="off" spellcheck="false" style="flex:1 1 140px;min-width:0">
+        <input name="env-new-value" type="password" placeholder="value" aria-label="Its value" autocomplete="new-password" style="flex:1 1 140px;min-width:0">
+        <label class="check"><input type="checkbox" name="env-new-secret"><span>Secret</span></label></div>
+      <span class="hint">Values are write-only and never shown. A secret (and any variable named like PASSWORD, TOKEN or API_KEY) is kept in the hub's private launch secrets and masked in texts; other values are plain settings. Leave a value empty to keep it.</span>
+      ${error("launch.env")}</div></section>`;
+  const m = modal({
+    title: `Settings of ${tool.name}`,
+    submit: "Save",
+    minRole: "admin",
+    wide: true,
+    body: html`<div data-error-box hidden><div class="notice warn" style="margin-bottom:12px">${icon("alert")}<div data-error="*"></div></div></div>
+      ${launch}
+      <section data-section="health"><h3 style="margin:14px 0 8px">Health</h3>
+        ${row("health.url", "Health URL", text("health.url", "http://localhost:8080/health or tcp://localhost:5432"))}</section>
+      <section data-section="api"><h3 style="margin:14px 0 8px">API</h3>
+        <div class="form-grid">
+          ${row("api.type", "Type", html`<select id="${domId("api.type")}" name="api.type">${options(API_TYPES, f["api.type"])}</select>`)}
+          ${row("api.base_url", "Base URL", text("api.base_url", "http://localhost:8080/api"))}</div>
+        ${row("api.spec", "OpenAPI spec", text("api.spec", "https://.../openapi.json or a path in the tool's folder"))}</section>
+      <section data-section="ui"><h3 style="margin:14px 0 8px">Portal</h3>
+        ${row("ui.url", "Portal URL", text("ui.url", "http://localhost:8080"))}</section>
+      <p class="faint" style="font-size:12.5px;margin-top:10px">Empty a field to go back to what Atrium finds. What you set is kept through every
+        re-analysis and wins over the tool's own hub.manifest.</p>`,
+    async onSubmit(data, form) {
+      const values = { fields: {}, env: {}, secret: [], reset: [...reset] };
+      for (const path of FIELDS) values.fields[path] = data.has(path) ? String(data.get(path) ?? "") : f[path];
+      for (const e of original.env) {
+        const v = data.get(`env:${e.key}`);
+        if (v) values.env[e.key] = String(v);
+        if (data.get(`secret:${e.key}`)) values.secret.push(e.key);
+      }
+      const newKey = String(data.get("env-new-key") || "").trim();
+      const newValue = String(data.get("env-new-value") || "");
+      const errors = validate({ ...values, env: newKey ? { ...values.env, [newKey]: newValue } : values.env }, original);
+      if (newKey && !newValue) errors["launch.env"] = `Give a value for ${newKey}`;
+      else if (!newKey && newValue) errors["launch.env"] = "Give the variable's name";
+      else if (newKey) {
+        values.env[newKey] = newValue;
+        if (data.get("env-new-secret")) values.secret.push(newKey);
+      }
+      const shown = new Set();
+      form.querySelectorAll("[data-error]").forEach((span) => {
+        const message = errors[span.dataset.error];
+        if (message) shown.add(span.dataset.error);
+        span.textContent = message || "";
+        span.hidden = !message;
+      });
+      const rest = Object.entries(errors).filter(([k]) => !shown.has(k)).map(([k, v]) => `${k.replace(/^launch\.env\./, "")}: ${v}`);
+      const box = form.querySelector("[data-error-box]");
+      box.hidden = !rest.length;
+      box.querySelector("[data-error]").textContent = rest.join("; ");
+      if (Object.keys(errors).length) {
+        toast("Check the highlighted fields", "bad");
+        return true;
+      }
+      const body = editBody(original, values);
+      if (!Object.keys(body).length) {
+        toast("Nothing changed", "info");
+        return undefined;
+      }
+      const updated = await patchJson(`/tools/${encodeURIComponent(tool.id)}/manifest`, body);
+      toast(reset.size || JSON.stringify(body).includes(":null")
+        ? `Saved - ${tool.name} is analysed again for what you reset` : `Saved - ${tool.name}'s checks are scored again`, "ok");
+      done?.(updated);
+      return undefined;
+    },
+  });
+  m.el.style.maxWidth = "calc(100vw - 32px)"; // the backdrop's grid track grows with its content: keep phones in view
+  m.el.querySelectorAll("[data-reset]").forEach((btn) => btn.addEventListener("click", () => {
+    const path = btn.dataset.reset;
+    const on = !reset.has(path);
+    if (on) reset.add(path); else reset.delete(path);
+    btn.textContent = on ? "Undo reset" : "Reset";
+    btn.setAttribute("aria-pressed", String(on));
+    const target = path.startsWith("launch.env.") ? m.el.querySelector(`[name="env:${CSS.escape(path.slice("launch.env.".length))}"]`)
+      : m.el.querySelector(`[name="${CSS.escape(path)}"]`);
+    if (target) target.disabled = on;
+    const label = btn.parentElement?.querySelector("span:not([data-error])");
+    if (label && !path.startsWith("launch.env.")) label.textContent = on ? "back to what Atrium finds when you save" : OVERRIDE_NOTE;
+  }));
+  const section = saas && focus === "launch" ? "ui" : focus;
+  if (section) {
+    setTimeout(() => {
+      const el = m.el.querySelector(`[data-section="${section}"]`);
+      el?.scrollIntoView({ block: "nearest" });
+      el?.querySelector("input:not(:disabled), select")?.focus();
+    }, 60);
+  }
+  return m;
 }
 
 const TABS = ["integration", "connection", "manifest", "patches", "process", "supervisor"];
@@ -161,8 +301,10 @@ async function renderDetail(el, ctx, id, initialTab) {
   let idp = null;
   let toolName = id;
   let connection = null; // the Connection tab's panel: kept across redraws so unsaved settings survive live updates
+  let current = null; // the tool as last drawn (the manifest editor starts from it)
   const draw = async () => {
     const [tool, identity, group] = await Promise.all([get(`/tools/${id}`), loadIdentity().catch(() => null), get("/subsidiaries").catch(() => null)]);
+    current = tool;
     const team = group?.subsidiaries.find((s) => s.tool_id === id); // its agent team inside the tool (a subsidiary), if any
     idp = identity;
     toolName = tool.name;
@@ -231,6 +373,9 @@ async function renderDetail(el, ctx, id, initialTab) {
       connection = null;
     }
   };
+  const openEditor = (section) => {
+    if (current?.manifest) openManifestEditor(current, { focus: section, done: () => draw().catch(() => {}) });
+  };
   const pickProvider = () => {
     const row = idp?.tools.find((t) => t.tool_id === id);
     if (idp?.providers.length) openProviderPicker({ toolId: id, toolName, data: idp, current: row?.choice || row?.pending?.provider || row?.connected_to || row?.selected, done: draw });
@@ -239,7 +384,9 @@ async function renderDetail(el, ctx, id, initialTab) {
     tab: (d) => { tab = d.tab; history.replaceState(null, "", `#/tools/${encodeURIComponent(id)}/${tab}`); draw(); },
     async start() {
       const r = await post(`/tools/${id}/start`).catch((e) => toast(e.message, "bad"));
-      if (r) toast(r.status === "pending_approval" ? "Waiting for approval" : r.status === "denied" ? r.reason : "Started", r.status === "denied" ? "bad" : "ok");
+      if (!r) return;
+      if (r.status === "needs_input") toast(r.reason, "warn"); // no launch command yet: the reason says what to do
+      else toast(r.status === "pending_approval" ? "Waiting for approval" : r.status === "denied" ? r.reason : "Started", r.status === "denied" ? "bad" : "ok");
     },
     async stop() {
       const r = await post(`/tools/${id}/stop`).catch((e) => toast(e.message, "bad"));
@@ -252,13 +399,16 @@ async function renderDetail(el, ctx, id, initialTab) {
     async analyze() { await post(`/tools/${id}/analyze`); toast("Re-analysing - the supervisor will re-score the suite", "ok"); },
     async patch() {
       const r = await post(`/tools/${id}/patches`).catch((e) => toast(e.message, "bad"));
-      if (r) toast(r.patches.length ? `${r.patches.length} patch(es) proposed - see Approvals` : "No new patches needed", "ok");
+      if (r) proposeToast(id, r, () => draw().catch(() => {}));
     },
+    "edit-manifest": (d) => openEditor(d.section),
     extend: () => openExtend({ id, name: toolName }, { model: ctx.state.overview?.llm?.available !== false }),
     "team-inside": () => openGiveTeam({ toolId: id, toolName }),
     async "sso-connect"(d) {
       const r = await post(`/tools/${id}/sso`, { provider: d.provider }).catch((e) => toast(e.message, "bad"));
-      if (r) toast(r.patches.length ? "Single sign-on patch proposed - see Approvals" : r.pending ? "A patch is already waiting for approval" : "Nothing to do", "ok");
+      const why = (r?.skipped || []).map((s) => s.reason).join(" "); // e.g. an SSO proxy needs the tool's port first
+      if (r) toast(r.patches.length ? "Single sign-on patch proposed - see Approvals" : r.pending ? "A patch is already waiting for approval"
+        : why ? `Not proposed: ${why}` : "Nothing to do", !r.patches.length && !r.pending && why ? "warn" : "ok");
       draw();
     },
     "sso-pick": () => pickProvider(),
@@ -276,9 +426,10 @@ async function renderDetail(el, ctx, id, initialTab) {
   });
   wireStrategies(el, {
     refresh: () => draw().catch(() => {}),
-    handlers: { choose_provider: pickProvider, connect_sso: pickProvider, import_provider: () => openImport() },
+    handlers: { choose_provider: pickProvider, connect_sso: pickProvider, import_provider: () => openImport(), edit_manifest: () => openEditor() },
   });
   await draw();
+  if (takeEditRequest(id)) openEditor(); // asked for from the Integration hub's Adapters card
   ctx.live(["tool", "patch", "approval", "subsidiary"], draw, 500);
   ctx.live(["message"], () => (tab === "supervisor" ? draw() : null), 800);
   ctx.live(["connection", "flow", "flow_removed"], () => connection?.refresh(), 500);

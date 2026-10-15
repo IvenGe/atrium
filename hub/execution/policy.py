@@ -18,8 +18,9 @@ operator's commands there that are not read-only wait for an administrator
 from __future__ import annotations
 
 import re
+import shlex
 from dataclasses import dataclass
-from typing import Literal
+from typing import Callable, Literal
 
 Risk = Literal["read_only", "change", "blocked"]
 Action = Literal["run", "approve", "deny"]
@@ -111,6 +112,81 @@ KUBECTL_WORD = re.compile(r"[\w.-]+(/[\w.-]+)?")
 
 # Shell metacharacters that can chain or redirect - never "read-only".
 METACHARS = re.compile(r"[;&|`<>]|\$\(|\r|\n")
+
+# A command an AI model proposes (a launch or setup command read from a README a stranger may have written) runs on
+# the hub machine with Atrium's privileges once an administrator approves it: it starts a program of the tool's own
+# folder or one of these build tools and runtimes - nothing that fetches from the network, runs inline code, raises
+# privileges or reaches out of a container (proposed_command_problem).
+PROPOSED_PROGRAMS = frozenset({
+    "mvn", "mvnw", "gradle", "gradlew", "sbt", "lein", "npm", "yarn", "pnpm", "bun", "deno", "node", "python",
+    "python3", "py", "pip", "pip3", "uv", "poetry", "pipenv", "pdm", "hatch", "uvicorn", "gunicorn", "hypercorn",
+    "daphne", "flask", "django-admin", "streamlit", "java", "go", "cargo", "make", "dotnet", "php", "composer", "ruby",
+    "bundle", "rails", "rake", "mix", "elixir", "docker", "podman", "docker-compose", "podman-compose", "sh", "bash",
+})
+NETWORK_TOOLS = frozenset({"curl", "wget", "nc", "ncat", "netcat", "socat", "telnet", "ssh", "scp", "sftp", "ftp", "tftp",
+                           "rsync", "iwr", "invoke-webrequest", "invoke-restmethod", "certutil", "bitsadmin", "npx"})
+ELEVATE = frozenset({"sudo", "su", "doas", "pkexec", "runas"})
+INLINE_CODE = {"python": ("-c",), "python3": ("-c",), "py": ("-c",), "node": ("-e", "--eval", "-p", "--print"),
+               "bun": ("-e", "--eval"), "deno": ("eval",), "ruby": ("-e",), "php": ("-r",), "sh": ("-c",),
+               "bash": ("-c",)}
+CONTAINER_SUBCOMMANDS = {"docker": ("run", "compose"), "podman": ("run", "compose"), "docker-compose": ("up",),
+                         "podman-compose": ("up",)}
+CONTAINER_ESCAPE = re.compile(
+    r"^(--privileged|--cap-add|--device|--security-opt|--pid|--ipc|--uts|--userns|--cgroupns)(=|$)"
+    r"|^--(net|network)(=host$|$)")
+ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+
+
+def proposed_command_problem(command: str, program: Callable[[str], bool] | None = None) -> str | None:
+    """Why a command an AI model proposed may not become a launch or setup command, in a few words (None: it may be
+    proposed - an administrator still approves it). Stricter than ``classify``, which judges what a person typed:
+    no chaining, pipe, redirection, background job or command substitution; no network fetcher (curl, wget, nc, ...)
+    or inline interpreter code (python -c, node -e, sh -c, ...); no sudo; a container only through docker/podman run
+    or compose, never privileged, on the host's network or with a host folder mounted by absolute path. It starts a
+    file of the tool's own folder (`program(path)` says whether a path is one) or a known build tool or runtime
+    (PROPOSED_PROGRAMS); leading KEY=value assignments are allowed."""
+    if METACHARS.search(command):
+        return "it chains commands, pipes, redirects or substitutes (; & | > < ` $( ) - one plain command only"
+    try:
+        words = shlex.split(command)
+    except ValueError:
+        return "it cannot be read as one command (unbalanced quotes)"
+    while words and ASSIGNMENT.match(words[0]):
+        words = words[1:]
+    if not words:
+        return "it holds no command"
+    lowered = [w.lower() for w in words]
+    names = [re.sub(r"\.(exe|cmd|bat)$", "", w.replace("\\", "/").rsplit("/", 1)[-1]) for w in lowered]
+    if ELEVATE & set(names):
+        return "it raises privileges (sudo)"
+    if NETWORK_TOOLS & set(names):
+        return "it fetches from or connects to the network (" + ", ".join(sorted(NETWORK_TOOLS & set(names))) + ")"
+    first, name = words[0], names[0]
+    local = "/" in first or "\\" in first or first.startswith(".")
+    if local or name not in PROPOSED_PROGRAMS:
+        if program is None or not program(first):
+            return (f"{first} is neither a file of the tool's folder nor a known build tool or runtime"
+                    if local else f"{first} is not a known build tool or runtime")
+    flags = INLINE_CODE.get(name, ())
+    for word in lowered[1:]:  # the interpreter's own options, up to the script or module it runs
+        if word in flags:
+            return f"it runs inline code ({name} {word})"
+        if not word.startswith("-") or word == "-m":
+            break
+    if name in ("sh", "bash") and not (len(words) > 1 and program is not None and program(words[1])):
+        return f"{name} runs a script of the tool's folder only"
+    if name in CONTAINER_SUBCOMMANDS:
+        if len(lowered) < 2 or lowered[1] not in CONTAINER_SUBCOMMANDS[name]:
+            return f"only {name} {' or '.join(CONTAINER_SUBCOMMANDS[name])} starts a container"
+        for index, word in enumerate(lowered):
+            if CONTAINER_ESCAPE.match(word) or (word in ("--net", "--network") and lowered[index + 1:index + 2] == ["host"]):
+                return f"the container would reach out of its isolation ({word})"
+            if word in ("-v", "--volume") and words[index + 1:index + 2] and words[index + 1].startswith(("/", "~")):
+                return "the container would mount a folder of the hub machine"
+            if word.startswith(("--volume=/", "-v=/", "--mount")) and ("source=/" in word or "src=/" in word
+                                                                      or word.startswith(("--volume=/", "-v=/"))):
+                return "the container would mount a folder of the hub machine"
+    return None
 
 
 def _git_read_only(sub: str, args: list[str]) -> bool:

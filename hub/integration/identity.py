@@ -138,7 +138,11 @@ def is_provider(tool: Tool) -> bool:
 
 
 def provider_kind(tool: Tool) -> IdpKind:
+    """The product the provider is: the one the analyzer recognised (a Keycloak imported as "iam"), else a kind named
+    in its id, name, source or stack, else a generic OpenID Connect provider."""
     m = tool.manifest
+    if m and m.known and m.known.profile in KINDS:
+        return m.known.profile  # type: ignore[return-value]
     text = " ".join([tool.id, tool.name, tool.source, m.name if m else "", *(m.stack if m else [])]).lower()
     return next((k for k in KINDS if k in text), "generic")
 

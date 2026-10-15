@@ -151,14 +151,15 @@ def test_identity_providers_end_to_end(client, wait_for, browser, sign_in, tmp_p
 
 
 def test_code_patch_adds_oidc_login_with_claude(client, wait_for, tmp_path: Path, plain_repo: Path, monkeypatch):
-    from llm_fakes import use_claude
+    from llm_fakes import submits, use_claude
 
     hub = client.app.state.hub
     keycloak = compose_project(tmp_path / "keycloak", {"keycloak": {"image": "quay.io/keycloak/keycloak:26.0", "ports": ["8080:8080"]}})
     import_tool(client, wait_for, keycloak)
     new_app = (plain_repo / "app.py").read_text() + "\nimport os\nOIDC_ISSUER = os.environ.get('OIDC_ISSUER')\n"
-    fake = use_claude(hub, monkeypatch, json_result={"title": "Add OIDC sign-in", "rationale": "People sign in through the suite.",
-                                                     "health_path": "", "changes": [{"path": "app.py", "content": new_app}]})
+    # the model submits through the read-before-write conversation (app.py is shown in full up front)
+    fake = use_claude(hub, monkeypatch, submits({"title": "Add OIDC sign-in", "rationale": "People sign in through the suite.",
+                                                 "health_path": "", "changes": [{"path": "app.py", "content": new_app}]}))
     import_tool(client, wait_for, plain_repo)
     patch = wait_for(lambda: next((p for p in client.get("/api/tools/notes").json()["patches"] if p["strategy"] == "sso_code"), None))
     assert patch["target"] == "repo" and patch["sso"]["provider"] == "keycloak"
@@ -177,3 +178,20 @@ def test_choosing_a_provider_without_providers_or_tools(client, wait_for, plain_
     import_tool(client, wait_for, plain_repo)
     row = client.get("/api/identity-providers").json()["tools"][0]
     assert row["status"] in ("pending", "no_provider") and row["selected"] is None and row["reason"] == "none"
+
+
+def test_choosing_a_provider_for_a_tool_without_a_port_says_why(client, wait_for, tmp_path: Path):
+    """No SSO proxy fits a tool whose port is unknown: choosing its provider proposes nothing, and the answer says why
+    (the page shows it) instead of a bare "nothing to do" while the SSO gap stays open."""
+    keycloak = compose_project(tmp_path / "keycloak", {"keycloak": {"image": "quay.io/keycloak/keycloak:26.0", "ports": ["8080:8080"]}})
+    import_tool(client, wait_for, keycloak)
+    app = tmp_path / "payroll"
+    (app / "src/main/java").mkdir(parents=True)
+    (app / "pom.xml").write_text("<project><groupId>com.acme</groupId><artifactId>payroll</artifactId><version>1.0</version></project>")
+    (app / "src/main/java/App.java").write_text("public class App {}\n")
+    import_tool(client, wait_for, app)
+    assert sso_check(client, "payroll")["fix"] == "sso_proxy"
+    planned = client.post("/api/tools/payroll/sso", json={"provider": "keycloak"}).json()
+    assert planned["patches"] == [] and planned["pending"] is None
+    assert [(s["fix"], s["state"]) for s in planned["skipped"]] == [("sso_proxy", "needs_input")]
+    assert "needs the port payroll listens on" in planned["skipped"][0]["reason"]

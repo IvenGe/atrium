@@ -295,16 +295,40 @@ let selfPatching = {};
 let guards = {};
 let subsidiaries = {};
 
-/** A command on the hub machine or starting a tool runs with Atrium's own privileges: only administrators approve it,
- * operators may reject it (the server enforces it). */
+/** A patch that changes what runs when its tool is started - the launch command, setup, working folder, environment
+ * files, launch secrets or environment other than PORT (the server's gapfix.touches_launch, read from the stored patch
+ * GET /api/approvals returns). */
+function touchesLaunch(p) {
+  const launch = p?.manifest_update?.launch;
+  if (!launch || typeof launch !== "object") return false;
+  if (["command", "setup", "cwd", "env_files", "secret_env"].some((k) => k in launch)) return true;
+  return Object.keys(launch.env || {}).some((k) => k !== "PORT");
+}
+
+/** A command on the hub machine, starting a tool, or a patch that changes how a tool is started runs with Atrium's own
+ * privileges: only administrators approve it, operators may reject it (the server enforces it). */
 function runsOnHub(a) {
   if (a.kind === "command") return (a.payload.target || "local") === "local";
+  if (a.kind === "patch") return touchesLaunch(a.patch);
   return a.kind === "process" && a.payload.action !== "stop";
 }
 
 /** A repair of a network device's connection: only administrators approve it (the server enforces it). */
 function deviceRepair(a) {
   return a.kind === "repair" && !!a.payload.device;
+}
+
+/** What a launch_command patch would run on the hub machine, shown like a command approval - marked when an AI model
+ *  proposed it (from a README anyone may have written), above the model's own reasoning. */
+function launchCommand(a) {
+  const p = a.patch;
+  const launch = a.kind === "patch" && p?.strategy === "launch_command" ? p.manifest_update?.launch : null;
+  if (!launch || !(launch.command || launch.setup)) return "";
+  return html`<div class="notice warn" style="margin:10px 0" data-launch-command>${icon("alert")}<div style="min-width:0">
+      <div class="row" style="gap:6px;margin-bottom:6px">${p.generated_by ? badge("AI-proposed", "warn") : ""}<b>Runs on the hub machine with Atrium's privileges</b></div>
+      <dl class="kv" style="margin:0">${launch.command ? html`<dt>Command</dt><dd><code style="overflow-wrap:anywhere">${launch.command}</code></dd>` : ""}
+        ${launch.setup ? html`<dt>Setup</dt><dd><code style="overflow-wrap:anywhere">${launch.setup}</code></dd>` : ""}
+        ${launch.cwd ? html`<dt>Directory</dt><dd><code>${launch.cwd}</code></dd>` : ""}</dl></div></div>`;
 }
 
 /** Which AI model wrote a proposal (patches, repairs, extension packs, self-patches, team designs). */
@@ -336,6 +360,7 @@ function pendingCard(a, names) {
           <div class="faint" style="font-size:12px">${a.kind === "firewall" ? html`proposed by <b>${a.payload.proposed_by}</b> through the Network Supervisor`
             : html`requested by <b>${a.requested_by}</b>`} - ${timeAgo(a.created_at)}</div></div></div>
       ${badge(bridge ? "bridge patch" : KIND_LABEL[a.kind] || a.kind, "accent")}</div>
+    ${launchCommand(a)}
     ${a.detail && a.kind !== "agent_team" && !sub ? html`<p class="muted" style="margin:10px 0;white-space:pre-line;overflow-wrap:anywhere">${a.kind === "self_patch" ? a.self_patch?.rationale || a.detail : a.detail}</p>` : ""}
     ${writtenBy(a)}
     ${a.kind === "command" ? html`<dl class="kv" style="margin:10px 0"><dt>Target</dt><dd>${a.payload.target}</dd>
@@ -375,8 +400,9 @@ function pendingCard(a, names) {
       ? "Only administrators decide new agent teams (they create agent definitions)."
       : a.kind === "firewall" ? "Only an administrator who did not propose it approves a network device change."
         : "Only administrators decide changes to Atrium itself (extensions and self-patches)."}</p>` : ""}
-    ${hostRun && !can("admin") ? html`<p class="faint" style="margin-top:12px;font-size:12.5px">Only administrators approve this: it runs on the
-      hub machine with Atrium's own privileges. You can still reject it.</p>` : ""}
+    ${hostRun && !can("admin") ? html`<p class="faint" style="margin-top:12px;font-size:12.5px">Only administrators approve this: ${a.kind === "patch"
+      ? "it changes how the tool is started on the hub machine, where it runs" : "it runs on the hub machine"} with Atrium's own privileges. You can
+      still reject it.</p>` : ""}
     ${deviceRepair(a) && !can("admin") ? html`<p class="faint" style="margin-top:12px;font-size:12.5px">Only administrators approve a repair of a
       network device's connection. You can still reject it.</p>` : ""}</section>`;
 }
