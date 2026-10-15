@@ -26,12 +26,15 @@ all = ["atrium[ai,ssh]"]
 [project.scripts]
 atrium = "hub.__main__:main"
 hub = "hub.__main__:main"
+atrium-sidecar = "hub.subsidiary.sidecar.__main__:main"
 
 [tool.setuptools.packages.find]
 include = ["hub*"]
 
 [tool.setuptools.package-data]
-hub = ["web/*", "web/**/*", "grc/frameworks/*.json"]
+hub = ["web/*", "web/**/*", "grc/frameworks/*.json", "llm/*.json", "subsidiary/contract/*",
+       "subsidiary/templates/*/*", "subsidiary/templates/*/*/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = ["slow: performance budgets on large data sets; skipped unless HUB_SLOW_TESTS=1"]

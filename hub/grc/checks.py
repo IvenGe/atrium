@@ -15,6 +15,7 @@ SSO_MODES = {"oidc", "saml", "oauth2", "ldap"}
 REVIEW_WINDOW = 90 * 24 * 3600
 DORMANT_AFTER = 90 * 24 * 3600
 SCAN_WINDOW = 30 * 24 * 3600
+SUPPLIER_REVIEW = 365 * 24 * 3600  # a cloud AI provider's terms / data processing agreement are reviewed yearly
 
 
 @dataclass
@@ -39,6 +40,10 @@ class Snapshot:
     network: dict[str, Any] = field(default_factory=dict)
     # framework self-assessments that are not archived (hub/grc/frameworks/assessments.control_summaries)
     frameworks: list[dict[str, Any]] = field(default_factory=list)
+    # cloud AI providers agents use, with their supplier record {id, name, owner, reviewed_at, allow_cloud} (hub/llm)
+    ai_providers: list[dict[str, Any]] = field(default_factory=list)
+    # subsidiaries (hub/subsidiary/governance.compliance_facts): ids, statuses, flags and counts - no tool data
+    subsidiaries: dict[str, Any] = field(default_factory=dict)
 
 
 Result = tuple[str, str, list[str]]  # status, detail, evidence
@@ -111,8 +116,10 @@ def check_agent_guardrails(s: Snapshot) -> Result:
         return "fail", "Switched off: " + "; ".join(off) + ".", evidence
     if loose:
         return "partial", "Core guardrails are on, but " + " and ".join(loose) + ".", evidence
+    spend = f"; AI spending is capped at ${g['max_daily_llm_spend']} per day" if g.get("limit_llm_spend") else ""
     return "pass", (f"Catastrophic commands are blocked, team agents' actions follow the approval policy and never exceed "
-                    f"their parent's permissions; teams have at most {g['max_team_size']} agents and do not nest."), evidence
+                    f"their parent's permissions; teams have at most {g['max_team_size']} agents and do not nest"
+                    f"{spend}."), evidence
 
 
 def check_ssh_hardening(s: Snapshot) -> Result:
@@ -176,8 +183,12 @@ def check_patch_review(s: Snapshot) -> Result:
     applied = [p for p in s.patches if p.status == "applied"]
     off, loose, guards = _guardrail_findings(s, "HB-CM-2")  # self-patching and extension guardrails
     evidence = [p.title for p in applied[:10]] + guards
+    bridges = sum(1 for p in s.patches if p.strategy == "atrium_bridge")
+    if bridges:  # bridge patches of subsidiaries (admin-approved, never auto-applied)
+        evidence.append(f"{bridges} bridge patch(es), {sum(1 for p in applied if p.strategy == 'atrium_bridge')} applied")
     if off:
-        return "fail", "Changes to Atrium's own code are not reviewed - switched off: " + "; ".join(off) + ".", evidence
+        return "fail", "Changes are not reviewed or tested before they are approved - switched off: " + "; ".join(off) \
+            + ".", evidence
     if s.autonomy == "autonomous":
         return "partial", "Patches are reviewed as branches, but autonomous mode applies them without approval.", evidence
     if loose:
@@ -194,7 +205,10 @@ def check_tools_health(s: Snapshot) -> Result:
 
 
 def check_audit_log(s: Snapshot) -> Result:
-    return "pass", f"{s.audit_entries} agent messages and activity entries retained.", ["hub activity log", "agent message log"]
+    evidence = ["hub activity log", "agent message log"]
+    if s.subsidiaries.get("audit_entries"):
+        evidence.append(f"{s.subsidiaries['audit_entries']} subsidiary audit entries (hash-chained, never pruned)")
+    return "pass", f"{s.audit_entries} agent messages and activity entries retained.", evidence
 
 
 def check_software_versions(s: Snapshot) -> Result:
@@ -232,14 +246,41 @@ def check_vuln_sla(s: Snapshot) -> Result:
     return status, f"{len(overdue)} critical/high finding(s) past their SLA: {shown}", evidence
 
 
+def _supplier_gap(p: dict[str, Any], now: float) -> str | None:
+    """Why a cloud AI provider is not a managed supplier (no owner, no or an old terms review), or None."""
+    gaps = [] if p.get("owner") else ["has no supplier owner"]
+    reviewed = p.get("reviewed_at")
+    if not reviewed:
+        gaps.append("its terms were never reviewed")
+    elif now - float(reviewed) > SUPPLIER_REVIEW:
+        gaps.append("its terms review is older than 12 months")
+    return f"AI provider {p['name']} " + " and ".join(gaps) if gaps else None
+
+
 def check_saas_inventory(s: Snapshot) -> Result:
     saas = [t for t in s.tools if t.source_type == "saas"]
-    if not saas:
+    ai = s.ai_providers
+    if not saas and not ai:
         return "na", "No SaaS services imported.", []
     owned = {a.source for a in s.assets if a.owner and a.status != "retired"}
     missing = [t.name for t in saas if f"tool:{t.id}" not in owned]
-    status, detail, _ = _ratio(len(saas) - len(missing), len(saas), "SaaS services with an owner", missing)
-    return status, detail, [t.name for t in saas if t.name not in missing]
+    if not ai:
+        status, detail, _ = _ratio(len(saas) - len(missing), len(saas), "SaaS services with an owner", missing)
+        return status, detail, [t.name for t in saas if t.name not in missing]
+    # cloud AI providers agents send data to are suppliers too: an owner and a terms review within 12 months
+    now = time.time()
+    gaps = {p["id"]: _supplier_gap(p, now) for p in ai}
+    missing += [f"AI provider {p['name']}" for p in ai if gaps[p["id"]]]
+    total = len(saas) + len(ai)
+    status, detail, _ = _ratio(total - len(missing), total, "suppliers with an owner and a current review", missing)
+    problems = [g for g in gaps.values() if g]
+    if problems:
+        detail += " " + "; ".join(problems) + "."
+    day = lambda ts: time.strftime("%Y-%m-%d", time.gmtime(float(ts)))  # noqa: E731
+    evidence = [t.name for t in saas if t.name not in missing]
+    evidence += [f"AI provider: {p['name']} - owner {p['owner']}, terms reviewed {day(p['reviewed_at'])}"
+                 for p in ai if not gaps[p["id"]]]
+    return status, detail, evidence
 
 
 def check_risk_review(s: Snapshot) -> Result:
@@ -408,6 +449,57 @@ def check_network_changes(s: Snapshot) -> Result:
                     "roll back unless verified."), evidence
 
 
+# -- subsidiaries (HB-AC-8): agent teams inside tools ------------------------------------------------------------------
+
+
+def check_subsidiaries(s: Snapshot) -> Result:
+    """HB-AC-8: na without a subsidiary on probation, active or paused; fail when a fail-level guardrail is relaxed or
+    an active subsidiary lacks an approved charter or (required) conformance, its token's owner, or had an alarm in
+    90 days; partial for partial-level guardrails, a changed bridge, a sidecar offline for over a day, conformance
+    only claimed by the sidecar, or a bridge approved without the tool's tests."""
+    facts = s.subsidiaries or {}
+    live = facts.get("live") or []
+    if not live:
+        return "na", "No agent team works inside a tool (no subsidiary on probation, active or paused).", []
+    g = guardrails.merged(s.guardrails)
+    off, loose, evidence = _guardrail_findings(s, "HB-AC-8")
+    loose = [text.replace("{subsidiary_ticket_minutes}", str(g.get("subsidiary_ticket_minutes"))) for text in loose]
+    statuses = {st: sum(1 for x in live if x["status"] == st) for st in ("probation", "active", "paused")}
+    evidence = [f"{x['tool_id']} ({x['id']}): {x['status']}, charter v{x['charter_version']}"
+                + (f", flags {'/'.join(x['flags'])}" if x["flags"] else "") for x in live[:10]] + evidence
+    if off:
+        return "fail", "Subsidiaries are not controlled - switched off: " + "; ".join(off) + ".", evidence
+    required = bool(g.get("subsidiary_bridge_requires_conformance", True))
+    problems = []
+    for x in live:
+        if x["status"] != "active":
+            continue
+        if not x.get("charter_approved"):
+            problems.append(f"{x['tool_id']} is active without an approved charter")
+        if required and not (x.get("conformance") or {}).get("current"):
+            problems.append(f"{x['tool_id']} is active without passing conformance for its approved bridge")
+        if "owner_disabled" in x["flags"]:
+            problems.append(f"{x['tool_id']}'s sidecar token no longer has an enabled administrator owner")
+    problems += [f"{x['tool_id']} had {x['alarms_90d']} alarm(s) (reconciliation or audit chain) in 90 days"
+                 for x in live if x.get("alarms_90d")]
+    if problems:
+        return "fail", "; ".join(problems[:5]) + ".", evidence
+    gaps = list(loose)
+    gaps += [f"the bridge in {x['tool_id']} changed since it was approved" for x in live
+             if "bridge_mismatch" in x["flags"]]
+    gaps += [f"{x['tool_id']}'s sidecar has been offline for {x['offline_hours']} hours" for x in live
+             if x.get("offline_hours", 0) > 24]
+    gaps += [f"{x['tool_id']}'s conformance is only claimed by its sidecar" for x in live
+             if (x.get("conformance") or {}).get("origin") == "claimed"]
+    gaps += [f"{x['tool_id']}'s bridge was approved without the tool's tests (no container runtime)" for x in live
+             if x.get("untested_bridge")]
+    if gaps:
+        return "partial", "Subsidiaries are governed, but " + "; ".join(gaps[:6]) + ".", evidence
+    return "pass", (f"{statuses['active']} active, {statuses['probation']} on probation and {statuses['paused']} paused "
+                    "subsidiaries: approved charters, conformance-proven bridges, human approval for in-tool writes, "
+                    "a kill switch and a hash-chained audit trail."), evidence
+
+
 # -- framework self-assessments (HB-PO-3): scores are people's judgement - only their age and key measures count -----
 
 ASSESSMENT_CURRENT = 365 * 24 * 3600
@@ -467,6 +559,7 @@ CHECKS: dict[str, Callable[[Snapshot], Result]] = {
     "network_backups": check_network_backups,
     "network_rules": check_network_rules,
     "network_changes": check_network_changes,
+    "subsidiaries": check_subsidiaries,
 }
 
 

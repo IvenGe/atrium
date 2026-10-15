@@ -3,12 +3,17 @@
     .venv/bin/python scripts/demo_hub.py [--port 8790] [--data-dir DIR]
 
 It starts small fake tool APIs on 127.0.0.1 (Snipe-IT, Keycloak's admin API, a Greenbone / OpenVAS manager speaking
-GMP over plain TCP, CISO Assistant, and plain web pages for Grafana and Wazuh), then a hub with
-HUB_DEV_FAKE_DEVICES=1 (the in-memory fake firewall) on a temporary data directory and a port other than 8710, and
-seeds it through the hub's own REST API only: accounts for every role, the imported tools and their connections,
-approved data flows that pull assets, people and accounts from the fakes, a vulnerability scan, a CyFun 2025
-self-assessment, policies and risks, the fake firewall with its network flow, and pending proposals (a firewall
-change, a data flow, agent teams) in Approvals. Ctrl+C stops everything and removes the data directory.
+GMP over plain TCP, CISO Assistant, plain web pages for Grafana and Wazuh, and two AI model servers with an
+OpenAI-compatible API - a pay-per-token cloud service and an Ollama on the company's GPU server - that answer with
+canned text), then a hub with HUB_DEV_FAKE_DEVICES=1 (the in-memory fake firewall) and HUB_LLM=off (Claude and OpenAI
+off: no real model is ever called) on a temporary data directory and a port other than 8710, and seeds it through the
+hub's own REST API only: accounts for every role, the imported tools and their connections, approved data flows that
+pull assets, people and accounts from the fakes, a vulnerability scan, a CyFun 2025 self-assessment, policies and
+risks, the fake firewall with its network flow, the two model servers as AI providers with agents on different models
+and the Hub Supervisor's own settings, a shared dashboard of tool widgets and a personal one, an API-only subsidiary
+of CISO Assistant whose scripted sidecar (FakeSidecar) enrolls and asks for a change in the tool, and pending
+proposals (a firewall change, a data flow, agent teams, that in-tool change) in Approvals. Ctrl+C stops everything and
+removes the data directory.
 
 Every name, address, e-mail address and credential here is invented (example.com, 10.0.0.0/8, 203.0.113.0/24);
 the "secrets" only unlock the fakes in this file. `scripts/screenshots.py` uses this module.
@@ -17,6 +22,7 @@ the "secrets" only unlock the fakes in this file. `scripts/screenshots.py` uses 
 from __future__ import annotations
 
 import argparse
+import base64
 import html
 import json
 import os
@@ -161,7 +167,34 @@ SNIPEIT_TOKEN = "demo-snipeit-api-token"
 KEYCLOAK_SECRET = "demo-keycloak-client-secret"
 GREENBONE_PASSWORD = "demo-greenbone-password"
 CISO_TOKEN = "demo-ciso-assistant-token"
+CISO_TEAM_TOKEN = "demo-ciso-assistant-team-token"  # the subsidiary's own account: read-only
 FIREWALL_KEY = "demo-firewall-api-key"
+MODEL_CLOUD_KEY = "demo-model-cloud-api-key"
+
+# AI model servers: (provider id, name, models; the first is the default). The cloud one is a third party.
+MODEL_CLOUD = ("model-cloud", "EU model cloud", ["chat-large-v3", "chat-small-v3"])
+MODEL_LOCAL = ("gpu-01", "Ollama on gpu-01", ["qwen3:32b", "llama3.3:70b", "gpt-oss:20b"])
+CLOUD_PRICE = {"input": 2.5, "cached_input": 0.25, "output": 10.0}  # USD per 1M tokens, set by an administrator
+# the CISO Assistant subsidiary: what it is for, the task an operator gives its clerk and the change the clerk asks for
+TEAM_GOALS = ("Keep CISO Assistant's controls in step with what IT really runs: record new security measures as "
+              "controls and point out controls without evidence.")
+TEAM_TASK = ("MFA for remote access is enforced for every account since September (change CHG-2026-097). Record it "
+             "as a control in CISO Assistant.")
+TEAM_CHANGE = {"external_id": "atrium:control:mfa-remote-access", "ref_id": "PR.AA-03", "name": "MFA for remote access",
+               "description": "Every remote access (VPN, webmail, admin portals) needs a second factor since "
+                              "September 2026 (CHG-2026-097).", "status": "pass"}
+TEAM_REASON = ("Jonas reports that MFA for remote access has been enforced since September (CHG-2026-097); CISO "
+               "Assistant has no control for it yet, so I ask to create one with status pass.")
+# canned answers of the fake models: (words in the question, answer)
+REPLIES = [
+    (("leaver",), "One leaver still has access: **Pieter De Smet** (Finance) is disabled in Keycloak but still holds "
+                  "laptop LT-1046 and an active Snipe-IT login. Revoking the login and collecting the laptop closes "
+                  "it - both are listed under People > Leavers."),
+    (("deadline", "overdue", "finding"), "Two findings are past their deadline: the Tomcat remote code execution on "
+                                         "app-01 (critical, CVE-2025-24813) and the OpenSLP heap overflow on esx-01 "
+                                         "(high). Both have a vendor fix; app-01 is the urgent one."),
+]
+DEFAULT_REPLY = "Nothing needs your attention right now: every data flow ran, and the approvals queue is up to date."
 
 
 def email_of(login: str) -> str:
@@ -370,7 +403,8 @@ def keycloak_app(realm: str) -> Callable[..., Reply]:
 
 class CisoAssistant:
     """CISO Assistant's REST API as a plain object store: lists page with limit / offset, POST creates, PATCH
-    updates - enough for the connector's test, its pushes (assets, controls and evidence, findings) and its reads."""
+    updates - enough for the connector's test, its pushes (assets, controls and evidence, findings) and its reads.
+    Two accounts: Atrium's sync account (CISO_TOKEN) and the subsidiary team's read-only one (CISO_TEAM_TOKEN)."""
 
     COLLECTIONS = ("assets", "applied-controls", "evidences", "risk-scenarios", "vulnerabilities", "frameworks",
                    "compliance-assessments", "requirement-assessments", "folders", "risk-matrices")
@@ -386,11 +420,15 @@ class CisoAssistant:
             return web_page("CISO Assistant", "ciso")(method, path, query, body, headers)
         if not path.startswith("/api/"):
             return 404, {"detail": "Not found."}
-        if headers.get("Authorization") != f"Token {CISO_TOKEN}":
+        team = headers.get("Authorization") == f"Token {CISO_TEAM_TOKEN}"
+        if headers.get("Authorization") != f"Token {CISO_TOKEN}" and not team:
             return 401, {"detail": "Invalid token."}
+        if team and method != "GET":
+            return 403, {"detail": "You do not have permission to perform this action."}
         parts = [p for p in path[len("/api/"):].split("/") if p]
         if parts == ["iam", "current-user"]:
-            return 200, {"id": stable_id("ciso", "user"), "email": "atrium-sync@example.com", "first_name": "Atrium"}
+            login = "atrium-team" if team else "atrium-sync"
+            return 200, {"id": stable_id("ciso", login), "email": f"{login}@example.com", "first_name": "Atrium"}
         if parts == ["build"]:
             return 200, {"version": "v2.7.1"}
         if parts == ["loaded-libraries"]:
@@ -419,6 +457,77 @@ class CisoAssistant:
                 items.pop(parts[1], None)
                 return 204, None
         return 405, {"detail": "Method not allowed."}
+
+
+def skeleton(schema: dict[str, Any]) -> Any:
+    """The smallest value that fits a JSON schema: what the fake models answer to structured-output requests."""
+    if schema.get("enum"):
+        return schema["enum"][0]
+    kind = schema.get("type")
+    kind = kind[0] if isinstance(kind, list) else kind
+    if kind == "object":
+        required = set(schema.get("required") or [])
+        return {k: skeleton(v) for k, v in (schema.get("properties") or {}).items() if k in required}
+    return {"array": [], "string": "", "integer": 0, "number": 0, "boolean": False}.get(str(kind))
+
+
+class ModelServer:
+    """An AI model server with an OpenAI-compatible API (GET /v1/models, POST /v1/chat/completions), as Atrium's
+    "openai_compatible" providers call it - with canned answers instead of a model: REPLIES by the words of the
+    question, the subsidiary clerk's control (TEAM_CHANGE) as a tool call when it is offered the tool and asked about
+    MFA, a tool it is told to call by name (Atrium's capability check), and the smallest valid JSON for structured
+    output. Usage is counted from the characters, about 4 a token."""
+
+    def __init__(self, models: list[str], key: str | None = None):
+        self.models, self.key = models, key
+        self.calls = 0
+
+    def __call__(self, method: str, path: str, query: dict, body: bytes, headers: Any) -> Reply:
+        if method == "GET" and path in ("", "/"):
+            return 200, "<!doctype html><title>Model server</title><h1>Model server (demo)</h1>"
+        if self.key and headers.get("Authorization") != f"Bearer {self.key}":
+            return 401, {"error": {"message": "Invalid API key.", "type": "invalid_request_error"}}
+        if method == "GET" and path == "/v1/models":
+            return 200, {"object": "list", "data": [{"id": m, "object": "model", "owned_by": "demo"} for m in self.models]}
+        if method == "POST" and path == "/v1/chat/completions":
+            return 200, self.complete(json.loads(body or b"{}"))
+        return 404, {"error": {"message": "Not found.", "type": "invalid_request_error"}}
+
+    def complete(self, req: dict[str, Any]) -> dict[str, Any]:
+        self.calls += 1
+        messages = req.get("messages") or []
+        last = messages[-1] if messages else {}
+        asked = " ".join(str(m.get("content") or "") for m in messages if m.get("role") == "user")
+        offered = {str(f.get("name")): f.get("parameters") or {} for f in
+                   (t.get("function") or {} for t in req.get("tools") or [])}
+        upsert = next((name for name in offered if name.endswith("controls-upsert")), None)
+        told = next((name for name in offered if f"Call the {name} tool" in str(last.get("content") or "")), None)
+        fmt = req.get("response_format") or {}
+        message: dict[str, Any] = {"role": "assistant", "content": ""}
+        if told:
+            message["tool_calls"] = [{"id": f"call_{self.calls}", "type": "function",
+                                      "function": {"name": told, "arguments": json.dumps(skeleton(offered[told]))}}]
+        elif fmt.get("type") == "json_schema":
+            message["content"] = json.dumps(skeleton((fmt.get("json_schema") or {}).get("schema") or {}))
+        elif fmt.get("type") == "json_object":
+            message["content"] = "{}"
+        elif last.get("role") == "tool":
+            message["content"] = ("I asked Atrium to record the control MFA for remote access in CISO Assistant; the "
+                                  "change waits for a person's approval.")
+        elif upsert and "MFA" in asked:
+            message["content"] = TEAM_REASON
+            message["tool_calls"] = [{"id": f"call_{self.calls}", "type": "function",
+                                      "function": {"name": upsert, "arguments": json.dumps(TEAM_CHANGE)}}]
+        else:
+            question = str(last.get("content") or "").lower()
+            message["content"] = next((text for words, text in REPLIES if any(w in question for w in words)),
+                                      DEFAULT_REPLY)
+        sent = len(json.dumps(messages)) + len(json.dumps(req.get("tools") or []))
+        usage = {"prompt_tokens": sent // 4 + 1, "completion_tokens": len(json.dumps(message)) // 4 + 1}
+        return {"id": f"chatcmpl-demo-{self.calls}", "object": "chat.completion", "created": int(time.time()),
+                "model": req.get("model"), "usage": {**usage, "total_tokens": sum(usage.values())},
+                "choices": [{"index": 0, "message": message,
+                             "finish_reason": "tool_calls" if message.get("tool_calls") else "stop"}]}
 
 
 class Greenbone:
@@ -612,8 +721,9 @@ def bind_port(preferred: int) -> int:
 
 
 class DemoTools:
-    """The fake tool APIs, each on its own port of 127.0.0.1: `first_port` and the 7 after it when they are free (the
-    screenshots then show the same addresses every time), any free ports with 0."""
+    """The fake tool APIs and model servers, each on its own port of 127.0.0.1: `first_port` and the 9 after it when
+    they are free (the screenshots then show the same addresses every time), any free ports with 0. The subsidiary's
+    sidecar, once seeding started it, stops with them."""
 
     def __init__(self, first_port: int = 8791):
         self.first_port = first_port
@@ -621,7 +731,9 @@ class DemoTools:
         self.urls: dict[str, str] = {}
         self.ciso = CisoAssistant()
         self.greenbone = Greenbone()
+        self.models = {"cloud": ModelServer(MODEL_CLOUD[2], MODEL_CLOUD_KEY), "local": ModelServer(MODEL_LOCAL[2])}
         self.gmp_port = 0
+        self.sidecar: FakeSidecar | None = None
 
     def _port(self, offset: int) -> int:
         return bind_port(self.first_port + offset) if self.first_port else 0  # 0: any free port
@@ -645,6 +757,8 @@ class DemoTools:
         self._http("grafana", 4, web_page("Grafana", "grafana"))
         self._http("wazuh", 5, web_page("Wazuh", "wazuh"))
         self._http("firewall", 7, web_page("fw-edge-01"))
+        self._http("model_cloud", 8, self.models["cloud"])
+        self._http("model_local", 9, self.models["local"])
         gmp = _GmpServer(("127.0.0.1", self._port(6)), _GmpHandler)
         gmp.manager = self.greenbone  # type: ignore[attr-defined]
         self._run(gmp)
@@ -652,9 +766,135 @@ class DemoTools:
         return self
 
     def stop(self) -> None:
+        if self.sidecar is not None:
+            self.sidecar.stop()
         for server in self.servers:
             server.shutdown()
             server.server_close()
+
+
+# -- the subsidiary's sidecar ------------------------------------------------------------------------------------------
+
+
+class FakeSidecar:
+    """A scripted sidecar for an API-only subsidiary (docs/SUBSIDIARIES.md), speaking only Atrium's sidecar API
+    (/api/subsidiary/v1/): it enrolls with the one-time code and its own Ed25519 key, sends a heartbeat every 20
+    seconds (as a non-root container user), runs conformance check K1 - the connector's own test with the team's
+    read-only credential, which Atrium hands it - and works on the runs Atrium sends: one turn through Atrium's model
+    gateway, the change the model asks for as an action request (it waits for a person in Approvals), a closing turn,
+    the reply and the end of the run. Everything else - the charter, the staff, budgets, approvals - is Atrium's."""
+
+    BEAT = 20  # seconds between heartbeats (Atrium flags a sidecar offline after 90)
+
+    def __init__(self, base: str, log: Callable[[str], None] = print):
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+        from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
+
+        public = Ed25519PrivateKey.generate().public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)
+        self.public_key = base64.urlsafe_b64encode(public).rstrip(b"=").decode()
+        self.http = httpx.Client(base_url=f"{base}/api/subsidiary/v1/", headers={"X-Hub-Request": "1"}, timeout=60)
+        self.log = log
+        self.cursor = 0
+        self.status = ""
+        self.last_error = ""
+        self.stopped = threading.Event()
+        self.thread: threading.Thread | None = None
+
+    def call(self, method: str, path: str, body: Any = None) -> Any:
+        response = self.http.request(method, path, json=body)
+        if response.status_code >= 400:
+            raise SeedError(f"sidecar: {method} {path} -> {response.status_code} {response.text[:300]}")
+        return response.json() if response.content else None
+
+    def enroll(self, code: str) -> None:
+        answer = self.call("POST", "enroll", {"code": code, "public_key": self.public_key, "version": "demo-0.1"})
+        self.http.headers["Authorization"] = f"Bearer {answer['token']}"  # kept in memory only
+
+    def start(self) -> "FakeSidecar":
+        self.thread = threading.Thread(target=self._loop, name="fake-sidecar", daemon=True)
+        self.thread.start()
+        return self
+
+    def stop(self) -> None:
+        self.stopped.set()
+        if self.thread is not None:
+            self.thread.join(10)
+        self.http.close()
+
+    def _loop(self) -> None:
+        beat = 0.0
+        while not self.stopped.is_set():
+            try:
+                if time.monotonic() >= beat:
+                    self.heartbeat()
+                    beat = time.monotonic() + self.BEAT
+                for message in self.call("GET", f"inbox?cursor={self.cursor}&wait=0")["messages"]:
+                    self.cursor = max(self.cursor, message["seq"])
+                    self.handle(message)
+                self.last_error = ""
+            except Exception as exc:  # said once; the next round tries again
+                if str(exc) != self.last_error:
+                    self.log(f"{exc}")
+                self.last_error = str(exc)
+            self.stopped.wait(2)
+
+    def heartbeat(self) -> None:
+        reply = self.call("POST", "heartbeat", {
+            "version": "demo-0.1", "health": "ok", "clock": time.time(), "runs": [],
+            "runtime": {"uid": 10001, "container": True, "hostname_hash": "5f0c2e9a4b17"}})
+        self.status = reply["status"]
+
+    def handle(self, message: dict[str, Any]) -> None:
+        body = message.get("body") or {}
+        if message["type"] == "conformance":
+            self.conformance(body)
+        elif message["type"] in ("run", "chat"):
+            self.work(body)
+
+    def conformance(self, body: dict[str, Any]) -> None:
+        """K1, as the real sidecar runs it: the connector's own test with the credential Atrium gives it."""
+        import asyncio
+
+        from hub.connectors import build
+
+        credential = self.call("GET", "credential")
+        try:
+            result = asyncio.run(build(credential["kind"], credential["config"], credential["secrets"]).test())
+            ok, detail = bool(result.get("ok")), "the connector's test passed with the team's own credential"
+        except Exception as exc:
+            ok, detail = False, f"the connector's test failed ({exc.__class__.__name__})"
+        rows = [{"id": vector["id"], "ok": ok, "detail": detail} for vector in body.get("vectors") or []]
+        self.call("POST", "conformance", {"rows": rows, "built_at": body.get("built_at")})
+
+    def work(self, run: dict[str, Any]) -> None:
+        run_id, agent_id = run["run_id"], run["agent_id"]
+        messages: list[dict[str, Any]] = [{"role": "user", "text": run.get("text") or "Do your standing task."}]
+        outcome = "done"
+        try:
+            charter = self.call("GET", "charter")
+            tools = {t["name"]: t.get("action_id") for t in (charter.get("tools") or {}).get("normal", [])}
+            answer = self.call("POST", "model", {"run_id": run_id, "agent_id": agent_id, "messages": messages})
+            reply = answer.get("text") or ""
+            if answer.get("tool_calls"):
+                messages.append({"role": "assistant", "text": answer.get("text") or "",
+                                 "tool_calls": answer["tool_calls"], "ref": answer.get("ref")})
+                for tool_call in answer["tool_calls"]:
+                    action = tools.get(tool_call["name"])
+                    asked = self.call("POST", "actions/request", {
+                        "run_id": run_id, "agent_id": agent_id, "action_id": action, "params": tool_call["arguments"],
+                        "reason": answer.get("text") or ""}) if action else {"status": "denied", "reason": "unknown"}
+                    said = ("Atrium asked a person to approve it (approval " + str(asked.get("approval_id")) + ")."
+                            if asked["status"] == "pending_approval" else f"{asked['status']}: {asked.get('reason')}")
+                    messages.append({"role": "tool", "call_id": tool_call["id"], "text": said})
+                answer = self.call("POST", "model", {"run_id": run_id, "agent_id": agent_id, "messages": messages})
+                reply = answer.get("text") or reply
+        except SeedError as exc:
+            self.log(f"{exc}")
+            outcome, reply = "failed", "The run failed."
+        if run.get("correlation_id"):
+            self.call("POST", "replies", {"correlation_id": run["correlation_id"], "reply": reply[:8000],
+                                          "ok": outcome == "done"})
+        self.call("POST", f"runs/{run_id}/end", {"outcome": outcome})
 
 
 # -- the hub -----------------------------------------------------------------------------------------------------------
@@ -914,12 +1154,140 @@ def seed(base: str, password: str, tools: DemoTools, log: Callable[[str], None] 
                 "title": title, "severity": severity, "status": status, "rule": rule, "host": host, "user": user,
                 "detected": iso(time.time() - age * 3600)}})
     admin.post("/api/commands", {"command": "uptime", "target": "local"}, ok=(400, 403, 409))
-    operator.post("/api/chat", {"text": "Which leavers still have access?"}, ok=(400, 409, 503))
+
+    # -- round 4: AI providers and agents on them, dashboards, a subsidiary inside CISO Assistant -------------------
+    models = seed_models(admin, tools, ids, log)
+    operator.post("/api/chat", {"text": "Which leavers still have access?"}, ok=(400, 409, 429, 503))
+    if models.get("triage"):
+        admin.post(f"/api/agents/{models['triage']}/chat", {"text": "Which findings are past their deadline?"},
+                   ok=(400, 409, 429, 503))
+    boards = seed_dashboards(admin, ids, log)
+    team = seed_subsidiary(admin, second_admin, operator, tools, ids, base, log)
     admin.post("/api/integration/evaluate")
     leaver = people.get(LEAVER)
     return {"tools": ids, "firewall": fw_id, "change_id": change["change"]["id"], "framework": fw,
             "assessment_id": assessment["id"], "person_id": (people.get("emma.janssens") or {}).get("id"),
-            "leaver_id": leaver["id"] if leaver else None}
+            "leaver_id": leaver["id"] if leaver else None, **models, **boards, **team}
+
+
+def seed_models(admin: Api, tools: DemoTools, ids: dict[str, str], log: Callable[[str], None]) -> dict[str, Any]:
+    """The two model servers as AI providers (the cloud one with its key, prices and supplier record), the suite's
+    model choice - the GPU server by default, the cloud for code changes and as the fallback, the OpenVAS team
+    local-only - two agents' own choices and the Hub Supervisor's settings."""
+    cloud, cloud_name, cloud_models = MODEL_CLOUD
+    local, local_name, local_models = MODEL_LOCAL
+    admin.post("/api/llm/providers", {"id": cloud, "name": cloud_name, "base_url": f"{tools.urls['model_cloud']}/v1",
+                                      "default_model": cloud_models[0], "api_key": MODEL_CLOUD_KEY,
+                                      "location": "third_party"})  # a cloud service: it runs on loopback here
+    admin.post("/api/llm/providers", {"id": local, "name": local_name, "base_url": f"{tools.urls['model_local']}/v1",
+                                      "default_model": local_models[0]})
+    for provider, models in ((cloud, cloud_models), (local, local_models)):
+        result = admin.post(f"/api/llm/providers/{provider}/test")
+        if not result.get("ok"):
+            raise SeedError(f"the {provider} model server test failed: {result.get('detail')}")
+        for model in models[:2]:  # "Check tools and JSON": two tiny calls each
+            admin.post(f"/api/llm/providers/{provider}/probe", {"model": model})
+    admin.patch(f"/api/llm/providers/{cloud}", {"supplier": {
+        "owner": "Lena Claes", "reviewed_at": time.time() - 16 * DAY,
+        "notes": "Data processing agreement signed; prompts are processed in the EU and not used for training."}})
+    small = {k: round(v / 6, 3) for k, v in CLOUD_PRICE.items()}
+    admin.put("/api/llm/prices", {"overrides": {f"{cloud}:{cloud_models[0]}": CLOUD_PRICE,
+                                                f"{cloud}:{cloud_models[1]}": small}})
+    version = admin.get("/api/llm/selection")["selection"]["version"]
+    admin.patch("/api/llm/selection", {
+        "version": version, "default": {"provider": local, "model": local_models[0]},
+        "purposes": {"code": {"provider": cloud, "model": cloud_models[0]}}, "fallback": [cloud],
+        "teams": {ids["OpenVAS"]: {"provider": local, "model": local_models[1], "local_only": True}}})
+
+    agents = admin.get("/api/agents")
+    triage = next((a["id"] for a in agents if a.get("team") == ids["OpenVAS"] and "triage" in a["id"]), None)
+    reconciler = next((a["id"] for a in agents if a.get("team") == ids["Snipe-IT"] and "reconciler" in a["id"]), None)
+    if reconciler:
+        view = admin.get(f"/api/agents/{reconciler}/settings")
+        admin.patch(f"/api/agents/{reconciler}/settings", {"version": view["version"],
+                                                           "llm": {"provider": cloud, "model": cloud_models[1]}})
+    view = admin.get("/api/agents/supervisor/settings")
+    admin.patch("/api/agents/supervisor/settings", {"version": view["version"], "llm": {"provider": cloud,
+                                                                                         "model": cloud_models[0]},
+                                                    "config": {
+        "extra_instructions": "Name the tool every fact comes from. When a change waits in Approvals, say who may "
+                              "approve it.",
+        "budget": {"daily_tokens": 2_000_000, "daily_cost_usd": 5, "monthly_cost_usd": 60, "hard_stop": True},
+        "rate": {"calls_per_minute": 20, "runs_per_hour": 120},
+        "memory": {"mode": "persisted", "max_turns": 40, "retention_days": 30},
+        "escalation": {"tool": True, "rules": ["Someone asks to switch a guardrail off",
+                                               "A data flow fails three times in a row"],
+                       "failed_runs": 3, "pause_schedule": True, "max_per_day": 5}}})
+    log(f"AI providers {cloud} (cloud) and {local} (self-hosted); agents on both; the Hub Supervisor configured")
+    return {"triage": triage, "reconciler": reconciler}
+
+
+def _widget(n: int, kind: str, x: int, y: int, w: int, h: int, config: dict[str, Any],
+            title: str | None = None) -> dict[str, Any]:
+    return {"id": f"w_demo{n:04d}", "type": kind, "x": x, "y": y, "w": w, "h": h, "title": title, "config": config}
+
+
+def seed_dashboards(admin: Api, ids: dict[str, str], log: Callable[[str], None]) -> dict[str, Any]:
+    """A shared "Security desk" of hub numbers and tool widgets (OpenVAS findings, Snipe-IT assets, Wazuh alerts, the
+    firewall) that an administrator arranged and published, and ava's own "Settings & AI" from its template."""
+    openvas, snipeit = (f"tool:{ids[n]}" for n in ("OpenVAS", "Snipe-IT"))
+    still_open = [{"field": "status", "op": "in", "value": ["open", "in_progress"]}]
+    widgets = [
+        _widget(1, "metric", 0, 0, 3, 1, {"metric": "vulnerabilities_open"}),
+        _widget(2, "metric", 3, 0, 3, 1, {"metric": "vulnerabilities_overdue"}),
+        _widget(3, "metric", 6, 0, 3, 1, {"metric": "approvals_pending"}),
+        _widget(4, "metric", 9, 0, 3, 1, {"metric": "llm_spend_today"}),
+        _widget(5, "domain_count", 0, 1, 4, 4, {"domain": "vulnerabilities", "source": openvas, "filters": still_open,
+                                                "group_by": "severity", "view": "bars"}, "OpenVAS: open findings"),
+        _widget(6, "vuln_sla", 4, 1, 4, 4, {"source": openvas}, "OpenVAS: deadlines"),
+        _widget(7, "tool_overview", 8, 1, 4, 4, {"tool_id": ids["Snipe-IT"]}, "Snipe-IT"),
+        _widget(8, "domain_list", 0, 5, 6, 4, {"domain": "vulnerabilities", "source": openvas, "filters": still_open,
+                                               "sort": "severity", "order": "desc", "limit": 8,
+                                               "columns": ["title", "severity", "host", "due_at"]},
+                "OpenVAS: worst open findings"),
+        _widget(9, "domain_count", 6, 5, 3, 4, {"domain": "assets", "source": snipeit, "filters": [],
+                                                "group_by": "type", "view": "bars"}, "Snipe-IT assets"),
+        _widget(10, "network_overview", 0, 9, 6, 3, {"tools": [ids["Edge firewall"]]}, "Edge firewall"),
+        _widget(11, "approvals_queue", 6, 9, 6, 3, {"kinds": [], "limit": 6}),
+    ]
+    if any(d.get("key") == "alerts" for d in admin.get("/api/x")):
+        widgets.append(_widget(12, "domain_count", 9, 5, 3, 4, {"domain": "x:alerts", "source": "all", "filters": [],
+                                                                "group_by": "severity", "view": "bars"},
+                               "Wazuh alerts"))
+    made = admin.post("/api/dashboards/shared", {"title": "Security desk", "icon": "shield",
+                                                 "description": "Findings, deadlines, assets and alerts from the tools."})
+    admin.put(f"/api/dashboards/shared/{made['id']}", {"title": made["title"], "icon": made["icon"],
+                                                      "description": made["description"], "widgets": widgets,
+                                                      "base_version": made["version"]})
+    personal = admin.post("/api/dashboards/mine", {"title": "Settings & AI", "icon": "sliders",
+                                                   "from": "template:settings_ai"})
+    log(f"dashboards: shared Security desk ({len(widgets)} widgets), ava's Settings & AI")
+    return {"dashboard": made["id"], "my_dashboard": personal["id"]}
+
+
+def seed_subsidiary(admin: Api, second_admin: Api, operator: Api, tools: DemoTools, ids: dict[str, str], base: str,
+                    log: Callable[[str], None]) -> dict[str, Any]:
+    """An API-only subsidiary of CISO Assistant (docs/SUBSIDIARIES.md): jonas asks for the team, ava switches
+    subsidiaries on and enters the team's read-only credential and an enrollment, the scripted sidecar enrolls and
+    passes K1, noah approves the charter (never the person who asked), jonas gives the clerk a task - and the change
+    the clerk asks for waits in Approvals for someone other than jonas."""
+    tool = ids["CISO Assistant"]
+    admin.patch("/api/settings/guardrails", {"allow_subsidiaries": True})
+    operator.post(f"/api/tools/{tool}/subsidiary", {"mode": "sidecar_only", "designer": "templates",
+                                                     "goals": TEAM_GOALS})
+    admin.put(f"/api/subsidiaries/{tool}/credential", {"secrets": {"token": CISO_TEAM_TOKEN}})
+    sidecar = FakeSidecar(base, lambda line: log(f"  sidecar: {line}"))
+    sidecar.enroll(admin.post(f"/api/subsidiaries/{tool}/enrollment")["code"])
+    tools.sidecar = sidecar.start()
+    charter = wait("the charter approval", lambda: next(iter(pending(admin, "subsidiary_charter")), None), 60)
+    decide(second_admin, charter, note="Demo: approved while seeding")
+    wait("the subsidiary to be active", lambda: admin.get(f"/api/subsidiaries/{tool}")["status"] == "active", 60)
+    staff = admin.get(f"/api/subsidiaries/{tool}")["charter"]["staff"]
+    clerk = next(a for a, scope in staff.items() if "records.controls.upsert" in scope["actions"])
+    operator.post(f"/api/subsidiaries/{tool}/tasks", {"agent_id": clerk, "text": TEAM_TASK})
+    change = wait("the team's change request", lambda: next(iter(pending(admin, "subsidiary_action")), None), 90)
+    log(f"subsidiary of CISO Assistant active, its sidecar enrolled; waiting for approval: {change['title']}")
+    return {"subsidiary_tool": tool, "subsidiary_approval": change["id"], "subsidiary_clerk": clerk}
 
 
 def _requirement_refs(detail: dict[str, Any], level: str) -> list[str]:
@@ -940,6 +1308,10 @@ def _window() -> dict[str, Any]:
 # -- running it by hand ------------------------------------------------------------------------------------------------
 
 
+def _interrupt(signum: int, frame: Any) -> None:
+    raise KeyboardInterrupt
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--port", type=int, default=8790, help="the hub's port (never 8710; default 8790)")
@@ -947,9 +1319,10 @@ def main() -> int:
     parser.add_argument("--password", default="demo-password-2026", help="the password of every demo account")
     args = parser.parse_args()
     data_dir = Path(args.data_dir) if args.data_dir else Path(tempfile.mkdtemp(prefix="atrium-demo-"))
+    signal.signal(signal.SIGTERM, _interrupt)  # `kill <pid>` cleans up like Ctrl+C: the hub is stopped too
     tools = DemoTools(args.port + 1).start()
     hub = start_hub(data_dir, args.port, args.password)
-    print(f"hub pid {hub.pid} on http://127.0.0.1:{args.port}, data {data_dir}", flush=True)
+    print(f"demo pid {os.getpid()}, hub pid {hub.pid} on http://127.0.0.1:{args.port}, data {data_dir}", flush=True)
     try:
         seed(f"http://127.0.0.1:{args.port}", args.password, tools)
         print(f"Ready: sign in as ava / noah (admin), jonas (operator) or lena (viewer) with '{args.password}'. "
@@ -959,8 +1332,8 @@ def main() -> int:
     except KeyboardInterrupt:
         pass
     finally:
+        tools.stop()  # the sidecar first: it would only see a hub that is gone
         stop_hub(hub)
-        tools.stop()
         if not args.data_dir:
             shutil.rmtree(data_dir, ignore_errors=True)
     return 0

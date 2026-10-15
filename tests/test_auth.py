@@ -125,6 +125,24 @@ def test_password_policy(password, message):
     ("GET", "/api/llm/providers", "viewer"), ("POST", "/api/llm/providers", "admin"),
     ("PATCH", "/api/llm/providers/ollama", "admin"), ("DELETE", "/api/llm/providers/ollama", "admin"),
     ("POST", "/api/llm/providers/ollama/test", "admin"), ("POST", "/api/llm/providers/ollama", "operator"),
+    ("POST", "/api/llm/providers/openai/probe", "admin"), ("POST", "/api/llm/providers/openai/probex", "operator"),
+    ("POST", "/api/llm/providers/a/b/probe", "operator"), ("GET", "/api/llm/prices", "viewer"),
+    ("PUT", "/api/llm/prices", "admin"), ("PUT", "/api/llm/pricesx", "operator"),
+    ("GET", "/api/llm/selection", "viewer"), ("PATCH", "/api/llm/selection", "admin"),
+    ("PATCH", "/api/llm/selectionx", "operator"), ("GET", "/api/agents/x/settings", "viewer"),
+    ("PATCH", "/api/agents/x/settings", "admin"), ("PATCH", "/api/agents/agent:x/settings", "admin"),
+    ("PATCH", "/api/agents/x/settingsx", "operator"), ("PATCH", "/api/agents/x/y/settings", "operator"),
+    # agent settings beyond the model (R4-LLM stage 4): history, restore, playground, budgets, usage, conversations
+    ("GET", "/api/agents/x/settings/history", "viewer"), ("POST", "/api/agents/x/settings/restore", "admin"),
+    ("POST", "/api/agents/agent:x/settings/restore", "admin"), ("POST", "/api/agents/x/settings/restorex", "operator"),
+    ("POST", "/api/agents/x/playground", "admin"), ("POST", "/api/agents/x/playgroundx", "operator"),
+    ("POST", "/api/agents/x/budget/override", "admin"), ("POST", "/api/agents/x/budget/overrides", "operator"),
+    ("GET", "/api/agents/x/usage", "viewer"), ("GET", "/api/llm/usage", "viewer"),
+    ("GET", "/api/agents/x/conversation", "operator"), ("GET", "/api/agents/agent:x/conversation", "operator"),
+    ("DELETE", "/api/agents/x/conversation", "operator"), ("GET", "/api/agents/x/conversationx", "viewer"),
+    # escalation and notifications (R4-LLM stage 5): resuming a paused schedule is admin, the strip is a read
+    ("POST", "/api/agents/x/schedule/resume", "admin"), ("POST", "/api/agents/agent:x/schedule/resume", "admin"),
+    ("POST", "/api/agents/x/schedule/resumex", "operator"), ("GET", "/api/agents/attention", "viewer"),
     ("GET", "/api/auth/sso", "admin"), ("PUT", "/api/auth/sso", "admin"), ("DELETE", "/api/auth/sso", "admin"),
     ("POST", "/api/auth/sso/test", "admin"), ("GET", "/api/auth/sso/test", "viewer"),
     ("GET", "/api/people", "viewer"), ("GET", "/api/people/p_1", "viewer"), ("GET", "/api/people/leavers", "viewer"),
@@ -168,6 +186,31 @@ def test_password_policy(password, message):
     ("GET", "/api/integration/map", "viewer"), ("GET", "/api/integration/map/options", "viewer"),
     ("POST", "/api/flows", "operator"), ("GET", "/api/layouts/integration", "viewer"),
     ("PATCH", "/api/layouts/integration", "operator"), ("DELETE", "/api/layouts/segmentation", "operator"),
+    ("GET", "/api/widgets/catalog", "viewer"), ("GET", "/api/widgets/preview", "viewer"),
+    ("GET", "/api/widgets/templates/overview", "viewer"),
+    ("GET", "/api/dashboards", "viewer"), ("GET", "/api/dashboards/settings", "viewer"),
+    ("GET", "/api/dashboards/p_0123456789", "viewer"), ("GET", "/api/dashboards/s_0123456789/data", "viewer"),
+    ("POST", "/api/dashboards/mine", "viewer"), ("PUT", "/api/dashboards/mine/p_0123456789", "viewer"),
+    ("DELETE", "/api/dashboards/mine/p_0123456789", "viewer"), ("PUT", "/api/dashboards/prefs", "viewer"),
+    ("POST", "/api/dashboards/shared", "admin"), ("PUT", "/api/dashboards/shared/s_0123456789", "admin"),
+    ("DELETE", "/api/dashboards/shared/s_0123456789", "admin"), ("PUT", "/api/dashboards/default", "admin"),
+    ("POST", "/api/dashboards/mine/x", "operator"), ("PUT", "/api/dashboards/minex", "operator"),  # near misses
+    ("PUT", "/api/dashboards/mine/a/b", "operator"), ("POST", "/api/dashboards/prefs", "operator"),
+    ("GET", "/api/subsidiaries", "viewer"), ("GET", "/api/subsidiaries/helpdesk", "viewer"),
+    ("POST", "/api/tools/helpdesk/subsidiary", "operator"), ("PUT", "/api/subsidiaries/helpdesk/charter", "admin"),
+    ("PUT", "/api/subsidiaries/helpdesk/credential", "admin"), ("DELETE", "/api/subsidiaries/helpdesk/credential", "admin"),
+    ("POST", "/api/subsidiaries/helpdesk/enrollment", "admin"), ("POST", "/api/subsidiaries/helpdesk/conformance", "admin"),
+    ("POST", "/api/subsidiaries/helpdesk/rotate-key", "admin"), ("POST", "/api/subsidiaries/helpdesk/pause", "operator"),
+    ("POST", "/api/subsidiaries/pause-all", "operator"), ("POST", "/api/subsidiaries/helpdesk/resume", "admin"),
+    ("POST", "/api/subsidiaries/helpdesk/stop", "admin"), ("DELETE", "/api/subsidiaries/helpdesk", "admin"),
+    ("POST", "/api/subsidiaries/helpdesk/tasks", "operator"), ("GET", "/api/subsidiaries/helpdesk/audit", "viewer"),
+    ("POST", "/api/subsidiaries/helpdesk/audit/verify", "operator"),
+    ("POST", "/api/subsidiaries/helpdesk/reports/rp_1/promote", "operator"),
+    ("POST", "/api/subsidiary/v1/enroll", None), ("POST", "/api/subsidiary/v1/heartbeat", "subsidiary"),
+    ("GET", "/api/subsidiary/v1/inbox", "subsidiary"), ("GET", "/api/subsidiary/v1", "subsidiary"),
+    ("GET", "/api/subsidiaries/helpdesk/runs", "viewer"), ("POST", "/api/subsidiary/v1/model", "subsidiary"),
+    ("POST", "/api/subsidiary/v1/actions/ap_1/result", "subsidiary"), ("POST", "/api/subsidiary/v1/hub-request",
+                                                                     "subsidiary"),
 ])
 def test_required_role(method, path, role):
     assert required_role(method, path) == role
@@ -175,7 +218,7 @@ def test_required_role(method, path, role):
 
 # Written from the product contract on purpose, independently of hub.auth.policy.
 PUBLIC = {("GET", "/api/health"), ("GET", "/api/auth/me"), ("POST", "/api/auth/login"), ("POST", "/api/auth/setup"),
-          ("GET", "/api/auth/oidc/login"), ("GET", "/api/auth/oidc/callback")}
+          ("GET", "/api/auth/oidc/login"), ("GET", "/api/auth/oidc/callback"), ("POST", "/api/subsidiary/v1/enroll")}
 SELF_SERVICE = {("POST", "/api/auth/logout"), ("POST", "/api/auth/password"), ("GET", "/api/auth/sessions"),
                 ("DELETE", "/api/auth/sessions")}
 INTEGRATION = {("POST", "/api/bus/publish"), ("GET", "/api/health")}
@@ -206,6 +249,20 @@ def contract_role(method: str, path: str) -> str | None:
                           ("PATCH", "/api/llm/providers/{provider_id}"), ("DELETE", "/api/llm/providers/{provider_id}"),
                           ("POST", "/api/llm/providers/{provider_id}/test")}:
         return "admin"
+    # checking a model's capabilities spends tokens; the price table drives the cost estimates
+    if (method, path) in {("POST", "/api/llm/providers/{provider_id}/probe"), ("PUT", "/api/llm/prices")}:
+        return "admin"
+    # which model agents use: the suite's selection and an agent's own model settings
+    if (method, path) in {("PATCH", "/api/llm/selection"), ("PATCH", "/api/agents/{agent_id}/settings")}:
+        return "admin"
+    # an agent's settings history can be restored, its budget stop lifted, its paused schedule resumed and its
+    # playground (paid tokens) used by admins only; a person's own conversation with an agent is for operators
+    if (method, path) in {("POST", "/api/agents/{agent_id}/settings/restore"), ("POST", "/api/agents/{agent_id}/playground"),
+                          ("POST", "/api/agents/{agent_id}/budget/override"),
+                          ("POST", "/api/agents/{agent_id}/schedule/resume")}:
+        return "admin"
+    if (method, path) == ("GET", "/api/agents/{agent_id}/conversation"):
+        return "operator"
     # Atrium's own sign-in settings (they hold its client secret) - reading them too
     if (method, path) in {("GET", "/api/auth/sso"), ("PUT", "/api/auth/sso"), ("DELETE", "/api/auth/sso"),
                           ("POST", "/api/auth/sso/test")}:
@@ -235,7 +292,40 @@ def contract_role(method: str, path: str) -> str | None:
                           ("PATCH", "/api/network/maintenance-windows/{window_id}"),
                           ("DELETE", "/api/network/maintenance-windows/{window_id}")}:
         return "admin"
+    # Home dashboards: everyone arranges their own (and their tabs); shared dashboards and the default are admin's
+    if (method, path) in {("POST", "/api/dashboards/mine"), ("PUT", "/api/dashboards/mine/{dash_id}"),
+                          ("DELETE", "/api/dashboards/mine/{dash_id}"), ("PUT", "/api/dashboards/prefs")}:
+        return "viewer"
+    if (method, path) in {("POST", "/api/dashboards/shared"), ("PUT", "/api/dashboards/shared/{dash_id}"),
+                          ("DELETE", "/api/dashboards/shared/{dash_id}"), ("PUT", "/api/dashboards/default")}:
+        return "admin"
+    # subsidiaries: the charter, the dedicated credential, enrollment, conformance, signing keys, resume, stop and
+    # archive are administrators'; the sidecar API is a subsidiary token's alone (enrolling is public)
+    if (method, path) in {("PUT", "/api/subsidiaries/{tool_id}/charter"), ("PUT", "/api/subsidiaries/{tool_id}/credential"),
+                          ("DELETE", "/api/subsidiaries/{tool_id}/credential"),
+                          ("POST", "/api/subsidiaries/{tool_id}/enrollment"),
+                          ("POST", "/api/subsidiaries/{tool_id}/conformance"),
+                          ("POST", "/api/subsidiaries/{tool_id}/rotate-key"), ("POST", "/api/subsidiaries/{tool_id}/resume"),
+                          ("POST", "/api/subsidiaries/{tool_id}/stop"), ("DELETE", "/api/subsidiaries/{tool_id}")}:
+        return "admin"
+    if path.startswith("/api/subsidiary/v1/"):
+        return "subsidiary"
     return "viewer" if method in ("GET", "HEAD") else "operator"
+
+
+def subsidiary_token(client) -> str:
+    """A sidecar's token for a subsidiary stored as enrollment leaves it (the master switch stays off)."""
+    from hub.models import ApiToken
+    from hub.subsidiary.models import Subsidiary
+
+    hub = client.app.state.hub
+    sub = Subsidiary(id="sub_0123456789ab", tool_id="matrix-tool", mode="sidecar_only", status="probation")
+    hub.store.put("subsidiaries", sub.model_dump(mode="json"))
+    value = service.TOKEN_PREFIX + "m" * 43
+    hub.store.put("tokens", ApiToken(name="sidecar-matrix", role="subsidiary", token_hash=service.sha256(value),
+                                     prefix="mmmmmmmm", created_by="admin", owner_id=hub.auth.find_user("admin").id,
+                                     tool_id=sub.tool_id, subsidiary_id=sub.id).model_dump(mode="json"))
+    return value
 
 
 def test_permission_matrix_covers_every_route(client, sign_in, browser):
@@ -246,6 +336,7 @@ def test_permission_matrix_covers_every_route(client, sign_in, browser):
         "operator": sign_in("operator"),
         "admin": sign_in("admin"),
         "integration": browser(headers={"Authorization": f"Bearer {token}"}),
+        "subsidiary": browser(headers={"Authorization": f"Bearer {subsidiary_token(client)}"}),
     }
     # signing out last keeps the sessions alive
     routes = sorted(api_routes(client.app), key=lambda r: r == ("POST", "/api/auth/logout"))
@@ -259,8 +350,10 @@ def test_permission_matrix_covers_every_route(client, sign_in, browser):
                 allowed = expected is None
             elif who == "integration":
                 allowed = (method, template) in INTEGRATION
+            elif who == "subsidiary":  # its own API only (enrolling included), nothing else - not even public routes
+                allowed = template.startswith("/api/subsidiary/v1/")
             else:
-                allowed = expected is None or RANK[who] >= RANK[expected]
+                allowed = expected is None or (expected != "subsidiary" and RANK[who] >= RANK[expected])
             if allowed and template == "/api/events":
                 continue  # an open event stream never ends under TestClient
             status = caller.request(method, path).status_code

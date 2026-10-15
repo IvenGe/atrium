@@ -99,6 +99,7 @@ ENTRY_HINTS = (
     "src/index.ts", "src/server.ts", "src/app.ts", "src/main.ts", "main.go", "cmd/server/main.go",
     "config/routes.rb", "routes/web.php", "src/main.rs", "package.json", "pyproject.toml",
 )
+NO_MODEL = "configure one in Settings > AI providers (or set ANTHROPIC_API_KEY)"
 PATCH_SCHEMA = {
     "type": "object",
     "properties": {
@@ -124,6 +125,7 @@ class PatchAgent(BaseAgent):
     role = "patcher"
     title = "Patch Agent"
     uses_llm = True
+    purposes = ("code", "generate")
     permissions = ("read", "patches")
     description = ("Closes integration gaps. Writes code patches on a separate git branch for tools with source code, "
                    "and adapters (health probes, SSO proxy, event pollers, API wrappers) for closed-source and SaaS tools.")
@@ -159,14 +161,15 @@ class PatchAgent(BaseAgent):
             created: list[Patch] = []
             for fix in dict.fromkeys(fixes):
                 if fix in SSO_STRATEGIES:
-                    patch = await self._sso_patch(tool, others, fix)
+                    patch = await self._sso_patch(tool, others, fix, origin=msg.sender)
                 elif fix in existing or (fix == "health_endpoint" and "health_probe" in existing):
                     continue
                 else:
                     patch = None
-                    if fix == "health_endpoint" and self.hub.llm.available:
+                    if fix == "health_endpoint" and self.hub.llm.ready(self.id, "code"):
                         try:
-                            patch = await self.code_patch(tool, HEALTH_GOAL, strategy="health_endpoint")
+                            patch = await self.code_patch(tool, HEALTH_GOAL, strategy="health_endpoint",
+                                                          origin=msg.sender)
                         except Exception as exc:
                             self.log("warn", f"Code patch for {tool.name} failed, falling back to a probe adapter: {exc}")
                     if patch is None:
@@ -213,14 +216,14 @@ class PatchAgent(BaseAgent):
                 "patches": [created.id] if created else [], "pending": pending.id if pending else None}
 
     async def on_custom(self, body: dict[str, Any], msg: Message) -> dict[str, Any]:
-        """Free-form patch request, e.g. from the Hub Supervisor chat. Needs Claude."""
+        """Free-form patch request, e.g. from the Hub Supervisor chat. Needs an AI model."""
         tool = self._tool(body.get("tool_id"))
         goal = str(body.get("goal") or "").strip()
         if not goal:
             raise ValueError("Describe what the patch should achieve")
-        if not self.hub.llm.available:
-            raise ValueError("Custom code patches need Claude - set ANTHROPIC_API_KEY")
-        patch = await self.code_patch(tool, goal, strategy="custom")
+        if not self.hub.llm.ready(self.id, "code"):
+            raise ValueError(f"Custom code patches need an AI model - {NO_MODEL}")
+        patch = await self.code_patch(tool, goal, strategy="custom", origin=msg.sender)
         patch = await self._submit(tool, patch, msg.sender)
         return {"patch_id": patch.id, "title": patch.title, "status": patch.status}
 
@@ -241,20 +244,20 @@ class PatchAgent(BaseAgent):
         proposal = None
         # a network device's error text is the device's own words: it never reaches a model (review F22), so its
         # repairs are the rules-based diagnosis
-        if self.hub.llm.available and not network_device(conn.kind):
+        if self.hub.llm.ready(self.id, "generate") and not network_device(conn.kind):
             try:
-                proposal = await self._claude_repair(flow, tool, conn, error, sample)
+                proposal = await self._model_repair(flow, tool, conn, error, sample)
             except Exception as exc:  # fall back to the rules
-                self.log("warn", f"Claude could not propose a repair for '{flow.title}': {exc}")
+                self.log("warn", f"The AI model could not propose a repair for '{flow.title}': {exc}")
         if proposal is None:
             proposal = await self._heuristic_repair(flow, tool, conn, error)
         return await self._submit_repair(tool, proposal, flow, error)
 
     async def on_connector_generate(self, body: dict[str, Any], msg: Message) -> dict[str, Any]:
-        """With Claude: a generic_rest mapping from the tool's OpenAPI spec, proposed as a "repair" approval."""
+        """With an AI model: a generic_rest mapping from the tool's OpenAPI spec, proposed as a "repair" approval."""
         tool = self._tool(body.get("tool_id"))
-        if not self.hub.llm.available:
-            raise ValueError("Generating a connector needs Claude - set ANTHROPIC_API_KEY")
+        if not self.hub.llm.ready(self.id, "generate"):
+            raise ValueError(f"Generating a connector needs an AI model - {NO_MODEL}")
         spec, known_base = await load_openapi(tool)
         prompt = (
             f"<tool name=\"{tool.name}\" known_api_base=\"{known_base or ''}\" />\n"
@@ -262,8 +265,8 @@ class PatchAgent(BaseAgent):
             f"<mapping_format>\n{generic_rest.__doc__}\n</mapping_format>\n"
             f"<openapi>\n{spec}\n</openapi>"
         )
-        result = await self.hub.llm.json(system=GENERATE_INSTRUCTIONS, prompt=prompt, schema=GENERATE_SCHEMA,
-                                         model=self.model, effort="high")
+        result, meta = await self.hub.llm.json(self.id, "generate", system=GENERATE_INSTRUCTIONS, prompt=prompt,
+                                               schema=GENERATE_SCHEMA, effort="high", max_output_tokens=16_000)
         base = str(result.get("base_url") or "").strip().rstrip("/")
         if known_base and endpoint_of(base) != endpoint_of(known_base):
             base = known_base.rstrip("/")  # the mapping may pick the API root's path, never another host
@@ -274,7 +277,7 @@ class PatchAgent(BaseAgent):
                 "auth_header": (result.get("auth_header") or "X-API-Key").strip() or "X-API-Key",
                 "mapping": mapping, "verify_tls": True})
         except (ValueError, ConnectorError) as exc:
-            raise ValueError(f"Claude's mapping is not usable: {getattr(exc, 'message', exc)}") from exc
+            raise ValueError(f"The mapping {meta.provider_label} wrote is not usable: {getattr(exc, 'message', exc)}") from exc
         domains = generic_rest.GenericRestConnector(config, {}).domains()
         summary = ", ".join(f"{d} ({'/'.join(ops)})" for d, ops in domains.items())
         proposal = {
@@ -282,11 +285,12 @@ class PatchAgent(BaseAgent):
             "detail": f"{str(result.get('rationale') or '').strip()}\n\nMapped: {summary}. After approval an administrator "
                       f"enters the API credentials in {tool.name} > Connection.",
             "change": {"kind": "generic_rest", "config": config, "generated": True},
+            "generated_by": {"provider": meta.provider, "model": meta.model},
         }
         return await self._submit_repair(tool, proposal, None, {})
 
-    async def _claude_repair(self, flow: Flow, tool: Tool, conn: connections.Connection, error: dict[str, Any],
-                             sample: Any) -> dict[str, Any] | None:
+    async def _model_repair(self, flow: Flow, tool: Tool, conn: connections.Connection, error: dict[str, Any],
+                            sample: Any) -> dict[str, Any] | None:
         cls = connectors.connector_class(conn.kind)
         allowed = repairable(conn.kind)
         fields = [f.model_dump(include={"name", "label", "kind", "help", "choices"}) for f in cls.fields if f.name in allowed]
@@ -306,8 +310,8 @@ class PatchAgent(BaseAgent):
             + (f"<mapping_format>\n{generic_rest.__doc__}\n</mapping_format>\n" if conn.kind == "generic_rest" else "")
             + (f"<openapi>\n{spec[:SPEC_PROMPT_CHARS // 2]}\n</openapi>\n" if spec else "")
         )
-        result = await self.hub.llm.json(system=REPAIR_INSTRUCTIONS, prompt=prompt, schema=REPAIR_SCHEMA,
-                                         model=self.model, effort="medium", max_tokens=16000)
+        result, meta = await self.hub.llm.json(self.id, "generate", system=REPAIR_INSTRUCTIONS, prompt=prompt,
+                                               schema=REPAIR_SCHEMA, effort="medium", max_output_tokens=16_000)
         changes = json.loads(result.get("config_json") or "{}")
         if not isinstance(changes, dict):
             raise ValueError("config_json is not an object")
@@ -320,7 +324,8 @@ class PatchAgent(BaseAgent):
                 raise ValueError("the change would send the credentials to another address")
         return {"diagnosis": diagnosis, "title": f"Repair: {flow.title}",
                 "detail": rationale or str(result.get("diagnosis") or ""),
-                "change": {"kind": conn.kind, "config": changes} if changes else None}
+                "change": {"kind": conn.kind, "config": changes} if changes else None,
+                "generated_by": {"provider": meta.provider, "model": meta.model}}
 
     async def _heuristic_repair(self, flow: Flow, tool: Tool, conn: connections.Connection,
                                 error: dict[str, Any]) -> dict[str, Any]:
@@ -374,7 +379,8 @@ class PatchAgent(BaseAgent):
         payload = {"flow_id": flow.id if flow else None, "tool_id": tool.id, "diagnosis": proposal["diagnosis"],
                    "change": change, "diff": config_diff(conn.config if conn and change and conn.kind == change["kind"] else {},
                                                          change["config"]) if change else "",
-                   "tried": proposal.get("tried", []), "error": {"message": error.get("message"), "status": error.get("status")}}
+                   "tried": proposal.get("tried", []), "error": {"message": error.get("message"), "status": error.get("status")},
+                   "generated_by": proposal.get("generated_by")}
         if device:
             payload["device"] = True
         if change and self.hub.prefs["autonomy"] == "autonomous" and not device:
@@ -420,16 +426,19 @@ class PatchAgent(BaseAgent):
     # -- extending Atrium itself -------------------------------------------------------
 
     async def on_extension_propose(self, body: dict[str, Any], msg: Message) -> dict[str, Any]:
-        """Close a tool's hub-side gaps (extensions/gaps.py): a pack written by Claude (when available, unless
-        `designer` is "templates") or from the templates, proposed as an approval of kind "extension" - enabled at once
-        while the extensions_need_approval guardrail is off. When only a change to Atrium's code can close a gap and
-        Claude is available, a self-patch is requested as well. `auto`: the hub asked by itself (once per tool)."""
+        """Close a tool's hub-side gaps (extensions/gaps.py): a pack written by the AI model (when one is available,
+        unless `designer` is "templates") or from the templates, proposed as an approval of kind "extension" - enabled
+        at once while the extensions_need_approval guardrail is off. When only a change to Atrium's code can close a
+        gap and an AI model is available, a self-patch is requested as well. `auto`: the hub asked by itself (once per
+        tool). `designer` "claude" is accepted for "model"."""
         tool = self._tool(body.get("tool_id"))
         designer = str(body.get("designer") or "auto")
-        if designer not in ("auto", "templates", "claude"):
-            raise ValueError("designer is auto, templates or claude")
-        if designer == "claude" and not self.hub.llm.available:
-            raise ValueError("Writing an extension with Claude needs ANTHROPIC_API_KEY; use the templates instead")
+        designer = "model" if designer == "claude" else designer
+        if designer not in ("auto", "templates", "model"):
+            raise ValueError("designer is auto, templates or model")
+        ready = self.hub.llm.ready(self.id, "generate")
+        if designer == "model" and not ready:
+            raise ValueError(f"Writing an extension needs an AI model - {NO_MODEL}; or use the templates")
         result: dict[str, Any] = {"tool_id": tool.id, "gaps": [], "proposed": False, "approval_id": None,
                                   "extension_id": None, "enabled": False, "self_patch": None, "designer": None,
                                   "detail": ""}
@@ -446,13 +455,15 @@ class PatchAgent(BaseAgent):
             result["gaps"] = [g.as_dict() for g in gaps]
             if not gaps:
                 return {**result, "detail": f"Atrium has no gap to close for {tool.name}"}
-            pack, rationale, needs_code, goal = None, "", False, ""
-            if designer != "templates" and self.hub.llm.available:
+            pack, rationale, needs_code, goal, generated_by = None, "", False, "", None
+            if designer != "templates" and ready:
                 try:
-                    pack, rationale, needs_code, goal = await ext_generate.claude_pack(self.hub, tool, gaps, self.model)
-                    result["designer"] = "claude"
+                    pack, rationale, needs_code, goal, generated_by = await ext_generate.model_pack(self.hub, tool, gaps,
+                                                                                                     self.id)
+                    result["designer"] = "model"
                 except Exception as exc:  # the templates always work
-                    self.log("warn", f"Claude could not write an extension for {tool.name}, using the templates: {exc}")
+                    self.log("warn", f"The AI model could not write an extension for {tool.name}, using the "
+                                     f"templates: {exc}")
             if pack is None:
                 pack = ext_gaps.template_pack(self.hub, tool, gaps, self.id)
                 if pack is not None:
@@ -461,25 +472,26 @@ class PatchAgent(BaseAgent):
                     rationale = rationale or (f"{tool.name} is a {ext_gaps.KINDS[kind]['title'].lower()} tool"
                                               if kind else tool.name) + ": " + "; ".join(g.title for g in gaps) + "."
             if pack is not None:
-                result.update(await self._submit_extension(tool, pack, rationale, result["designer"], gaps, msg.sender))
+                result.update(await self._submit_extension(tool, pack, rationale, result["designer"], gaps, msg.sender,
+                                                           generated_by if result["designer"] == "model" else None))
             code_gaps = [g for g in gaps if not g.expressible]
             if (needs_code or code_gaps) and self._may_self_patch(tool.id):
                 goal = goal or " ".join(f"{g.title}: {g.detail}" for g in code_gaps)
                 await self.tell(self.id, "self_patch.propose", {"goal": goal, "tool_id": tool.id})
                 result["self_patch"] = "requested"
             if not result["detail"]:
-                missing = [g.title for g in gaps if g.needs_claude and not self.hub.llm.available]
-                result["detail"] = (f"No template fits {tool.name}'s gaps" + (f" ({'; '.join(missing)} need Claude)"
+                missing = [g.title for g in gaps if g.needs_model and not ready]
+                result["detail"] = (f"No template fits {tool.name}'s gaps" + (f" ({'; '.join(missing)} need an AI model)"
                                                                              if missing else ""))
         return result
 
     def _may_self_patch(self, tool_id: str) -> bool:
-        return (self.hub.llm.available and bool(guardrails.value(self.hub, "allow_self_patching"))
+        return (self.hub.llm.ready(self.id, "code") and bool(guardrails.value(self.hub, "allow_self_patching"))
                 and selfpatch.config(self.hub).root() is not None
                 and not any(p.tool_id == tool_id for p in selfpatch.all_patches(self.hub)))
 
     async def _submit_extension(self, tool: Tool, pack: Any, rationale: str, designer: str | None,
-                                gaps: list[Any], origin: str) -> dict[str, Any]:
+                                gaps: list[Any], origin: str, generated_by: dict[str, str] | None = None) -> dict[str, Any]:
         rec = ext_registry.propose(self.hub, pack, self.id)
         summary = pack.summary()
         lines = [f"- {kind}: {count}" for kind, count in summary["kinds"].items()]
@@ -496,7 +508,8 @@ class PatchAgent(BaseAgent):
             await ext_registry.changed(self.hub, self.id)
             return {"proposed": True, "extension_id": rec.id, "enabled": True, "detail": f"Enabled {pack.name}."}
         payload = {"extension_id": rec.id, "version": pack.version, "tool_id": tool.id, "designer": designer,
-                   "summary": summary, "gaps": [g.as_dict() for g in gaps], "pack": pack.model_dump(mode="json")}
+                   "summary": summary, "gaps": [g.as_dict() for g in gaps], "pack": pack.model_dump(mode="json"),
+                   "generated_by": generated_by}
         approval = self.hub.approvals.create("extension", f"Extend Atrium for {tool.name}: {pack.name}", detail, payload,
                                              self.id)
         rec = ext_registry.get(self.hub, rec.id) or rec
@@ -534,23 +547,42 @@ class PatchAgent(BaseAgent):
         self.hub.approvals.complete(approval_id, True, {"enabled": rec.status == "enabled", "notes": rec.notes})
 
     async def on_self_patch_propose(self, body: dict[str, Any], msg: Message) -> dict[str, Any]:
-        """With Claude: a change to Atrium's own repository for `goal`, tested in a worktree and proposed as an approval
-        of kind "self_patch" (see extensions/selfpatch.py)."""
+        """With an AI model: a change to Atrium's own repository for `goal`, tested in a worktree and proposed as an
+        approval of kind "self_patch" (see extensions/selfpatch.py)."""
         goal = str(body.get("goal") or "").strip()
         if not goal:
             raise ValueError("Describe what the change to Atrium should achieve")
-        if not self.hub.llm.available:
-            raise ValueError("Self-patches need Claude - set ANTHROPIC_API_KEY")
+        if not self.hub.llm.ready(self.id, "code"):
+            raise ValueError(f"Self-patches need an AI model - {NO_MODEL}")
         tool = self.hub.get_tool(str(body.get("tool_id"))) if body.get("tool_id") else None
-        title, rationale, changes = await ext_generate.claude_self_patch(self.hub, goal, tool, self.model)
+        title, rationale, changes, generated_by = await ext_generate.model_self_patch(self.hub, goal, tool, self.id)
         patch = await selfpatch.propose(self.hub, title=title, rationale=rationale, changes=changes, goal=goal,
-                                        tool_id=tool.id if tool else None, requested_by=self.id)
+                                        tool_id=tool.id if tool else None, requested_by=self.id,
+                                        generated_by=generated_by)
         patch.proposed_by = sender_person(msg.sender)  # the person who asked: approving it needs a second person (F1)
         patch = await selfpatch.submit(self.hub, patch, self.id)
         self.log("info", f"Proposed the self-patch '{patch.title}' ({'tests passed' if patch.tests and patch.tests.get('ok') else 'tests failed'})",
                  self_patch_id=patch.id)
         return {"self_patch_id": patch.id, "approval_id": patch.approval_id, "status": patch.status,
                 "tests_passed": bool(patch.tests and patch.tests.get("ok"))}
+
+    # -- subsidiaries: the bridge patch (hub/subsidiary/bridgegen.py, bridgepatch.py) -----------------------
+
+    async def on_subsidiary_propose(self, body: dict[str, Any], msg: Message) -> dict[str, Any]:
+        """A person proposed a team inside a tool (POST /api/tools/{id}/subsidiary, bridge mode): design, check,
+        commit and test its bridge patch on a branch of the tool, then ask an administrator (never automatic). A
+        refused bridge archives the subsidiary, with the reason in the activity log."""
+        from ..subsidiary import bridgepatch
+
+        tool = self._tool(body.get("tool_id"))
+        if sender_person(msg.sender) is None:  # people propose teams; a subsidiary never patches its own bridge (I5)
+            raise ValueError("Only a person proposes a subsidiary's bridge patch")
+        async with self._lock(f"subsidiary:{tool.id}"):
+            patch = await bridgepatch.propose(self.hub, tool.id, str(body.get("subsidiary_id") or ""),
+                                              designer=str(body.get("designer") or "auto"), agent_id=self.id)
+            if patch is not None:
+                patch = await self._submit(self._tool(tool.id), patch, msg.sender)
+        return {"patch_id": patch.id if patch else None, "status": patch.status if patch else None}
 
     async def on_approval_decided(self, body: dict[str, Any], msg: Message) -> None:
         approval = self.hub.approvals.get(body["approval_id"])
@@ -567,6 +599,13 @@ class PatchAgent(BaseAgent):
         patch = self.hub.get_patch(approval.payload.get("patch_id", "")) if approval else None
         if approval is None or patch is None:
             return
+        if patch.strategy == "atrium_bridge":  # applied as approved (its branch exists) or cleaned up
+            from ..subsidiary import bridgepatch
+
+            patch = await bridgepatch.decided(self.hub, approval, patch, bool(body.get("approved")), actor)
+            if patch.status == "applied":
+                await self.tell("supervisor", "tool.patched", {"tool_id": patch.tool_id, "patch_id": patch.id})
+            return
         if not body.get("approved"):
             patch.status = "rejected"
             self.hub.save_patch(patch)
@@ -581,7 +620,7 @@ class PatchAgent(BaseAgent):
             raise ValueError(f"Unknown or unanalysed tool '{tool_id}'")
         return tool
 
-    async def _sso_patch(self, tool: Tool, others: list[Tool], fix: str) -> Patch | None:
+    async def _sso_patch(self, tool: Tool, others: list[Tool], fix: str, origin: str = "") -> Patch | None:
         """The SSO patch for the provider selected for `tool`, unless one is already pending or applied for it."""
         prefs = identity.load_prefs(self.hub)
         provider = selected_provider(tool, others, prefs)
@@ -591,9 +630,10 @@ class PatchAgent(BaseAgent):
                 continue
             if patch.status == "proposed" or (patch.status == "applied" and (patch.sso.provider if patch.sso else None) == target):
                 return None
-        if fix == "sso_code" and provider and self.hub.llm.available:
+        if fix == "sso_code" and provider and self.hub.llm.ready(self.id, "code"):
             try:
-                return attach_sso(tool, provider, await self.code_patch(tool, sso_code_goal(tool, provider), strategy="sso_code"))
+                return attach_sso(tool, provider, await self.code_patch(tool, sso_code_goal(tool, provider),
+                                                                        strategy="sso_code", origin=origin))
             except Exception as exc:
                 self.log("warn", f"OIDC code patch for {tool.name} failed, falling back to an SSO proxy: {exc}")
         return plan_patch(tool, others, "sso_proxy" if fix == "sso_code" else fix, self.hub_url, prefs)
@@ -610,11 +650,25 @@ class PatchAgent(BaseAgent):
 
     async def _submit(self, tool: Tool, patch: Patch, origin: str = "") -> Patch:
         """Save the patch and queue it for approval - or apply it in autonomous mode. Patches team agents asked for
-        ("agent:<slug>") skip approval only while the team_actions_need_approval guardrail is off."""
+        ("agent:<slug>") skip approval only while the team_actions_need_approval guardrail is off; a subsidiary's
+        staff always wait for a person (D6), and a bridge patch is never applied without an administrator."""
+        from ..subsidiary import bridgepatch
+
+        staff = bridgepatch.staff_origin(self.hub, origin)
+        if patch.strategy == "atrium_bridge":
+            if staff is not None:
+                raise ValueError("A subsidiary never patches its own bridge")
+            self.hub.save_patch(patch)
+            return bridgepatch.submit(self.hub, tool, patch, origin, self.id)
         patch.diff = render_diff(tool, patch)
         self.hub.save_patch(patch)
         if guardrails.effective_autonomy(self.hub, origin) == "autonomous":
             await self._apply(patch, None)
+        elif staff is not None:  # requested by a subsidiary's staff member: its goal was untrusted text (5.5)
+            self.hub.approvals.create("patch", f"Patch {tool.name}: {patch.title}",
+                                      f"Requested by the {tool.name} subsidiary (untrusted goal).\n\n{patch.rationale}",
+                                      {"patch_id": patch.id, "tool_id": tool.id, "subsidiary_id": staff.subsidiary_id,
+                                       "requested_by_staff": staff.agent_id, "taint": staff.taint}, self.id)
         else:
             self.hub.approvals.create("patch", f"Patch {tool.name}: {patch.title}", patch.rationale,
                                       {"patch_id": patch.id, "tool_id": tool.id}, self.id)
@@ -635,10 +689,16 @@ class PatchAgent(BaseAgent):
             self.hub.approvals.complete(approval_id, True, {"branch": patch.branch, "location": patch.location})
         await self.tell("supervisor", "tool.patched", {"tool_id": patch.tool_id, "patch_id": patch.id})
 
-    async def code_patch(self, tool: Tool, goal: str, strategy: str) -> Patch:
-        """Ask Claude for a source patch. Existing files may only be changed if Claude was shown them."""
+    async def code_patch(self, tool: Tool, goal: str, strategy: str, origin: str = "") -> Patch:
+        """Ask the AI model for a source patch. Existing files may only be changed if the model was shown them. A
+        subsidiary's staff member (`origin`) never changes its own bridge (I5), and its goal is untrusted text."""
+        from ..subsidiary import bridgepatch
+
         if not tool.path or tool.manifest is None or tool.manifest.kind != "oss":
             raise ValueError("Code patches need a tool with source code on disk")
+        staff = bridgepatch.staff_origin(self.hub, origin)
+        if staff is not None and strategy == "atrium_bridge":
+            raise ValueError("A subsidiary never patches its own bridge")
         root = Path(tool.path)
         files = list_files(root, 2000)
         names = {f.as_posix() for f in files}
@@ -649,28 +709,32 @@ class PatchAgent(BaseAgent):
         )
         m = tool.manifest
         prompt = (
-            f"<goal>{goal}</goal>\n\n"
-            f"<tool name=\"{m.name}\" stack=\"{', '.join(m.stack)}\" port=\"{m.launch.port}\" "
+            (f"{staff.goal(goal)}\n\n" if staff is not None else f"<goal>{goal}</goal>\n\n")
+            + f"<tool name=\"{m.name}\" stack=\"{', '.join(m.stack)}\" port=\"{m.launch.port}\" "
             f"launch=\"{m.launch.command}\" />\n\n<file_tree>\n{tree}\n</file_tree>\n\n{shown}"
         )
-        result = await self.hub.llm.json(system=self.instructions, prompt=prompt, schema=PATCH_SCHEMA,
-                                         model=self.model, effort="high")
+        system = self.instructions + (f"\n\n{bridgepatch.UNTRUSTED_GOAL_RULE}" if staff is not None else "")
+        result, meta = await self.hub.llm.json(self.id, "code", system=system, prompt=prompt,
+                                               schema=PATCH_SCHEMA, effort="high", max_output_tokens=16_000)
         changes: list[FileChange] = []
         for change in result.get("changes", [])[:10]:
             rel = safe_relative(change["path"]).as_posix()
             if rel in names and rel not in context:
-                raise ValueError(f"Claude tried to rewrite {rel} without having seen it")
+                raise ValueError(f"The AI model tried to rewrite {rel} without having seen it")
+            if staff is not None and staff.touches(rel):
+                raise ValueError(f"A subsidiary's request may not change its own Atrium bridge ({rel})")
             if len(change["content"]) > 200_000:
                 raise ValueError(f"Patch for {rel} is too large")
             changes.append(FileChange(path=rel, content=change["content"]))
         if not changes:
-            raise ValueError("Claude proposed no changes")
+            raise ValueError("The AI model proposed no changes")
         update: dict[str, Any] = {}
         health_path = (result.get("health_path") or "").strip()
         if health_path.startswith("/") and m.launch.port:
             update["health"] = {"url": f"http://localhost:{m.launch.port}{health_path}"}
         return Patch(id=new_id("p_"), tool_id=tool.id, title=result["title"][:120], rationale=result["rationale"],
-                     strategy=strategy, target="repo", changes=changes, manifest_update=update)
+                     strategy=strategy, target="repo", changes=changes, manifest_update=update,
+                     generated_by={"provider": meta.provider, "model": meta.model})
 
 
 def base_path_variants(url: str) -> list[str]:

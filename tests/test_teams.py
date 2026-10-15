@@ -12,7 +12,7 @@ from types import SimpleNamespace
 
 import httpx
 import pytest
-from test_llm_paths import FakeLLM, block
+from llm_fakes import block, message, use_claude
 
 from hub import guardrails
 from hub.agents import teams, toolkit
@@ -97,7 +97,7 @@ def test_admins_create_edit_and_remove_custom_agents(client, sign_in, wait_for):
     assert wazuh["lead"]["id"] == "tool:wazuh" and [m["id"] for m in wazuh["members"]] == ["agent:wazuh-night-watch"]
     assert wazuh["category"] == "siem" and wazuh["suggested"] == ["Alert triage analyst", "Health watcher", "Maintainer"]
     assert {p["id"] for p in teams_view["permissions"]} >= {"read", "agents"}
-    assert [p["id"] for p in teams_view["providers"]][:2] == ["anthropic", "rules"]
+    assert [p["id"] for p in teams_view["providers"]][:3] == ["anthropic", "openai", "rules"]
 
     # removed agents are gone after a restart too
     assert client.delete("/api/agents/agent:wazuh-night-watch").json() == {"ok": True}
@@ -220,7 +220,13 @@ def test_guardrail_settings_are_admin_only_validated_and_logged(client, sign_in,
         # the second-person rule for other approvals and network device changes (R3-NETCHANGE)
         "approvals_need_second_person": False, "device_changes": False, "device_changes_need_second_person": True,
         "device_changes_need_maintenance_window": True, "device_changes_need_backup": True,
-        "approval_expiry_hours": 24}
+        "approval_expiry_hours": 24,
+        # cloud AI providers (R4-LLM stage 3) and the daily AI spending cap (stage 4)
+        "allow_cloud_llm": True, "limit_llm_spend": True, "max_daily_llm_spend": 20,
+        # subsidiaries: agent teams inside tools (R4-SUB), off by default
+        "allow_subsidiaries": False, "subsidiary_tool_writes_need_approval": True, "subsidiary_panel_actions": False,
+        "subsidiary_bridge_requires_tests": True, "subsidiary_bridge_requires_conformance": True,
+        "subsidiary_separate_credential": True, "subsidiary_ticket_minutes": 10, "subsidiary_max_tokens_per_day": 300}
     catalog = {g["key"]: g for g in settings["guardrail_catalog"]}
     assert catalog["block_catastrophic_commands"]["risk"] and catalog["max_team_size"]["max"] == 50
     assert not any(g["relaxed"] for g in catalog.values())
@@ -471,11 +477,11 @@ def test_a_tool_teams_agent_changes_only_the_risks_and_assets_of_its_tool(client
     assert hub.one("risks", "r_people", Risk).status == "in_treatment"
 
 
-def test_supervisor_chat_offers_every_tool(client):
-    fake = FakeLLM([SimpleNamespace(stop_reason="end_turn", content=[block("text", text="Hi.")])])
-    client.app.state.hub.llm = fake
-    assert client.post("/api/agents/supervisor/chat", json={"text": "hello"}).json() == {
-        "reply": "Hi.", "mode": "llm", "agent_id": "supervisor"}
+def test_supervisor_chat_offers_every_tool(client, monkeypatch):
+    fake = use_claude(client.app.state.hub, monkeypatch, responses=[message("end_turn", [block("text", text="Hi.")])])
+    reply = client.post("/api/agents/supervisor/chat", json={"text": "hello"}).json()
+    assert reply.pop("meta")["provider"] == "anthropic"  # which model answered
+    assert reply == {"reply": "Hi.", "mode": "llm", "agent_id": "supervisor"}
     assert {t["name"] for t in fake.calls[0]["tools"]} == set(toolkit.TOOLS)
     assert client.post("/api/agents/operator/chat", json={"text": "hi"}).status_code == 400
     assert client.post("/api/agents/nope/chat", json={"text": "hi"}).status_code == 404
@@ -484,20 +490,20 @@ def test_supervisor_chat_offers_every_tool(client):
 # -- running team agents ---------------------------------------------------------------------------
 
 
-def test_team_agent_on_claude_uses_its_tools_through_the_operator(client, wait_for):
+def test_team_agent_on_claude_uses_its_tools_through_the_operator(client, wait_for, monkeypatch):
     hub = client.app.state.hub
     add_tool(client, "wazuh", "Wazuh")
-    fake = FakeLLM([
-        SimpleNamespace(stop_reason="tool_use", content=[
+    fake = use_claude(hub, monkeypatch, responses=[
+        message("tool_use", [
             block("tool_use", id="tu_1", name="run_command", input={"target": "local", "command": COMMAND, "reason": "check"}),
             block("tool_use", id="tu_2", name="request_code_patch", input={"tool_id": "wazuh", "goal": "x"})]),
-        SimpleNamespace(stop_reason="end_turn", content=[block("text", text="Asked for approval.")]),
+        message("end_turn", [block("text", text="Asked for approval.")]),
     ])
-    hub.llm = fake
     record = client.post("/api/agents", json={"name": "Ops", "team": "wazuh", "provider": "anthropic",
                                                "permissions": ["read", "commands"], "instructions": "Be careful."}).json()
     assert record["provider_label"] == "Claude" and record["llm_active"] and record["model"] == "claude-opus-5-5"
     reply = client.post(f"/api/agents/{record['id']}/chat", json={"text": "check the box"}).json()
+    assert reply.pop("meta")["source"] == "agent"  # its own choice answered
     assert reply == {"reply": "Asked for approval.", "mode": "llm", "agent_id": record["id"]}
     offered = {t["name"] for t in fake.calls[0]["tools"]}
     assert "run_command" in offered and "request_code_patch" not in offered and "Be careful." in fake.calls[0]["system"]
@@ -586,6 +592,7 @@ def test_local_provider_and_the_openai_compatible_tool_loop(client, sign_in):
                                                "permissions": ["read"]}).json()
     assert record["provider_label"] == "Ollama" and record["provider_kind"] == "local" and record["model"] == "qwen3:8b"
     reply = client.post(f"/api/agents/{record['id']}/chat", json={"text": "What tools are there?"}).json()
+    assert reply.pop("meta")["provider"] == "ollama"  # which model answered
     assert reply == {"reply": "The suite has: Wazuh.", "mode": "local", "agent_id": record["id"]}
     calls = [r for r in server.requests if r[1] == "/v1/chat/completions"]
     first, second = calls[0][3], calls[1][3]
@@ -644,7 +651,9 @@ def test_tool_supervisor_proposes_a_team_from_templates_and_approval_creates_it(
     members = {m["title"]: m for m in approval["payload"]["members"]}
     assert set(members) == {"Alert triage analyst", "Health watcher", "Maintainer"}
     assert members["Health watcher"]["permissions"] == ["read", "commands"] and members["Health watcher"]["schedule_minutes"] == 15
-    assert members["Alert triage analyst"]["provider"] == "rules" and members["Alert triage analyst"]["schedule_minutes"] == 0
+    # members inherit the suite's model choice; without a model an analyst gets no schedule (it would only say it
+    # needs a language model)
+    assert members["Alert triage analyst"]["provider"] == "" and members["Alert triage analyst"]["schedule_minutes"] == 0
     assert "Alert triage analyst for Wazuh" in approval["detail"]
     again = client.post("/api/tools/wazuh/team").json()
     assert not again["proposed"] and again["approval_id"] == approval["id"]  # one proposal at a time
@@ -658,6 +667,8 @@ def test_tool_supervisor_proposes_a_team_from_templates_and_approval_creates_it(
     assert client.post(f"/api/approvals/{approval['id']}", json={"approve": True}).status_code == 200
     done = wait_for(lambda: (a := next(x for x in client.get("/api/approvals").json() if x["id"] == approval["id"]))["status"] == "done" and a)
     assert sorted(done["result"]["created"]) == ["agent:wazuh-alert-triage", "agent:wazuh-health-watcher", "agent:wazuh-maintainer"]
+    triage = agent(client, "agent:wazuh-alert-triage")
+    assert (triage["provider"], triage["provider_override"], triage["llm"]["purposes"]["chat"]["source"]) == ("rules", None, "rules")
     watcher = agent(client, "agent:wazuh-health-watcher")
     assert (watcher["team"], watcher["parent"], watcher["depth"], watcher["created_by"]) == ("wazuh", "tool:wazuh", 1, "tool:wazuh")
     assert watcher["template"] == "siem:health-watcher"
@@ -683,7 +694,8 @@ def test_team_proposals_follow_the_guardrails(client, wait_for):
     created = client.post("/api/tools/openvas/team").json()
     assert created["approval_id"] is None and sorted(created["created"]) == ["agent:openvas-maintainer", "agent:openvas-vuln-triage"]
     assert agent(client, "agent:openvas-vuln-triage")["effective_permissions"] == ["read", "flows", "grc_write"]
-    assert client.post("/api/tools/openvas/team", json={"designer": "claude"}).status_code == 400  # needs Claude
+    assert client.post("/api/tools/openvas/team", json={"designer": "claude"}).status_code == 400  # needs a model
+    assert client.post("/api/tools/openvas/team", json={"designer": "model"}).status_code == 400
     assert client.post("/api/tools/nope/team").status_code == 404
 
 
@@ -736,23 +748,26 @@ def test_a_team_agent_cannot_get_a_stronger_team_through_its_lead(client):
     assert watcher["permissions"] == ["read", "commands"] and watcher["clamped"] == []
 
 
-def test_claude_designs_a_team_when_available(client):
+def test_claude_designs_a_team_when_available(client, monkeypatch):
     hub = client.app.state.hub
     add_tool(client, "netbox", "NetBox")
-    hub.llm = FakeLLM(json_result={"rationale": "NetBox is the source of truth for the network.", "members": [
+    use_claude(hub, monkeypatch, json_result={"rationale": "NetBox is the source of truth for the network.", "members": [
         {"role": "ipam-auditor", "title": "IPAM auditor", "description": "Audits address assignments.",
          "instructions": "You audit IPAM.", "permissions": ["read", "tool_api", "commands"], "schedule_minutes": 2,
          "task": "Audit the IP address plan."},
         {"role": "maintainer", "title": "Maintainer", "description": "", "instructions": "", "permissions": ["read"],
          "schedule_minutes": 0, "task": ""}]})
     proposal = client.post("/api/tools/netbox/team").json()
-    assert proposal["designer"] == "claude" and proposal["category"] == "inventory"
+    assert proposal["designer"] == "model" and proposal["category"] == "inventory"
     auditor = proposal["members"][0]
-    assert auditor["id"] == "agent:netbox-ipam-auditor" and auditor["schedule_minutes"] == 5 and auditor["provider"] == "anthropic"
+    # members inherit the suite's model choice ("") instead of storing the provider that designed them
+    assert auditor["id"] == "agent:netbox-ipam-auditor" and auditor["schedule_minutes"] == 5 and auditor["provider"] == ""
     approval = next(a for a in pending(client, "agent_team") if a["id"] == proposal["approval_id"])
-    assert approval["payload"]["designer"] == "claude" and approval["detail"].startswith("NetBox is the source of truth")
+    assert approval["payload"]["designer"] == "model" and approval["detail"].startswith("NetBox is the source of truth")
+    assert approval["payload"]["generated_by"] == {"provider": "anthropic", "model": "claude-opus-5-5"}
+    assert "(default model)" in approval["detail"]
     # an unusable answer falls back to the templates
-    hub.llm = FakeLLM(json_result={"rationale": "", "members": []})
+    use_claude(hub, monkeypatch, json_result={"rationale": "", "members": []})
     client.post(f"/api/approvals/{approval['id']}", json={"approve": False})
     fallback = client.post("/api/tools/netbox/team").json()
     assert fallback["designer"] == "templates" and [m["title"] for m in fallback["members"]] == ["Inventory reconciler", "Maintainer"]

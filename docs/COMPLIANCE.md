@@ -19,7 +19,7 @@ claim.
 
 ## Hub Security Baseline
 
-29 controls (`hub/grc/baseline.py`). Automated checks are pure functions over a snapshot of hub state
+30 controls (`hub/grc/baseline.py`). Automated checks are pure functions over a snapshot of hub state
 (`hub/grc/checks.py`).
 
 - **Manual override**: people can override any control with a justification (`PATCH /api/grc/controls/{id}`, operator).
@@ -40,6 +40,7 @@ claim.
 | HB-AC-5 Dormant hub accounts are disabled | Access control | A.5.18 | CC6.2 | 21(2)(i) | PR.AA-01.3 / PR.AA-05.1 | PR.AC-1.3 |
 | HB-AC-6 AI agent guardrails are enforced | Access control | A.8.2 / A.8.32 | CC6.1 / CC8.1 | 21(2)(i) | ID.RA-01.5 / ID.RA-01.4 / PR.AA-05.7 | DE.CM-8.1 / ID.RA-1.3 / PR.AC-4.7 |
 | HB-AC-7 Leavers lose access and return assets | Access control | A.5.18 / A.5.11 | CC6.2 / CC6.3 | 21(2)(i) | GV.RR-04.2 / PR.AA-01.1 / PR.AA-05.1 / GV.SC-02.1 | PR.AC-1.1 / PR.AT-3.2 / PR.IP-11.2 |
+| HB-AC-8 AI agent teams inside tools are governed | Access control | A.5.15 / A.8.2 / A.8.15 / A.8.32 | CC6.1 / CC6.3 / CC8.1 | 21(2)(i) | PR.AA-05.3 / PR.AA-05.7 | PR.AC-4.7 |
 | HB-CM-1 Integration configuration as code | Configuration management | A.8.9 | CC7.1 | - | PR.PS-01.1 / ID.AM-03.2 | ID.AM-3.2 / PR.IP-1.1 |
 | HB-CM-2 Changes to tools are reviewed | Change management | A.8.32 | CC8.1 | 21(2)(e) | PR.PS-06.2 / PR.PS-06.4 / PR.PS-01.5 / ID.AM-08.10 | DE.CM-7.2 / PR.IP-3.1 / PR.IP-3.2 / PR.MA-1.7 |
 | HB-CM-3 Network device changes are controlled | Change management | A.8.32 | CC8.1 | 21(2)(e) | PR.PS-06.2 / PR.PS-01.5 / PR.IR-01.1 | DE.CM-7.2 |
@@ -67,20 +68,22 @@ Notes on the references:
   requirement ids and their level tags were checked against the CISO Assistant library copy.
 - **CyFun 2023**: derived through CISO Assistant's CyFun 2023 - 2025 mapping library, which is aligned on the CCB
   transposition table.
-- **Marked UNVERIFIED in the code**: HB-CM-3, HB-NW-1..5 and HB-PO-3. CyFun 2023 has no equivalent for HB-PO-3,
+- **Marked UNVERIFIED in the code**: HB-AC-8, HB-CM-3, HB-NW-1..5 and HB-PO-3. CyFun 2023 has no equivalent for HB-PO-3,
   because GV (Govern) is new in NIST CSF 2.0.
 
 ### How the controls are evaluated
 
 | Control | Evaluated from |
 | --- | --- |
-| HB-AM-1, HB-AM-2, HB-SC-1 | the asset register: every tool and host registered, owners, SaaS owners |
+| HB-AM-1, HB-AM-2 | the asset register: every tool and host registered, owners |
+| HB-SC-1 | SaaS tools with an owner in the asset register, and the cloud AI providers agents use with a supplier owner and a terms review within 12 months ([below](#hb-sc-1-cloud-ai-providers-are-suppliers)) |
 | HB-AC-1, HB-CM-1, HB-OP-1, HB-VM-1 | the tools' manifests: SSO, adopted manifest, health check, version |
 | HB-AC-2, HB-AC-6, HB-CM-2 | the autonomy level and the agent guardrails ([AGENTS.md](AGENTS.md#compliance-effect)) |
 | HB-AC-3 | SSH hosts with key authentication and host-key checking |
 | HB-AC-4, HB-AC-5 | the hub's accounts: an admin exists, OIDC sign-in, accounts signed in within 90 days |
 | HB-AC-7 | leavers who still have access or assets ([PEOPLE.md](PEOPLE.md)) |
-| HB-OP-2 | the activity and agent message logs |
+| HB-AC-8 | the subsidiaries (agent teams inside tools): their statuses, flags, charters, conformance and alarms, and their guardrails ([below](#hb-ac-8-ai-agent-teams-inside-tools-are-governed)) |
+| HB-OP-2 | the activity and agent message logs, and the subsidiaries' audit trails (counted) |
 | HB-VM-2, HB-VM-3 | scan coverage within 30 days and findings within their SLA ([INTEGRATIONS.md](INTEGRATIONS.md#vulnerabilities-and-scans)) |
 | HB-RM-1 | risks reviewed within 90 days |
 | HB-PO-1, HB-PO-2, HB-IR-1, HB-BC-1 | an approved policy of the category (a draft is partial) |
@@ -88,6 +91,64 @@ Notes on the references:
 | HB-PO-3 | the latest framework self-assessment ([below](#hb-po-3-self-assessment-is-current)) |
 
 Extension packs can add control rules that make a control worse, never better ([AGENTS.md](AGENTS.md#what-a-pack-can-contain)).
+
+### HB-SC-1: cloud AI providers are suppliers
+
+Agents send prompts, the hub data their tools read and tool results to the AI providers they run on. A third-party
+provider - Claude, OpenAI, an Azure OpenAI resource, an OpenAI-compatible cloud service - that agents use is therefore
+a supplier like a SaaS tool. "In use" means: chosen at any level of the model choice (an agent, a team, a task or the
+suite default, the fallback chain), what an agent resolves to now, or called in the last 30 days
+([AGENTS.md](AGENTS.md#how-a-model-is-chosen)). Self-hosted model servers are not suppliers.
+
+HB-SC-1 counts the SaaS tools and the AI providers in use together: each SaaS tool needs an owner in the asset
+register, each AI provider a **supplier owner** and a **terms / data processing agreement review** within the last 12
+months (set on its card under Settings > AI providers). All of them: pass; some: partial; none: fail; neither SaaS
+tools nor AI providers in use: not applicable. The detail names what is missing ("AI provider OpenAI has no supplier
+owner"); the evidence lists "AI provider: Anthropic - owner j.doe, terms reviewed 2026-09-30".
+
+The guardrail `allow_cloud_llm` ("Agents may send data to cloud AI providers", on by default) blocks every third-party
+provider when it is off, so none counts as in use. It is on by default because nothing reaches a cloud provider until
+an administrator stores a key or sets one in the environment; switching it back on is logged as relaxing. The control
+description and its references are unchanged otherwise. UNVERIFIED analyst note: ISO/IEC 27001:2022 A.5.19 / A.5.23
+and NIS2 21(2)(d), already mapped to HB-SC-1, also cover AI processors; this was not checked against the licensed
+texts.
+
+**AI spending (HB-AC-6).** The guardrail `limit_llm_spend` ("Cap the AI model spending per day", on by default) with
+`max_daily_llm_spend` (20 USD) caps the agents' estimated AI spending per UTC day: new model calls stop once it is
+reached. Switching it off makes HB-AC-6 partial with the finding "agents' AI model spending has no daily limit"; while it
+is on, the pass text ends with "AI spending is capped at $20 per day" and the evidence names `max_daily_llm_spend`.
+Raising the cap is logged as relaxing. Each agent's own budgets and rate limits (its settings page) come on top
+([AGENTS.md](AGENTS.md#agent-settings)).
+
+**Escalations (HB-AC-2, HB-OP-2 evidence).** A chat agent that is blocked or unsure, or whose escalation rules apply,
+asks a person through an `agent_escalation` approval; an operator acknowledges or dismisses it with an answer. The
+request, the decision, who made it and the agent's runs (a team agent's schedule pauses after failed runs in a row
+until an administrator resumes it) are in the activity log and the approval history, with the agent's notifications
+marked there ([AGENTS.md](AGENTS.md#escalation-and-notifications)). They add audit evidence; no control is scored on
+them.
+
+### HB-AC-8: AI agent teams inside tools are governed
+
+Agent teams that work inside a tool ([SUBSIDIARIES.md](SUBSIDIARIES.md)) act only within a charter an administrator
+approved, through a bridge that verifies Atrium's signatures, with budgets, a kill switch, a hash-chained audit trail
+and a person's approval for in-tool changes, code and patches. The check (`check_subsidiaries`) reads ids, statuses,
+flags and counts only - never text from the tools:
+
+| Result | When |
+| --- | --- |
+| `na` | no subsidiary is on probation, active or paused |
+| `fail` | a fail-level guardrail is relaxed (`subsidiary_bridge_requires_conformance`), or an active subsidiary has no approved charter, no passing conformance for its approved bridge (while required), a sidecar token without an enabled administrator owner, or a reconciliation alarm or broken audit chain in the last 90 days |
+| `partial` | `subsidiary_panel_actions` on, `subsidiary_separate_credential` off or `subsidiary_ticket_minutes` above 10 (each named in the finding), a bridge that changed since it was approved, a sidecar offline for more than a day, conformance only claimed by the sidecar, or a bridge patch approved without the tool's tests (no container runtime) |
+| `pass` | otherwise |
+
+Two subsidiary guardrails weaken other controls: `subsidiary_tool_writes_need_approval` off makes HB-AC-2 partial
+("reversible in-tool writes of subsidiary teams run without approval"), and `subsidiary_bridge_requires_tests` off
+makes HB-CM-2 fail; HB-CM-2 counts bridge patches like other patches. The master switch `allow_subsidiaries` maps to
+no control: off is the safe side, and switching it on is logged as relaxing. The GRC Supervisor re-evaluates after
+status, charter and conformance changes, alarms and guardrail changes. The references are an UNVERIFIED analyst
+mapping (ISO/IEC 27001:2022 A.5.15 / A.8.2 / A.8.15 / A.8.32, SOC 2 CC6.1 / CC6.3 / CC8.1, NIS2 21(2)(i), CyFun 2025
+PR.AA-05.3 / PR.AA-05.7, CyFun 2023 PR.AC-4.7), not checked against the licensed texts. Its risk template: "AI agents
+act inside business tools beyond the parent's control" (likelihood 3, impact 4).
 
 ## Frameworks: CyberFundamentals (CyFun)
 

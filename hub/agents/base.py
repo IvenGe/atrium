@@ -8,6 +8,7 @@ import time
 from typing import TYPE_CHECKING, Any
 
 from ..bus import AgentError, Message
+from ..llm.types import Limited
 
 if TYPE_CHECKING:
     from ..core import Hub
@@ -20,6 +21,8 @@ class BaseAgent:
     description = ""
     default_instructions = ""
     uses_llm = False
+    # What the agent calls a model for (hub/llm): "chat", "code", "generate"; the first is its primary purpose
+    purposes: tuple[str, ...] = ()
     max_concurrency = 4
     # Subjects handled outside the max_concurrency slots: quick, local work that must not wait behind slow handlers
     # (e.g. the GRC Supervisor's evaluation behind a data flow that waits minutes for a tool).
@@ -51,11 +54,16 @@ class BaseAgent:
 
     @property
     def model(self) -> str:
-        return self.model_override or self.hub.prefs["model"]
+        """The model of its primary purpose: what it runs on, or - while no model can - what was chosen for it."""
+        return self.hub.llm.effective(self)["model"]
 
     @property
     def instructions(self) -> str:
-        return self.instructions_override or self.default_instructions
+        """Its main instructions: the built-in ones, or an administrator's replacement (agent settings, "replace";
+        additional instructions in "append" mode are added to every model call by hub/llm)."""
+        if self.instructions_override and self.hub.llm.config(self.id).instructions_mode == "replace":
+            return self.instructions_override
+        return self.default_instructions
 
     @property
     def team(self) -> str:
@@ -77,6 +85,7 @@ class BaseAgent:
         self._publish()
 
     def record(self) -> dict[str, Any]:
+        effective = self.hub.llm.effective(self)
         return {
             "id": self.id,
             "name": self.name,
@@ -86,16 +95,19 @@ class BaseAgent:
             "scope": self.scope,
             "status": self.status,
             "paused": self.paused,
-            "model": self.model,
+            "model": effective["model"],
             "model_override": self.model_override,
             "instructions": self.instructions,
-            "custom_instructions": self.instructions_override is not None,
+            "custom_instructions": self.instructions != self.default_instructions
+            or bool(self.uses_llm and self.hub.llm.config(self.id).extra_instructions.strip()),
             "uses_llm": self.uses_llm,
-            "llm_active": self.uses_llm and self.hub.llm.available,
+            "llm_active": self.uses_llm and bool(self.purposes) and self.hub.llm.ready(self.id, self.purposes[0]),
             "kind": self.kind,
-            "provider": "anthropic" if self.uses_llm else "rules",
-            "provider_kind": "anthropic" if self.uses_llm else "rules",
-            "provider_label": "Claude" if self.uses_llm else "Rules",
+            "provider": effective["provider"],
+            "provider_kind": effective["provider_kind"],
+            "provider_label": effective["provider_label"],
+            "provider_override": None,
+            "llm": self.hub.llm.block(self),
             "permissions": list(self.permissions),
             "effective_permissions": list(self.permissions),
             "team": self.team,
@@ -154,6 +166,10 @@ class BaseAgent:
             result = await handler(msg.body, msg)
             if msg.kind == "request":
                 await self.hub.bus.reply(msg, self.id, result or {})
+        except Limited as exc:  # a reached AI budget or rate limit (logged once by the meter): the asker says why
+            if msg.kind == "request":
+                await self.hub.bus.reply(msg, self.id, {"error": str(exc), "code": exc.code,
+                                                        "retry_after": exc.retry_after})
         except Exception as exc:  # an agent must survive any single failure
             self.errors += 1
             self.log("error", f"'{msg.subject}' failed: {exc}")

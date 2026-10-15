@@ -1,5 +1,5 @@
-"""The shared agent toolkit: the tools agents can call from a model, each tagged with the permission it needs, and the
-loops that run a conversation with Claude or a local model.
+"""The shared agent toolkit: the tools agents can call from a model, each tagged with the permission it needs. The
+provider layer (hub/llm) runs the conversation with whichever model an agent resolves to.
 
 The Hub Supervisor's chat gets every tool. A custom (team) agent gets the tools its effective permissions allow
 (see teams.effective_permissions), and an agent of a tool's team only reaches that tool through the tools that act on
@@ -10,8 +10,6 @@ agent as the sender, so the guardrails and the autonomy level apply to it.
 
 from __future__ import annotations
 
-import asyncio
-import json
 import re
 import time
 from dataclasses import dataclass, field
@@ -26,10 +24,11 @@ if TYPE_CHECKING:
     from ..core import Hub
     from .base import BaseAgent
 
-MAX_TURNS = 12
-MAX_RESULT = 20_000
 STR = {"type": "string"}
 INT = {"type": "integer"}
+# The only hub tools a subsidiary's sidecar staff reach (POST /api/subsidiary/v1/hub-request, hub/subsidiary/
+# hubrequest.py), each forced to their own tool and narrowed further to the staff member's charter scope.
+SIDECAR_HUB_TOOLS = frozenset({"get_tool", "tool_health", "data_flows", "propose_patches", "request_code_patch"})
 
 
 @dataclass
@@ -238,6 +237,22 @@ async def _flows(ctx: ToolContext, args: dict[str, Any]) -> Any:
         for f in flows.all_flows(ctx.hub, ctx.tool_scope)]
 
 
+@tool("subsidiary_summary", "The agent teams working inside tools (subsidiaries): status, flags, staff, today's usage "
+      "and approvals waiting. Counts only - never text from the tools.", "read")
+async def _subsidiaries(ctx: ToolContext, args: dict[str, Any]) -> Any:
+    from ..subsidiary import governance
+
+    out = []
+    for sub in governance.all_subsidiaries(ctx.hub):
+        if sub.status == "archived" or (ctx.tool_scope and sub.tool_id != ctx.tool_scope):
+            continue
+        summary = governance.summary(ctx.hub, sub)
+        out.append({k: summary[k] for k in ("tool_id", "tool_name", "mode", "status", "flags", "charter_version",
+                                            "staff_count", "pending_approvals", "last_seen")}
+                   | {"usage": {k: v for k, v in summary["usage"].items() if isinstance(v, (int, float, type(None)))}})
+    return {"allowed": governance.allowed(ctx.hub), "subsidiaries": out}
+
+
 @tool("vulnerability_summary", "Open findings by severity, overdue findings, scan coverage and scanners.", "read")
 async def _vuln_summary(ctx: ToolContext, args: dict[str, Any]) -> Any:
     from .vulns import summary
@@ -286,6 +301,19 @@ async def _extension_records(ctx: ToolContext, args: dict[str, Any]) -> Any:
 async def _approvals(ctx: ToolContext, args: dict[str, Any]) -> Any:
     return [{"id": a.id, "title": a.title, "kind": a.kind, "requested_by": a.requested_by}
             for a in ctx.hub.approvals.list("pending")]
+
+
+@tool("escalate", "Ask a person instead of deciding yourself: it waits in Approvals, and their answer reaches you "
+      "in a later turn. Use it when one of your escalation rules applies, when you are blocked, or when you are unsure "
+      "whether an action is safe. summary: what happened and what you need (the first line is its title); severity: "
+      "info, warning or critical; needs: decision or information.", "read",
+      {"summary": STR, "severity": {"type": "string", "enum": ["info", "warning", "critical"]},
+       "needs": {"type": "string", "enum": ["decision", "information"]}})
+async def _escalate(ctx: ToolContext, args: dict[str, Any]) -> Any:
+    from . import notify
+
+    return notify.escalate(ctx.hub, ctx.agent, summary=str(args.get("summary") or ""),
+                           severity=str(args.get("severity") or "warning"), needs=str(args.get("needs") or "decision"))
 
 
 @tool("agent_teams", "The agent teams: each tool's, the hub's and the built-in apps' leads and team members.", "read")
@@ -553,49 +581,3 @@ async def _create_member(ctx: ToolContext, args: dict[str, Any]) -> Any:
                                        "schedule_minutes")}
     return teams.propose_members(ctx.hub, requested_by=ctx.agent.id, parent=ctx.agent.id, members=[member],
                                  designer="agent", rationale=f"Requested by {ctx.agent.name}.")
-
-
-# --------------------------------------------------------------------------------------
-# loops
-# --------------------------------------------------------------------------------------
-
-
-async def claude_loop(hub: "Hub", history: list[dict[str, Any]], *, system: str, tools: list[dict[str, Any]],
-                      model: str, run: Callable[[str, dict[str, Any]], Awaitable[Any]], max_turns: int = MAX_TURNS) -> str:
-    """Run the conversation in `history` (Anthropic message format, appended to in place) with Claude - through
-    hub.llm.create, so the hub's default model and request options apply - until it answers without a tool call."""
-    response = None
-    for _ in range(max_turns):
-        response = await hub.llm.create(system=system, messages=history, tools=tools or None, model=model, effort="medium")
-        history.append({"role": "assistant", "content": response.content})
-        if response.stop_reason == "refusal":
-            return "I can't help with that request."
-        if response.stop_reason == "pause_turn":
-            continue
-        if response.stop_reason != "tool_use":
-            break
-        calls = [b for b in response.content if b.type == "tool_use"]
-        results = await asyncio.gather(*(_claude_result(b, run) for b in calls))
-        history.append({"role": "user", "content": list(results)})
-    reply = "\n".join(b.text for b in (response.content if response else []) if b.type == "text").strip()
-    if response is not None and response.stop_reason == "max_tokens":
-        reply += "\n\n(Reply cut off - ask me to continue.)"
-    return reply or "Done."
-
-
-async def local_loop(hub: "Hub", provider: Any, history: list[dict[str, Any]], *, system: str,
-                     tools: list[dict[str, Any]], model: str, run: Callable[[str, dict[str, Any]], Awaitable[Any]],
-                     max_turns: int = MAX_TURNS) -> str:
-    """The same with a local model (OpenAI-compatible API, OpenAI message format in `history`); see llm_providers."""
-    from .. import llm_providers
-
-    return await llm_providers.chat_loop(hub, provider, model=model, system=system, history=history, tools=tools,
-                                         execute=run, max_turns=max_turns)
-
-
-async def _claude_result(block: Any, run: Callable[[str, dict[str, Any]], Awaitable[Any]]) -> dict[str, Any]:
-    try:
-        result = await run(block.name, dict(block.input or {}))
-        return {"type": "tool_result", "tool_use_id": block.id, "content": json.dumps(result, default=str)[:MAX_RESULT]}
-    except Exception as exc:
-        return {"type": "tool_result", "tool_use_id": block.id, "content": f"Error: {exc}", "is_error": True}

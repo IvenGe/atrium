@@ -513,7 +513,7 @@ def propose(hub: "Hub", requested_by: str = "supervisor") -> list[Flow]:
 
 
 def _item(id_: str, title: str, state: str, detail: str, action: str | None = None) -> dict[str, Any]:
-    """state: active | pending | failing | needs_decision | available | needs_claude | unavailable | not_needed"""
+    """state: active | pending | failing | needs_decision | available | needs_model | unavailable | not_needed"""
     return {"id": id_, "title": title, "state": state, "detail": detail, "action": action}
 
 
@@ -584,7 +584,7 @@ def tool_strategies(hub: "Hub", tool: Tool, sso_rows: dict[str, dict[str, Any]] 
             state, detail = "available", "Connected - test the connection, then plan data flows."
         items.append(_item("data_flows", "Data flows", state, detail, "test_connection" if state == "available" else None))
 
-    # a connector Claude generates from the tool's OpenAPI spec
+    # a connector the AI model generates from the tool's OpenAPI spec
     pending_generated = any(a.kind == "repair" and a.payload.get("tool_id") == tool.id
                             and a.payload.get("diagnosis") == "generated" for a in hub.approvals.list("pending"))
     if conn is not None and conn.generated:
@@ -595,12 +595,15 @@ def tool_strategies(hub: "Hub", tool: Tool, sso_rows: dict[str, dict[str, Any]] 
     elif builtin or (conn is not None and conn.kind != "generic_rest"):
         items.append(_item("generated_connector", "Generated connector", "not_needed", "A built-in connector fits this tool."))
     elif has_openapi(tool):
-        if hub.llm.available:
+        if hub.llm.ready("patcher", "generate"):
+            label = hub.llm.resolve("patcher", "generate").provider_label
             items.append(_item("generated_connector", "Generated connector", "available",
-                               "Claude can write a connector mapping from the tool's OpenAPI spec.", "generate_connector"))
+                               f"{label} can write a connector mapping from the tool's OpenAPI spec.",
+                               "generate_connector"))
         else:
-            items.append(_item("generated_connector", "Generated connector", "needs_claude",
-                               "Generating a connector from the OpenAPI spec needs Claude (ANTHROPIC_API_KEY)."))
+            items.append(_item("generated_connector", "Generated connector", "needs_model",
+                               "Generating a connector from the OpenAPI spec needs an AI model (Settings > AI "
+                               "providers, or ANTHROPIC_API_KEY)."))
     else:
         items.append(_item("generated_connector", "Generated connector", "unavailable",
                            "No OpenAPI spec known for this tool."))

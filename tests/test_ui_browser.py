@@ -136,13 +136,13 @@ def test_the_command_palette_gives_the_focus_back(page):
 
 
 def test_a_link_inside_a_dialog_closes_the_dialog(page):
-    """The agent form's "Settings > AI providers" link used to change the page under a dialog that stayed open."""
+    """The agent form's "Settings > AI models" link used to change the page under a dialog that stayed open."""
     sign_in(page)
     page.goto(page.url.split("#")[0] + "#/agents")
     page.click("button[data-act=new]")
     page.wait_for_selector(".backdrop form[role=dialog]")
-    page.click(".backdrop a[href='#/settings']")
-    page.wait_for_function("() => location.hash === '#/settings'")
+    page.click(".backdrop a[href='#/settings/ai']")
+    page.wait_for_function("() => location.hash === '#/settings/ai'")
     page.wait_for_selector(".backdrop", state="detached")
     assert page.evaluate(INERT) == [False, False, False]
 

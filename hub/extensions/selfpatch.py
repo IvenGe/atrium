@@ -1,4 +1,4 @@
-"""Self-patching: changes to Atrium's own repository, proposed by the Patch Agent (with Claude) when an extension pack
+"""Self-patching: changes to Atrium's own repository, proposed by the Patch Agent (with an AI model) when an extension pack
 cannot express what a new tool needs.
 
 1. Only while the allow_self_patching guardrail is on and Atrium runs from a git checkout.
@@ -101,6 +101,7 @@ class SelfPatch(BaseModel):
     tool_id: str | None = None
     requested_by: str = ""
     proposed_by: str | None = None  # the person who asked for it (an approval by them needs a second person)
+    generated_by: dict[str, str] | None = None  # {provider, model} of the AI model that wrote it
     changes: list[FileChange] = []
     files: list[str] = []
     branch: str = ""
@@ -154,7 +155,8 @@ def public(patch: SelfPatch, diff: bool = True) -> dict[str, Any]:
 def availability(hub: "Hub") -> dict[str, Any]:
     """Whether a self-patch could be proposed now (no subprocess: the GitHub CLI is checked when one is applied)."""
     root = config(hub).root()
-    return {"allowed": bool(guardrails.value(hub, "allow_self_patching")), "claude": hub.llm.available,
+    ready = hub.llm.ready("patcher", "code")
+    return {"allowed": bool(guardrails.value(hub, "allow_self_patching")), "model": ready, "claude": ready,
             "git_checkout": root is not None, "repo": str(root) if root else None,
             "requires_tests": bool(guardrails.value(hub, "self_patch_requires_tests")),
             "requires_approval": bool(guardrails.value(hub, "self_patch_requires_approval")),
@@ -297,7 +299,8 @@ async def predict_mode(hub: "Hub") -> tuple[str, str]:
 
 
 async def propose(hub: "Hub", *, title: str, rationale: str, changes: list[FileChange], goal: str = "",
-                  tool_id: str | None = None, requested_by: str = "patcher") -> SelfPatch:
+                  tool_id: str | None = None, requested_by: str = "patcher",
+                  generated_by: dict[str, str] | None = None) -> SelfPatch:
     """Commit the change on a new branch in a worktree and run the test suite there. Raises ValueError when it may
     not be proposed (guardrail, no git checkout, unsafe paths or a secret)."""
     if not guardrails.value(hub, "allow_self_patching"):
@@ -308,7 +311,8 @@ async def propose(hub: "Hub", *, title: str, rationale: str, changes: list[FileC
         raise ValueError("Atrium does not run from a git checkout, so it cannot patch itself")
     changes = check_changes(hub, root, changes)
     patch = SelfPatch(title=title.strip()[:120] or "Change Atrium", rationale=rationale.strip()[:4000], goal=goal[:4000],
-                      tool_id=tool_id, requested_by=requested_by, changes=changes, files=[c.path for c in changes])
+                      tool_id=tool_id, requested_by=requested_by, changes=changes, files=[c.path for c in changes],
+                      generated_by=generated_by)
     patch.branch = f"atrium/self-{patch.id.removeprefix('sp_')}"
     worktree = hub.settings.workspace / "self-patches" / patch.id
     patch.base_commit = (await _git(hub, ["-C", str(root), "rev-parse", "HEAD"])).output.strip()
@@ -349,7 +353,8 @@ def approval_payload(patch: SelfPatch, expires_at: float | None = None) -> dict[
             "files": patch.files, "tool_id": patch.tool_id, "mode": patch.mode, "mode_reason": patch.mode_reason,
             "tests": {k: tests.get(k) for k in ("ok", "exit_code", "timed_out", "duration", "command", "tail")},
             # the approval binds to this commit and expires; proposed_by: the second-person rule
-            "commit": patch.commit, "expires_at": expires_at, "proposed_by": patch.proposed_by}
+            "commit": patch.commit, "expires_at": expires_at, "proposed_by": patch.proposed_by,
+            "generated_by": patch.generated_by}
 
 
 async def submit(hub: "Hub", patch: SelfPatch, requester: str) -> SelfPatch:

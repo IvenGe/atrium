@@ -18,7 +18,7 @@ from pydantic import BaseModel, Field
 
 from .. import guardrails
 from ..integration import connections, flows
-from .pack import ControlRule, DomainItem, ExtensionPack, SsoItem, TeamItem
+from .pack import RECORD_FIELDS, ControlRule, DomainItem, ExtensionPack, SsoItem, TeamItem, WidgetItem
 
 if TYPE_CHECKING:
     from ..core import Hub
@@ -132,6 +132,11 @@ def control_rules(hub: "Hub") -> list[tuple[str, ControlRule]]:
     return [(pack.id, rule) for pack in active(hub) for item in pack.of("controls") for rule in item.rules]
 
 
+def widget_items(hub: "Hub") -> list[tuple[ExtensionPack, WidgetItem]]:
+    """The dashboard widgets enabled packs declare, with their pack."""
+    return [(pack, item) for pack in active(hub) for item in pack.of("widget")]
+
+
 def covers_tool(hub: "Hub", tool_id: str) -> bool:
     """Whether a pack was made for this tool or proposed for it (a rejected proposal is not proposed again)."""
     return any(rec.source_tool == tool_id for rec in records(hub))
@@ -169,6 +174,16 @@ def check(hub: "Hub", pack: ExtensionPack, exclude: str | None = None) -> None:
         for name in [c.field for c in rule.where] + ([rule.age_field] if rule.age_field else []):
             if defn.field(name) is None:
                 raise ValueError(f"The control rule '{rule.title}': '{name}' is not a field of '{rule.domain}'")
+    for widget in pack.of("widget"):  # dashboard widgets over an extension data type: it must be defined
+        if not widget.domain.startswith("x:"):
+            continue
+        defn = available.get(widget.domain[2:])
+        if defn is None:
+            raise ValueError(f"The widget '{widget.title}' uses the domain '{widget.domain}', which no enabled "
+                             "extension defines")
+        for name in widget.fields_used():
+            if defn.field(name) is None and name not in RECORD_FIELDS:
+                raise ValueError(f"The widget '{widget.title}': '{name}' is not a field of '{widget.domain}'")
 
 
 def _base_url(hub: "Hub", tool_id: str) -> str | None:

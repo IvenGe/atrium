@@ -43,6 +43,15 @@ function dueCell(v) {
 export async function render(el, ctx) {
   let tab = ctx.params[0] === "scope" ? "scope" : "findings";
   const filter = { status: "active", severity: "", source: "", overdue: false, q: "", asset: "" };
+  // a dashboard widget's link opens the list filtered: #/vulnerabilities?severity=high&status=active&source=<tool>&overdue=true
+  const asked = ctx.query;
+  if (asked) {
+    if (SEVERITIES.includes(asked.get("severity"))) filter.severity = asked.get("severity");
+    if (asked.has("status") && STATUS_FILTERS.some(([k]) => k === asked.get("status"))) filter.status = asked.get("status");
+    if (/^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/.test(asked.get("source") || "")) filter.source = asked.get("source");
+    if (asked.get("overdue") === "true") filter.overdue = true;
+    if (asked.has("q")) filter.q = asked.get("q").slice(0, 120);
+  }
   let scopeFilter = "all";
   let scopeQuery = "";
   const picked = new Set();

@@ -261,6 +261,7 @@ def save(hub: "Hub", body: dict[str, Any], actor: str, *, generated_secret: str 
             raise ValueError("Enter the client secret again: the stored one is only sent to the issuer it was entered for")
     doc.update(id=DOC, updated_by=actor, updated_at=time.time())
     hub.store.put("settings", doc)  # straight to the store: never broadcast
+    hub.llm.secrets_changed()  # the client secret is masked in everything sent to an AI model
     rebuild(hub)
     shown = [k for k in ("preset", "provider_name", "issuer", "client_id", "scopes", "role_claim", "admin_values",
                          "operator_values", "viewer_values", "default_role", "allowed_domains", "allow_http")

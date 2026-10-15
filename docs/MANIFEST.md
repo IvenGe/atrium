@@ -30,6 +30,8 @@ launch:
   cwd: .
   port: 4000
   env: {NODE_ENV: production}
+  env_files: [subsidiary/bridge.env]   # adapter files of public KEY=value lines merged into the environment
+  test: npm test --silent              # the tool's own tests (a bridge patch runs them in a container only)
 
 health:
   url: http://localhost:4000/healthz   # http(s)://... or tcp://host:port
@@ -56,7 +58,21 @@ ui:
   url: http://localhost:4000               # opened from Portals
   icon: C                                  # one or two letters, or an emoji
   color: "#0d9488"                         # a hex colour: #rgb, #rgba, #rrggbb or #rrggbbaa
-  embed: true
+  embed: true                              # a hint only; allows nothing by itself
+  widgets:                                 # dashboard widgets the tool suggests (at most 10)
+    - key: open_deals
+      title: Open deals by stage
+      view: breakdown                      # count | breakdown | list | metric
+      domain: x:deals                      # a data type the tool's connection reads
+      where: [{field: status, op: eq, value: open}]
+      group_by: stage
+
+bridge:                                    # set by Atrium when an approved bridge patch is applied
+  contract: atrium-bridge/1
+  stack: node-express
+  core: node/1.0.0
+  manifest_path: atrium-bridge.json
+  manifest_sha256: 9f2c...                 # SHA-256 of the committed file's raw bytes (64 hex digits)
 ```
 
 `ui.icon` and `ui.color` style the tool's tile on Home, Apps, Portals and the Integration map. The hub keeps
@@ -67,6 +83,47 @@ both again before it draws the tile. This stops a repository from adding CSS thr
 `"#000;position:fixed;inset:0"`, which would cover the page and its Remove button, or `url(...)`, which would tell a
 remote server each time someone views the page. It also stops a repository from putting a message such as "session
 expired, sign in at ..." in the icon.
+
+`ui.url` is the page Portals and the Portal (`#/portal/<tool>`) open. The Portal refuses an address that is Atrium's
+own origin, carries a user name and password, or has a query parameter named like a credential. `ui.embed: true` (set
+by the tool, or by the analysis for a web UI) is only a hint that the page may be shown inside another site; it allows
+nothing by itself (Atrium does not show tools' own pages inside dashboard widgets:
+[DASHBOARD.md](DASHBOARD.md#not-built-tools-own-pages-inside-widgets)).
+
+### Dashboard widgets
+
+`ui.widgets` lists up to 10 widgets the tool suggests for Home dashboards, declared as data
+([DASHBOARD.md](DASHBOARD.md#widgets-declared-by-packs-and-tools) has every field). They come from the tool's
+repository, so Atrium treats them as untrusted:
+
+- they appear in the widget gallery as suggestions ("Suggested by CRM App") and are never added to a dashboard by
+  themselves;
+- they only ever count or list the tool's own records, and only for data types its connection reads now (otherwise
+  the gallery shows the reason and they cannot be added);
+- a declaration with markup, a URL, an unknown field or too many conditions is left out with its reason in the
+  analysis notes, and the rest of the manifest still applies; entries after the tenth are ignored;
+- the hub's analysis never invents `ui.widgets` for a tool that does not ship them.
+
+## An Atrium bridge
+
+A tool can host an agent team of its own, a *subsidiary* ([SUBSIDIARIES.md](SUBSIDIARIES.md)), through an Atrium
+bridge that a bridge patch adds to its code. Applying an approved bridge patch updates the manifest:
+
+- **`bridge`**: the contract the bridge speaks, its stack, the vendored (or model-written) core, and the path and
+  SHA-256 of the committed `atrium-bridge.json`. Atrium compares this hash with what the running bridge reports
+  (`bridge_mismatch` when they differ) and with conformance vector V19. A tool's own manifest never sets it.
+- **`launch.env_files`**: `subsidiary/bridge.env` is added, so a tool Atrium starts gets the bridge's public
+  configuration (`ATRIUM_BRIDGE_KEYS`, `ATRIUM_TOOL_ID`, `ATRIUM_SUBSIDIARY_ID`, `ATRIUM_PANEL`) in its environment.
+  The entries are paths relative to the tool's adapter folder (at most 8, no `..`); Atrium reads them only from that
+  folder and never through a symbolic link, and the API shows the file names only.
+- **`events.emits`**: the events the bridge declares (`<tool id>.<event>`).
+- **`health.url`**: the bridge's public health route on the tool's web address (`ui.url`, else `api.base_url`),
+  `<address>/.atrium/v1/health`, when the manifest had no health check yet.
+
+`launch.test` (at most 500 characters) is the command that runs the tool's own tests. A bridge patch runs it on a
+copy of its branch inside a container with the network off, never on the hub machine itself; without it the stack's
+default is used (`python -m pytest`, `npm test`, `go test ./...`; other stacks need it, or their tests are "not
+run").
 
 ## Capabilities
 
@@ -140,6 +197,10 @@ Calls without a valid token are refused (`401 Sign in required` for an unknown, 
 expired token). Requests with a Bearer token do not need the `X-Hub-Request` header (sending it
 does no harm). The event adapters the Patch Agent generates
 read `HUB_TOKEN` and send it this way. Tokens are covered in [AUTH.md](AUTH.md#api-tokens).
+
+A tool with an Atrium bridge needs no token for its events: it emits them into the bridge's outbox, and the
+subsidiary's sidecar relays the declared ones, published as `subsidiary:<tool id>`
+([INTEGRATIONS.md](INTEGRATIONS.md#bridge-events-on-the-tool-bus)).
 
 The hub delivers the envelope `{source, event, payload, ts}` as a JSON `POST` to the
 `events.webhook_url` of every tool whose `events.listens` matches the event name. The API and the UI

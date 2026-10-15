@@ -1,0 +1,122 @@
+{
+  "contract": "atrium-bridge/1",
+  "generator": "scripts/build_bridge_cores.py",
+  "panel": {
+    "template": "panel/panel.js",
+    "sha256": "169f62fab9b60d01232e02f5f4feb89e81172819c5fe0e3a4042e6a88ef03898"
+  },
+  "cores": {
+    "python": {
+      "version": "python/1.0.0",
+      "stacks": [
+        "python-fastapi",
+        "python-starlette",
+        "python-flask",
+        "python-wsgi",
+        "python-asgi"
+      ],
+      "dependency": "cryptography",
+      "files": [
+        {
+          "path": "atrium_bridge_core.py",
+          "template": "python/atrium_bridge_core.py",
+          "sha256": "af96717ddba0359d0cfeeeaef814c41e07c06b6f95f2f87761db3fa79d0f6684"
+        },
+        {
+          "path": "atrium_bridge.py",
+          "template": "python/adapters.py",
+          "sha256": "2abde5dd17a4180a8219c50a138b11a7085748ae71e46459037673fd3b47fe71"
+        },
+        {
+          "path": "panel.js",
+          "template": "panel/panel.js",
+          "sha256": "169f62fab9b60d01232e02f5f4feb89e81172819c5fe0e3a4042e6a88ef03898"
+        }
+      ],
+      "glue": [
+        {
+          "path": "glue.py",
+          "template": "python/glue_skeleton.py"
+        }
+      ]
+    },
+    "node": {
+      "version": "node/1.0.0",
+      "stacks": [
+        "node-express",
+        "node-connect"
+      ],
+      "dependency": null,
+      "files": [
+        {
+          "path": "atrium-bridge-core.cjs",
+          "template": "node/atrium-bridge-core.cjs",
+          "sha256": "791d196a076767ac9030bf3be195a2885ced06e2e1f94d73c1a4eff0f2350100"
+        },
+        {
+          "path": "atrium-bridge-core.mjs",
+          "template": "node/atrium-bridge-core.mjs",
+          "sha256": "2196f2b762c594198d953e579bd5e60d27508ce1d5ee159c4d8e1888344695fd"
+        },
+        {
+          "path": "panel.js",
+          "template": "panel/panel.js",
+          "sha256": "169f62fab9b60d01232e02f5f4feb89e81172819c5fe0e3a4042e6a88ef03898"
+        }
+      ],
+      "glue": [
+        {
+          "path": "glue.cjs",
+          "template": "node/glue_skeleton.cjs"
+        },
+        {
+          "path": "glue.mjs",
+          "template": "node/glue_skeleton.mjs"
+        }
+      ]
+    },
+    "go": {
+      "version": "go/1.0.0",
+      "stacks": [
+        "go-nethttp"
+      ],
+      "dependency": null,
+      "files": [
+        {
+          "path": "atriumbridge/core.go",
+          "template": "go/atriumbridge/core.go",
+          "sha256": "10df053b81da53aaef9fabdf512ccfe056a1e3868902b3d29421f1d509f404b7"
+        },
+        {
+          "path": "atriumbridge/panel.js",
+          "template": "panel/panel.js",
+          "sha256": "169f62fab9b60d01232e02f5f4feb89e81172819c5fe0e3a4042e6a88ef03898"
+        }
+      ],
+      "glue": [
+        {
+          "path": "atrium_glue.go",
+          "template": "go/glue_skeleton.go"
+        }
+      ]
+    }
+  },
+  "sidecar": [
+    {
+      "path": "subsidiary/sidecar/config.json",
+      "template": "sidecar/config.json"
+    },
+    {
+      "path": "subsidiary/sidecar/docker-compose.yml",
+      "template": "sidecar/docker-compose.yml"
+    },
+    {
+      "path": "subsidiary/sidecar/atrium-sidecar.service",
+      "template": "sidecar/atrium-sidecar.service"
+    },
+    {
+      "path": "subsidiary/sidecar/README.md",
+      "template": "sidecar/README.md"
+    }
+  ]
+}

@@ -1,4 +1,4 @@
-"""Hub-side gaps after an import, and the template packs that close the common ones without Claude.
+"""Hub-side gaps after an import, and the template packs that close the common ones without an AI model.
 
 A gap is something Atrium itself lacks for a tool (not something the tool lacks - that is a patch to the tool):
 
@@ -6,10 +6,10 @@ A gap is something Atrium itself lacks for a tool (not something the tool lacks 
                  tool's incidents;
 - ``connector``  no built-in connector and no connection (or a generic REST connection that does not map the domain);
                  an extension can map a REST API, anything else (GraphQL, gRPC, no API) needs a change to Atrium's code;
-- ``sso``        the tool signs in with OIDC/SAML in a way the SSO catalog does not know (an extension recipe with
-                 Claude; the generic values work meanwhile).
+- ``sso``        the tool signs in with OIDC/SAML in a way the SSO catalog does not know (an extension recipe an
+                 AI model writes; the generic values work meanwhile).
 
-Templates (no Claude) exist for the three well-known kinds - SIEM alerts, ticketing tickets, monitoring incidents -
+Templates (no AI model) exist for the three well-known kinds - SIEM alerts, ticketing tickets, monitoring incidents -
 with connector mappings for products whose API is documented: Zammad tickets (GET /api/v1/tickets?expand=true,
 page/per_page, "Authorization: Token token=..." - checked against docs.zammad.org) and Prometheus Alertmanager
 (GET /api/v2/alerts - checked against its OpenAPI document).
@@ -41,7 +41,11 @@ class Gap:
     category: str | None = None  # siem | ticketing | monitoring
     domain: str | None = None  # the extension domain key
     expressible: bool = True  # an extension pack can close it; False: only a change to Atrium's own code can
-    needs_claude: bool = False  # no template: only a pack Claude writes closes it
+    needs_model: bool = False  # no template: only a pack an AI model writes closes it
+
+    @property
+    def needs_claude(self) -> bool:  # the name before the provider layer
+        return self.needs_model
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -100,17 +104,17 @@ def detect(hub: "Hub", tool: Tool) -> list[Gap]:
                             f"Its API is {m.api.type.upper()}, which a generic REST mapping cannot express: it needs a "
                             "connector in Atrium's code."),
                         category=kind, domain=key, expressible=rest,
-                        needs_claude=rest and not known))
+                        needs_model=rest and not known))
     elif conn is not None and conn.kind == "generic_rest" and key and f"x:{key}" not in (conn.config.get("mapping") or {}):
         gaps.append(Gap("connector", tool.id, f"{tool.name}'s connection does not map its {key}",
                         f"The generic REST connection of {tool.name} has no mapping for x:{key}.", category=kind,
-                        domain=key, needs_claude=not known))
+                        domain=key, needs_model=not known))
     if (m.auth.sso in ("oidc", "oauth2", "saml") and not identity.is_provider(tool) and not m.auth.env_keys
             and not m.auth.provider and sso_catalog.match(tool, identity.load_prefs(hub).catalog) is None):
         gaps.append(Gap("sso", tool.id, f"Unknown single sign-on setup for {tool.name}",
                         f"{tool.name} supports {m.auth.sso.upper()}, but Atrium does not know how it is configured: "
-                        "people get generic values to enter by hand. An SSO recipe (written with Claude) can "
-                        "configure it.", needs_claude=True))
+                        "people get generic values to enter by hand. An SSO recipe (written by an AI model) can "
+                        "configure it.", needs_model=True))
     return gaps
 
 

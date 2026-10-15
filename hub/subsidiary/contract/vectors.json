@@ -1,0 +1,1536 @@
+{
+ "contract": "atrium-bridge/1",
+ "generator": "scripts/build_bridge_vectors.py",
+ "seed": 20261014,
+ "now": 1791936000,
+ "note": "Signed for 'now': run every case with the clock set to it. Conformance vectors run in order against one freshly started bridge configured with 'env', 'manifest_b64' (the committed atrium-bridge.json) and 'panel_js_b64' (the widget it serves). Bodies are base64 (standard alphabet, padded), except a conformance step's 'body_b64': base64url without padding, as on the wire.",
+ "conformance": {
+  "env": {
+   "ATRIUM_BRIDGE_KEYS": "_BYYgvrKSREXyHNi5QMNA4_-qMEevKERfIG_0xn4ZMQ",
+   "ATRIUM_TOOL_ID": "helpdesk",
+   "ATRIUM_SUBSIDIARY_ID": "sub_55e581b46f50",
+   "ATRIUM_PANEL": "on"
+  },
+  "manifest_b64": "ewogICJjb250cmFjdCI6ICJhdHJpdW0tYnJpZGdlLzEiLAogICJ0b29sX2lkIjogImhlbHBkZXNrIiwKICAic3RhY2siOiAicHl0aG9uLWZhc3RhcGkiLAogICJjb3JlIjogInB5dGhvbi8xLjAuMCIsCiAgInNlcnZpY2VfcHJpbmNpcGFsIjogImF0cml1bS10ZWFtIiwKICAicGFuZWwiOiB7CiAgICAiZW5hYmxlZCI6IHRydWUKICB9LAogICJldmVudHMiOiB7CiAgICAibmFtZXMiOiBbCiAgICAgICJoZWxwZGVzay50aWNrZXQuY3JlYXRlZCIKICAgIF0KICB9LAogICJmaWxlcyI6IFsKICAgICJhdHJpdW0vYXRyaXVtX2JyaWRnZV9jb3JlLnB5IiwKICAgICJhdHJpdW0vZ2x1ZS5weSIsCiAgICAiYXRyaXVtL3BhbmVsLmpzIiwKICAgICJhdHJpdW0tYnJpZGdlLmpzb24iCiAgXSwKICAiYWN0aW9ucyI6IFsKICAgIHsKICAgICAgImlkIjogInRpY2tldHMubGlzdCIsCiAgICAgICJ0aXRsZSI6ICJMaXN0IHRpY2tldHMiLAogICAgICAiZGVzY3JpcHRpb24iOiAiT3BlbiB0aWNrZXRzLCBuZXdlc3QgZmlyc3QiLAogICAgICAicmlzayI6ICJyZWFkIiwKICAgICAgImNhdGVnb3J5IjogImRhdGEiLAogICAgICAib25fYmVoYWxmX29mIjogdHJ1ZSwKICAgICAgInBhcmFtcyI6IHsKICAgICAgICAidHlwZSI6ICJvYmplY3QiLAogICAgICAgICJhZGRpdGlvbmFsUHJvcGVydGllcyI6IGZhbHNlLAogICAgICAgICJwcm9wZXJ0aWVzIjogewogICAgICAgICAgInN0YXR1cyI6IHsKICAgICAgICAgICAgImVudW0iOiBbCiAgICAgICAgICAgICAgIm9wZW4iLAogICAgICAgICAgICAgICJwZW5kaW5nIiwKICAgICAgICAgICAgICAiY2xvc2VkIgogICAgICAgICAgICBdCiAgICAgICAgICB9LAogICAgICAgICAgInEiOiB7CiAgICAgICAgICAgICJ0eXBlIjogInN0cmluZyIsCiAgICAgICAgICAgICJtYXhMZW5ndGgiOiAyMDAKICAgICAgICAgIH0KICAgICAgICB9CiAgICAgIH0KICAgIH0sCiAgICB7CiAgICAgICJpZCI6ICJ0aWNrZXRzLmRyYWZ0X3JlcGx5IiwKICAgICAgInRpdGxlIjogIkRyYWZ0IGEgcmVwbHkiLAogICAgICAicmlzayI6ICJwcm9wb3NlIiwKICAgICAgImNhdGVnb3J5IjogImNvbnRlbnQiLAogICAgICAib25fYmVoYWxmX29mIjogdHJ1ZSwKICAgICAgInBhcmFtcyI6IHsKICAgICAgICAidHlwZSI6ICJvYmplY3QiLAogICAgICAgICJhZGRpdGlvbmFsUHJvcGVydGllcyI6IGZhbHNlLAogICAgICAgICJyZXF1aXJlZCI6IFsKICAgICAgICAgICJ0aWNrZXRfaWQiLAogICAgICAgICAgInRleHQiCiAgICAgICAgXSwKICAgICAgICAicHJvcGVydGllcyI6IHsKICAgICAgICAgICJ0aWNrZXRfaWQiOiB7CiAgICAgICAgICAgICJ0eXBlIjogImludGVnZXIiCiAgICAgICAgICB9LAogICAgICAgICAgInRleHQiOiB7CiAgICAgICAgICAgICJ0eXBlIjogInN0cmluZyIsCiAgICAgICAgICAgICJtYXhMZW5ndGgiOiA0MDAwCiAgICAgICAgICB9CiAgICAgICAgfQogICAgICB9CiAgICB9LAogICAgewogICAgICAiaWQiOiAidGlja2V0cy5zZXRfcHJpb3JpdHkiLAogICAgICAidGl0bGUiOiAiQ2hhbmdlIGEgdGlja2V0J3MgcHJpb3JpdHkiLAogICAgICAicmlzayI6ICJ3cml0ZSIsCiAgICAgICJjYXRlZ29yeSI6ICJ3b3JrZmxvdyIsCiAgICAgICJyZXZlcnNpYmxlIjogdHJ1ZSwKICAgICAgImV4dGVybmFsX2VmZmVjdCI6IGZhbHNlLAogICAgICAib25fYmVoYWxmX29mIjogZmFsc2UsCiAgICAgICJwYXJhbXMiOiB7CiAgICAgICAgInR5cGUiOiAib2JqZWN0IiwKICAgICAgICAiYWRkaXRpb25hbFByb3BlcnRpZXMiOiBmYWxzZSwKICAgICAgICAicmVxdWlyZWQiOiBbCiAgICAgICAgICAidGlja2V0X2lkIiwKICAgICAgICAgICJwcmlvcml0eSIKICAgICAgICBdLAogICAgICAgICJwcm9wZXJ0aWVzIjogewogICAgICAgICAgInRpY2tldF9pZCI6IHsKICAgICAgICAgICAgInR5cGUiOiAiaW50ZWdlciIKICAgICAgICAgIH0sCiAgICAgICAgICAicHJpb3JpdHkiOiB7CiAgICAgICAgICAgICJlbnVtIjogWwogICAgICAgICAgICAgICJsb3ciLAogICAgICAgICAgICAgICJub3JtYWwiLAogICAgICAgICAgICAgICJoaWdoIgogICAgICAgICAgICBdCiAgICAgICAgICB9CiAgICAgICAgfQogICAgICB9CiAgICB9LAogICAgewogICAgICAiaWQiOiAidGlja2V0cy5kZWxldGUiLAogICAgICAidGl0bGUiOiAiRGVsZXRlIGEgdGlja2V0IiwKICAgICAgInJpc2siOiAiYWRtaW4iLAogICAgICAiY2F0ZWdvcnkiOiAiZGF0YSIsCiAgICAgICJwYXJhbXMiOiB7CiAgICAgICAgInR5cGUiOiAib2JqZWN0IiwKICAgICAgICAiYWRkaXRpb25hbFByb3BlcnRpZXMiOiBmYWxzZSwKICAgICAgICAicmVxdWlyZWQiOiBbCiAgICAgICAgICAidGlja2V0X2lkIgogICAgICAgIF0sCiAgICAgICAgInByb3BlcnRpZXMiOiB7CiAgICAgICAgICAidGlja2V0X2lkIjogewogICAgICAgICAgICAidHlwZSI6ICJpbnRlZ2VyIiwKICAgICAgICAgICAgIm1pbmltdW0iOiAxCiAgICAgICAgICB9CiAgICAgICAgfQogICAgICB9CiAgICB9CiAgXQp9Cg==",
+  "manifest_sha256": "107758c6b6352b38b6c970dc1c364c187fe351300ac727967483a54cb6c7afa8",
+  "panel_js_b64": "LyogYXRyaXVtLWJyaWRnZS8xIGNvbmZvcm1hbmNlIHN0YW5kLWluIGZvciBwYW5lbC5qczogYSBjb3JlIHNlcnZlcyBpdHMgY29uZmlndXJlZCB3aWRnZXQgZmlsZSAqLwo=",
+  "panel_sha256": "215cec5d7ec48add620159d9b89ef27578bec12c56391ca861732f8d600d8e88",
+  "vectors": [
+   {
+    "id": "V1",
+    "title": "GET /health answers without authentication",
+    "steps": [
+     {
+      "method": "GET",
+      "path": "/.atrium/v1/health",
+      "headers": {},
+      "body_b64": "",
+      "expect": {
+       "status": 200,
+       "json": {
+        "status": "ok"
+       }
+      }
+     }
+    ]
+   },
+   {
+    "id": "V2",
+    "title": "a call without a ticket is refused",
+    "steps": [
+     {
+      "method": "POST",
+      "path": "/.atrium/v1/call/atrium.ping",
+      "headers": {
+       "Content-Type": "application/json"
+      },
+      "body_b64": "eyJwYXJhbXMiOnt9fQ",
+      "expect": {
+       "status": 401,
+       "code": "bad_ticket"
+      }
+     }
+    ]
+   },
+   {
+    "id": "V3",
+    "title": "a ticket signed with another key is refused",
+    "steps": [
+     {
+      "method": "POST",
+      "path": "/.atrium/v1/call/atrium.ping",
+      "headers": {
+       "Content-Type": "application/json",
+       "Atrium-Ticket": "AT1.eyJhY3QiOlsiYXRyaXVtLnBpbmciLCJhdHJpdW0uZGVzY3JpYmUiLCJhdHJpdW0ubm9vcF93cml0ZSIsImF0cml1bS5yZWNlaXB0Il0sImNuZiI6IjBESFlqU2RxOWVPbFV3eUNWUnNEVjgtYlU2aUo2cGl6d0dVSjlIcDVWLXMiLCJjdiI6MCwiZXhwIjoxNzkxOTM2MDYwLCJpYXQiOjE3OTE5MzYwMDAsImp0aSI6Ino5ZmxScUMzVTJRSllOanRmQXZnSGciLCJtb2RlIjoicHJvYmF0aW9uIiwicmwiOnsiY2FsbHNfcGVyX21pbiI6MTIwLCJwYW5lbF9wZXJfdXNlcl9ob3VyIjoxMH0sInN1YiI6InN1Yl81NWU1ODFiNDZmNTAiLCJ0b29sIjoiaGVscGRlc2siLCJ0eXAiOiJ0aWNrZXQiLCJ2IjoxfQ.b74ANir-fSj1cTnjlO4bgxgTElpdnzLWqxUwJP8N8iMBwe1h_VCigN1BidYzwN8NHpaBf4vzbv6fdBRIemvgCQ",
+       "Atrium-Date": "1791936000",
+       "Atrium-Nonce": "ofur5aSGO28vkn340oCSYQ",
+       "Atrium-Signature": "YE0e-ed1l9byrvlQPEVmqAKVfWvnF2A5753MJ0dyW-Q5bz8W4qYuID7T7HfqELwaXz-QtmjXZQX_kYEX73pxCQ"
+      },
+      "body_b64": "eyJwYXJhbXMiOnt9fQ",
+      "expect": {
+       "status": 401,
+       "code": "bad_ticket"
+      }
+     }
+    ]
+   },
+   {
+    "id": "V4",
+    "title": "a ticket for another tool, then for another subsidiary, is refused",
+    "steps": [
+     {
+      "method": "POST",
+      "path": "/.atrium/v1/call/atrium.ping",
+      "headers": {
+       "Content-Type": "application/json",
+       "Atrium-Ticket": "AT1.eyJhY3QiOlsiYXRyaXVtLnBpbmciLCJhdHJpdW0uZGVzY3JpYmUiLCJhdHJpdW0ubm9vcF93cml0ZSIsImF0cml1bS5yZWNlaXB0Il0sImNuZiI6IjBESFlqU2RxOWVPbFV3eUNWUnNEVjgtYlU2aUo2cGl6d0dVSjlIcDVWLXMiLCJjdiI6MCwiZXhwIjoxNzkxOTM2MDYwLCJpYXQiOjE3OTE5MzYwMDAsImp0aSI6ImU1VURGM0lwNUNILU9CdjB0MFpVNHciLCJtb2RlIjoicHJvYmF0aW9uIiwicmwiOnsiY2FsbHNfcGVyX21pbiI6MTIwLCJwYW5lbF9wZXJfdXNlcl9ob3VyIjoxMH0sInN1YiI6InN1Yl81NWU1ODFiNDZmNTAiLCJ0b29sIjoiaGVscGRlc2stb3RoZXIiLCJ0eXAiOiJ0aWNrZXQiLCJ2IjoxfQ.o5Ogjz6sx_m2TJO0PhAB71ltIxYH9KkAKPcn-adFGIpYGw-vm5LsZZNW2TF_lRNc6xRUX9TFLx4MdovZd9NjDQ",
+       "Atrium-Date": "1791936000",
+       "Atrium-Nonce": "yl-ZJNDzB9R0hqjOKhMN1g",
+       "Atrium-Signature": "1ra4lzX_ebjBOs-0OerWqQy8644r9ixnZ5-ZCJfRSFvHvnijW4tEzI5rSn-pUDMOgNtZdrDnRA9kd9rJDL4VDg"
+      },
+      "body_b64": "eyJwYXJhbXMiOnt9fQ",
+      "expect": {
+       "status": 401,
+       "code": "bad_ticket"
+      }
+     },
+     {
+      "method": "POST",
+      "path": "/.atrium/v1/call/atrium.ping",
+      "headers": {
+       "Content-Type": "application/json",
+       "Atrium-Ticket": "AT1.eyJhY3QiOlsiYXRyaXVtLnBpbmciLCJhdHJpdW0uZGVzY3JpYmUiLCJhdHJpdW0ubm9vcF93cml0ZSIsImF0cml1bS5yZWNlaXB0Il0sImNuZiI6IjBESFlqU2RxOWVPbFV3eUNWUnNEVjgtYlU2aUo2cGl6d0dVSjlIcDVWLXMiLCJjdiI6MCwiZXhwIjoxNzkxOTM2MDYwLCJpYXQiOjE3OTE5MzYwMDAsImp0aSI6IjdlcEFfSFlwM2VKd2NvNjZKbmZHd2ciLCJtb2RlIjoicHJvYmF0aW9uIiwicmwiOnsiY2FsbHNfcGVyX21pbiI6MTIwLCJwYW5lbF9wZXJfdXNlcl9ob3VyIjoxMH0sInN1YiI6InN1Yl8wMDAwMDAwMDAwMDAiLCJ0b29sIjoiaGVscGRlc2siLCJ0eXAiOiJ0aWNrZXQiLCJ2IjoxfQ.9lkMlD8hfwATnQRpvh4IDqCNkxlj9-zqloczoj4sKKCZICD-2wl94t2n-m9MBg4BEAIL5mPW8zSwbAEGq9edCA",
+       "Atrium-Date": "1791936000",
+       "Atrium-Nonce": "fo2h0QesvkW0tspc5MyXDg",
+       "Atrium-Signature": "Q6a9SGKkXadg2r28T2G0UrQVYWYie4ZmDxyqLI5Mt2NYq84VzAAIexCMvORQmh6WCnCy1bQ4Z3whNDyp8cV6Aw"
+      },
+      "body_b64": "eyJwYXJhbXMiOnt9fQ",
+      "expect": {
+       "status": 401,
+       "code": "bad_ticket"
+      }
+     }
+    ]
+   },
+   {
+    "id": "V5",
+    "title": "an expired ticket is refused",
+    "steps": [
+     {
+      "method": "POST",
+      "path": "/.atrium/v1/call/atrium.ping",
+      "headers": {
+       "Content-Type": "application/json",
+       "Atrium-Ticket": "AT1.eyJhY3QiOlsiYXRyaXVtLnBpbmciLCJhdHJpdW0uZGVzY3JpYmUiLCJhdHJpdW0ubm9vcF93cml0ZSIsImF0cml1bS5yZWNlaXB0Il0sImNuZiI6IjBESFlqU2RxOWVPbFV3eUNWUnNEVjgtYlU2aUo2cGl6d0dVSjlIcDVWLXMiLCJjdiI6MCwiZXhwIjoxNzkxOTM1NzAwLCJpYXQiOjE3OTE5MzUxMDAsImp0aSI6ImZuZnNYNmtsUTlpZDNmS3dvR0I0LWciLCJtb2RlIjoicHJvYmF0aW9uIiwicmwiOnsiY2FsbHNfcGVyX21pbiI6MTIwLCJwYW5lbF9wZXJfdXNlcl9ob3VyIjoxMH0sInN1YiI6InN1Yl81NWU1ODFiNDZmNTAiLCJ0b29sIjoiaGVscGRlc2siLCJ0eXAiOiJ0aWNrZXQiLCJ2IjoxfQ.b7VHeZ03ASYd0kldFw7qBbySme6OsZcmszzMpwujjosj-NrnjNqbd4cNeD96dX1iBasOYIfRud2ISx7RcPfsAA",
+       "Atrium-Date": "1791936000",
+       "Atrium-Nonce": "KrxFItnDrA7IUDI0jn1CAg",
+       "Atrium-Signature": "WH3-bKBZfAvxosqCt5m2EEuDCj1af96N4SrkgrmV-I2I4qZAfmcbLWV_UGOEmzo2rpxp7aCma16RquhB9mfNCg"
+      },
+      "body_b64": "eyJwYXJhbXMiOnt9fQ",
+      "expect": {
+       "status": 401,
+       "code": "expired"
+      }
+     }
+    ]
+   },
+   {
+    "id": "V6",
+    "title": "a request signed with a key other than the ticket's cnf is refused",
+    "steps": [
+     {
+      "method": "POST",
+      "path": "/.atrium/v1/call/atrium.ping",
+      "headers": {
+       "Content-Type": "application/json",
+       "Atrium-Ticket": "AT1.eyJhY3QiOlsiYXRyaXVtLnBpbmciLCJhdHJpdW0uZGVzY3JpYmUiLCJhdHJpdW0ubm9vcF93cml0ZSIsImF0cml1bS5yZWNlaXB0Il0sImNuZiI6IjBESFlqU2RxOWVPbFV3eUNWUnNEVjgtYlU2aUo2cGl6d0dVSjlIcDVWLXMiLCJjdiI6MCwiZXhwIjoxNzkxOTM2MDYwLCJpYXQiOjE3OTE5MzYwMDAsImp0aSI6IldwV2o4b2dmNVV0VWN0MkVDWmczamciLCJtb2RlIjoicHJvYmF0aW9uIiwicmwiOnsiY2FsbHNfcGVyX21pbiI6MTIwLCJwYW5lbF9wZXJfdXNlcl9ob3VyIjoxMH0sInN1YiI6InN1Yl81NWU1ODFiNDZmNTAiLCJ0b29sIjoiaGVscGRlc2siLCJ0eXAiOiJ0aWNrZXQiLCJ2IjoxfQ.dp3N9d3rFEcXzkhoK7YEut4bYz-3emJrZnQ00Vf4CkE7hFbXNJm10xOk2G1rMs_UsOFb0mPx97POZ3ZNoC9dDA",
+       "Atrium-Date": "1791936000",
+       "Atrium-Nonce": "8SZDATfZewBiKlP-kLpb1Q",
+       "Atrium-Signature": "KQv7GPtLjKNYXV3Zl-Z8vwLxjRGoScP0aI39qnHj4ItOWeUp9dduJuXVbJDYEWI3hKhgf-zR22F2WB7GhympAQ"
+      },
+      "body_b64": "eyJwYXJhbXMiOnt9fQ",
+      "expect": {
+       "status": 401,
+       "code": "bad_signature"
+      }
+     }
+    ]
+   },
+   {
+    "id": "V7",
+    "title": "a body changed after signing is refused",
+    "steps": [
+     {
+      "method": "POST",
+      "path": "/.atrium/v1/call/atrium.receipt",
+      "headers": {
+       "Content-Type": "application/json",
+       "Atrium-Ticket": "AT1.eyJhY3QiOlsiYXRyaXVtLnBpbmciLCJhdHJpdW0uZGVzY3JpYmUiLCJhdHJpdW0ubm9vcF93cml0ZSIsImF0cml1bS5yZWNlaXB0Il0sImNuZiI6IjBESFlqU2RxOWVPbFV3eUNWUnNEVjgtYlU2aUo2cGl6d0dVSjlIcDVWLXMiLCJjdiI6MCwiZXhwIjoxNzkxOTM2MDYwLCJpYXQiOjE3OTE5MzYwMDAsImp0aSI6IklTdlNSS1Z2QmQ4elhIWVdadktXWGciLCJtb2RlIjoicHJvYmF0aW9uIiwicmwiOnsiY2FsbHNfcGVyX21pbiI6MTIwLCJwYW5lbF9wZXJfdXNlcl9ob3VyIjoxMH0sInN1YiI6InN1Yl81NWU1ODFiNDZmNTAiLCJ0b29sIjoiaGVscGRlc2siLCJ0eXAiOiJ0aWNrZXQiLCJ2IjoxfQ.R7AE_RdUKlYkpxHC5AzY6tmYZaXldoW68nqjQNrHWkzXVs_Tl9C1EK59vhk9ve2S4CA63eO-eqb9qQhNmfHeDw",
+       "Atrium-Date": "1791936000",
+       "Atrium-Nonce": "9cggiiBXr7dM-SvG8tmavw",
+       "Atrium-Signature": "aYwRn1DKHnhXOlwSbFhCezg_uSgQsnxCfHsbVtH6MYFrfwMyF6I9sEFr75jQfxFAgD5mzZn6ZhiLCCM5DbRXDQ"
+      },
+      "body_b64": "eyJwYXJhbXMiOnsianRpIjoiY2hhbmdlZCJ9fQ",
+      "expect": {
+       "status": 401,
+       "code": "bad_signature"
+      }
+     }
+    ]
+   },
+   {
+    "id": "V8",
+    "title": "the same request twice: the second is a replay",
+    "steps": [
+     {
+      "method": "POST",
+      "path": "/.atrium/v1/call/atrium.ping",
+      "headers": {
+       "Content-Type": "application/json",
+       "Atrium-Ticket": "AT1.eyJhY3QiOlsiYXRyaXVtLnBpbmciLCJhdHJpdW0uZGVzY3JpYmUiLCJhdHJpdW0ubm9vcF93cml0ZSIsImF0cml1bS5yZWNlaXB0Il0sImNuZiI6IjBESFlqU2RxOWVPbFV3eUNWUnNEVjgtYlU2aUo2cGl6d0dVSjlIcDVWLXMiLCJjdiI6MCwiZXhwIjoxNzkxOTM2MDYwLCJpYXQiOjE3OTE5MzYwMDAsImp0aSI6IjZfSUxFMHItejdOOTgteFZ2cVV6TnciLCJtb2RlIjoicHJvYmF0aW9uIiwicmwiOnsiY2FsbHNfcGVyX21pbiI6MTIwLCJwYW5lbF9wZXJfdXNlcl9ob3VyIjoxMH0sInN1YiI6InN1Yl81NWU1ODFiNDZmNTAiLCJ0b29sIjoiaGVscGRlc2siLCJ0eXAiOiJ0aWNrZXQiLCJ2IjoxfQ._nDZO7LrkpV8vs_-DWd6Y_1Yfi_ck6SJsiommpOZkbBaakmePbBviHonEl4gx66zTJhgg2V8GN45muHycCevCA",
+       "Atrium-Date": "1791936000",
+       "Atrium-Nonce": "2M9lHPymvmE4egUZPi8RAw",
+       "Atrium-Signature": "EB1GF0kZaFhip9cMXF99jNyVvJQcDWGRuZUD5VxQF3hMPks8Az2Oo5NuC8f2mBWY25zoEsjNh4ITR6BW4AotCQ"
+      },
+      "body_b64": "eyJwYXJhbXMiOnt9fQ",
+      "expect": {
+       "status": 200
+      }
+     },
+     {
+      "method": "POST",
+      "path": "/.atrium/v1/call/atrium.ping",
+      "headers": {
+       "Content-Type": "application/json",
+       "Atrium-Ticket": "AT1.eyJhY3QiOlsiYXRyaXVtLnBpbmciLCJhdHJpdW0uZGVzY3JpYmUiLCJhdHJpdW0ubm9vcF93cml0ZSIsImF0cml1bS5yZWNlaXB0Il0sImNuZiI6IjBESFlqU2RxOWVPbFV3eUNWUnNEVjgtYlU2aUo2cGl6d0dVSjlIcDVWLXMiLCJjdiI6MCwiZXhwIjoxNzkxOTM2MDYwLCJpYXQiOjE3OTE5MzYwMDAsImp0aSI6IjZfSUxFMHItejdOOTgteFZ2cVV6TnciLCJtb2RlIjoicHJvYmF0aW9uIiwicmwiOnsiY2FsbHNfcGVyX21pbiI6MTIwLCJwYW5lbF9wZXJfdXNlcl9ob3VyIjoxMH0sInN1YiI6InN1Yl81NWU1ODFiNDZmNTAiLCJ0b29sIjoiaGVscGRlc2siLCJ0eXAiOiJ0aWNrZXQiLCJ2IjoxfQ._nDZO7LrkpV8vs_-DWd6Y_1Yfi_ck6SJsiommpOZkbBaakmePbBviHonEl4gx66zTJhgg2V8GN45muHycCevCA",
+       "Atrium-Date": "1791936000",
+       "Atrium-Nonce": "2M9lHPymvmE4egUZPi8RAw",
+       "Atrium-Signature": "EB1GF0kZaFhip9cMXF99jNyVvJQcDWGRuZUD5VxQF3hMPks8Az2Oo5NuC8f2mBWY25zoEsjNh4ITR6BW4AotCQ"
+      },
+      "body_b64": "eyJwYXJhbXMiOnt9fQ",
+      "expect": {
+       "status": 401,
+       "code": "replay"
+      }
+     }
+    ]
+   },
+   {
+    "id": "V9",
+    "title": "a request dated 5 minutes ago is refused",
+    "steps": [
+     {
+      "method": "POST",
+      "path": "/.atrium/v1/call/atrium.ping",
+      "headers": {
+       "Content-Type": "application/json",
+       "Atrium-Ticket": "AT1.eyJhY3QiOlsiYXRyaXVtLnBpbmciLCJhdHJpdW0uZGVzY3JpYmUiLCJhdHJpdW0ubm9vcF93cml0ZSIsImF0cml1bS5yZWNlaXB0Il0sImNuZiI6IjBESFlqU2RxOWVPbFV3eUNWUnNEVjgtYlU2aUo2cGl6d0dVSjlIcDVWLXMiLCJjdiI6MCwiZXhwIjoxNzkxOTM2MDYwLCJpYXQiOjE3OTE5MzYwMDAsImp0aSI6IjdTU2ZmWU5pSjcyUTBnOFp3MHlJekEiLCJtb2RlIjoicHJvYmF0aW9uIiwicmwiOnsiY2FsbHNfcGVyX21pbiI6MTIwLCJwYW5lbF9wZXJfdXNlcl9ob3VyIjoxMH0sInN1YiI6InN1Yl81NWU1ODFiNDZmNTAiLCJ0b29sIjoiaGVscGRlc2siLCJ0eXAiOiJ0aWNrZXQiLCJ2IjoxfQ.9PrgLtLm8RIocpGeQ_HdRkhFl3V3YAISLj7I4mLkrNXZlTxLbS_u_Tq2ywV38xzlshcbtGyXlOec5fV_AXX1AA",
+       "Atrium-Date": "1791935700",
+       "Atrium-Nonce": "kjDOWxKvrgHBIzhDaoUGAA",
+       "Atrium-Signature": "YN2jdVSioHk0ouHTbVU5kLhHjJBrMth2Gj_DWsVrz5WwGKRmAJpsrbeTFu9JZ6QzDu2FOnhbhdWsMn-2SeSNAA"
+      },
+      "body_b64": "eyJwYXJhbXMiOnt9fQ",
+      "expect": {
+       "status": 401,
+       "code": "expired"
+      }
+     }
+    ]
+   },
+   {
+    "id": "V10",
+    "title": "a probation ticket cannot call a manifest action",
+    "steps": [
+     {
+      "method": "POST",
+      "path": "/.atrium/v1/call/tickets.list",
+      "headers": {
+       "Content-Type": "application/json",
+       "Atrium-Ticket": "AT1.eyJhY3QiOlsiYXRyaXVtLnBpbmciLCJhdHJpdW0uZGVzY3JpYmUiLCJhdHJpdW0ubm9vcF93cml0ZSIsImF0cml1bS5yZWNlaXB0IiwidGlja2V0cy5saXN0Il0sImNuZiI6IjBESFlqU2RxOWVPbFV3eUNWUnNEVjgtYlU2aUo2cGl6d0dVSjlIcDVWLXMiLCJjdiI6MCwiZXhwIjoxNzkxOTM2MDYwLCJpYXQiOjE3OTE5MzYwMDAsImp0aSI6IkQyZmlISUkteGNKWVYzV1RvN1c4ZWciLCJtb2RlIjoicHJvYmF0aW9uIiwicmwiOnsiY2FsbHNfcGVyX21pbiI6MTIwLCJwYW5lbF9wZXJfdXNlcl9ob3VyIjoxMH0sInN1YiI6InN1Yl81NWU1ODFiNDZmNTAiLCJ0b29sIjoiaGVscGRlc2siLCJ0eXAiOiJ0aWNrZXQiLCJ2IjoxfQ.o3qj2JK7Dz3TJ_k3PL-oHCcFTBp0spRBrF9h-HzmhH83b-qvEPenvrCyXHPPT07qhnEPjezGC457WkQLtKvaCA",
+       "Atrium-Date": "1791936000",
+       "Atrium-Nonce": "UIns8yDqfbCx6nQE3fSxNg",
+       "Atrium-Signature": "-PCzLCc_LOrgx1_mXSpZ1bTD3i7aobAeAAReBbASQ7KXkdjoA_90l2nU9Q1lBtALpdNTcuqGLlvy92ZoOz7PBQ"
+      },
+      "body_b64": "eyJwYXJhbXMiOnt9fQ",
+      "expect": {
+       "status": 403,
+       "code": "probation"
+      }
+     }
+    ]
+   },
+   {
+    "id": "V11",
+    "title": "an action the ticket does not list is refused",
+    "steps": [
+     {
+      "method": "POST",
+      "path": "/.atrium/v1/call/atrium.describe",
+      "headers": {
+       "Content-Type": "application/json",
+       "Atrium-Ticket": "AT1.eyJhY3QiOlsiYXRyaXVtLnBpbmciXSwiY25mIjoiMERIWWpTZHE5ZU9sVXd5Q1ZSc0RWOC1iVTZpSjZwaXp3R1VKOUhwNVYtcyIsImN2IjowLCJleHAiOjE3OTE5MzYwNjAsImlhdCI6MTc5MTkzNjAwMCwianRpIjoiZ3BtS0F0b2JldFg5LW9hLXVUNjZLZyIsIm1vZGUiOiJwcm9iYXRpb24iLCJybCI6eyJjYWxsc19wZXJfbWluIjoxMjAsInBhbmVsX3Blcl91c2VyX2hvdXIiOjEwfSwic3ViIjoic3ViXzU1ZTU4MWI0NmY1MCIsInRvb2wiOiJoZWxwZGVzayIsInR5cCI6InRpY2tldCIsInYiOjF9.KGctM1GTDMy6d-aAChmFypDMn4ThMuB36jeYIzk3dH1mwBGvCxziYVTx7h2yr_Q31rB7s2jxrCCJ3YyfLjCmDQ",
+       "Atrium-Date": "1791936000",
+       "Atrium-Nonce": "5yDkNiyU2o2s099QNBq9sA",
+       "Atrium-Signature": "asWti6eR6S8mmSw36PVoVdFBQ_0TzWw1NYZur-MGmgyw-NFwyH94hArxnQ_je_HqYeL366rC-zaSY5fhxfcbAA"
+      },
+      "body_b64": "eyJwYXJhbXMiOnt9fQ",
+      "expect": {
+       "status": 403,
+       "code": "action_not_allowed"
+      }
+     }
+    ]
+   },
+   {
+    "id": "V12",
+    "title": "a write without a grant is refused (atrium.noop_write and each manifest write or admin action)",
+    "steps": [
+     {
+      "method": "POST",
+      "path": "/.atrium/v1/call/atrium.noop_write",
+      "headers": {
+       "Content-Type": "application/json",
+       "Atrium-Ticket": "AT1.eyJhY3QiOlsiYXRyaXVtLnBpbmciLCJhdHJpdW0uZGVzY3JpYmUiLCJhdHJpdW0ubm9vcF93cml0ZSIsImF0cml1bS5yZWNlaXB0Il0sImNuZiI6IjBESFlqU2RxOWVPbFV3eUNWUnNEVjgtYlU2aUo2cGl6d0dVSjlIcDVWLXMiLCJjdiI6MCwiZXhwIjoxNzkxOTM2MDYwLCJpYXQiOjE3OTE5MzYwMDAsImp0aSI6InI3RU9PaEpGdTlETmhPTDlfak9oWHciLCJtb2RlIjoicHJvYmF0aW9uIiwicmwiOnsiY2FsbHNfcGVyX21pbiI6MTIwLCJwYW5lbF9wZXJfdXNlcl9ob3VyIjoxMH0sInN1YiI6InN1Yl81NWU1ODFiNDZmNTAiLCJ0b29sIjoiaGVscGRlc2siLCJ0eXAiOiJ0aWNrZXQiLCJ2IjoxfQ.SV9RPLJemAP04ZKFSqks-fVmPlFhxtABfv4QClTlAAQBYa3h8AQ74CCBAKCr4rFHRhTvm1hR4AjKsUFVCoJPCg",
+       "Atrium-Date": "1791936000",
+       "Atrium-Nonce": "8yB3SAMKHgA5ibo2-ND8JQ",
+       "Atrium-Signature": "mrjnxCCoWmxQxETPWZSqD4KyoH0hNzCGROB3PQ0ZWNl0lXg0Q8bnFoW4Tux11kH5X2RNhDM32EczBlP1e6FaCQ"
+      },
+      "body_b64": "eyJwYXJhbXMiOnsiZWNobyI6ImNvbmZvcm1hbmNlIn19",
+      "expect": {
+       "status": 403,
+       "code": "grant_required"
+      }
+     },
+     {
+      "method": "POST",
+      "path": "/.atrium/v1/call/tickets.set_priority",
+      "headers": {
+       "Content-Type": "application/json",
+       "Atrium-Ticket": "AT1.eyJhY3QiOlsidGlja2V0cy5zZXRfcHJpb3JpdHkiXSwiY25mIjoiMERIWWpTZHE5ZU9sVXd5Q1ZSc0RWOC1iVTZpSjZwaXp3R1VKOUhwNVYtcyIsImN2IjowLCJleHAiOjE3OTE5MzYwNjAsImlhdCI6MTc5MTkzNjAwMCwianRpIjoiTXRDU0dDUnZyZkYwUEQtNldfRGZsQSIsIm1vZGUiOiJhY3RpdmUiLCJybCI6eyJjYWxsc19wZXJfbWluIjowLCJwYW5lbF9wZXJfdXNlcl9ob3VyIjoxMH0sInN1YiI6InN1Yl81NWU1ODFiNDZmNTAiLCJ0b29sIjoiaGVscGRlc2siLCJ0eXAiOiJ0aWNrZXQiLCJ2IjoxfQ.ZjHGNU5JqiJXi0wdOO4ateNlE1A61l4nFJUsTxDp6a3sY_98Ax6q_QWpScWSRPxWWMwNKscgU17CSFG0fyLHBw",
+       "Atrium-Date": "1791936000",
+       "Atrium-Nonce": "fNMSltWPtzbucJ8971QEGA",
+       "Atrium-On-Behalf-Of": "atrium-conformance-probe",
+       "Atrium-Signature": "JuBD1ZmcpRga-YPTI4zK32_vTYiNtSLSJEC35_h7Lq2VYpCGcs3-b_zngpztqXta07YTYlLZ6Xm40C51lF1cAQ"
+      },
+      "body_b64": "eyJwYXJhbXMiOnsicHJpb3JpdHkiOiJsb3ciLCJ0aWNrZXRfaWQiOjkwMDcxOTkyNTQ3NDA5OTF9fQ",
+      "expect": {
+       "status": 403,
+       "code": "grant_required"
+      }
+     },
+     {
+      "method": "POST",
+      "path": "/.atrium/v1/call/tickets.delete",
+      "headers": {
+       "Content-Type": "application/json",
+       "Atrium-Ticket": "AT1.eyJhY3QiOlsidGlja2V0cy5kZWxldGUiXSwiY25mIjoiMERIWWpTZHE5ZU9sVXd5Q1ZSc0RWOC1iVTZpSjZwaXp3R1VKOUhwNVYtcyIsImN2IjowLCJleHAiOjE3OTE5MzYwNjAsImlhdCI6MTc5MTkzNjAwMCwianRpIjoiZHJ5X3RzdHpmemE1T2paZFZNRDBfUSIsIm1vZGUiOiJhY3RpdmUiLCJybCI6eyJjYWxsc19wZXJfbWluIjowLCJwYW5lbF9wZXJfdXNlcl9ob3VyIjoxMH0sInN1YiI6InN1Yl81NWU1ODFiNDZmNTAiLCJ0b29sIjoiaGVscGRlc2siLCJ0eXAiOiJ0aWNrZXQiLCJ2IjoxfQ.8cj5gJcj_jqz3JSDO7T1E8InzYI9HiY6SuA2pewBzFJkaVARvGnB8p7h2RS55YkpxMOjGmbQmUq4BG6-5fhoAg",
+       "Atrium-Date": "1791936000",
+       "Atrium-Nonce": "5RYFiO0ui90NiY9C1pWmgw",
+       "Atrium-On-Behalf-Of": "atrium-conformance-probe",
+       "Atrium-Signature": "LOychULYIjnf0MQF_KmpWvfkzqN6AwuvjMnoUbSeW0oiFiKd-p0L_sfFXWfCFDq0j0HxCRgcadosB3yCigHaCw"
+      },
+      "body_b64": "eyJwYXJhbXMiOnsidGlja2V0X2lkIjo5MDA3MTk5MjU0NzQwOTkxfX0",
+      "expect": {
+       "status": 403,
+       "code": "grant_required"
+      }
+     }
+    ]
+   },
+   {
+    "id": "V13",
+    "title": "a grant for another body is refused (atrium.noop_write and each manifest write or admin action)",
+    "steps": [
+     {
+      "method": "POST",
+      "path": "/.atrium/v1/call/atrium.noop_write",
+      "headers": {
+       "Content-Type": "application/json",
+       "Atrium-Ticket": "AT1.eyJhY3QiOlsiYXRyaXVtLnBpbmciLCJhdHJpdW0uZGVzY3JpYmUiLCJhdHJpdW0ubm9vcF93cml0ZSIsImF0cml1bS5yZWNlaXB0Il0sImNuZiI6IjBESFlqU2RxOWVPbFV3eUNWUnNEVjgtYlU2aUo2cGl6d0dVSjlIcDVWLXMiLCJjdiI6MCwiZXhwIjoxNzkxOTM2MDYwLCJpYXQiOjE3OTE5MzYwMDAsImp0aSI6Ik1VYmNON251RHlUcjllVUZ6Nmk0QlEiLCJtb2RlIjoicHJvYmF0aW9uIiwicmwiOnsiY2FsbHNfcGVyX21pbiI6MTIwLCJwYW5lbF9wZXJfdXNlcl9ob3VyIjoxMH0sInN1YiI6InN1Yl81NWU1ODFiNDZmNTAiLCJ0b29sIjoiaGVscGRlc2siLCJ0eXAiOiJ0aWNrZXQiLCJ2IjoxfQ.DrPlQMnj5gLdiow4q4X-2VkYSS4m6VkqO3FveIzivrB-z7JRgSAdhQqkWnWBMKh2VKRPBi6MMi5Jc-EFePJODA",
+       "Atrium-Date": "1791936000",
+       "Atrium-Nonce": "qwhodJSlU89mrYWWkhO-hA",
+       "Atrium-Grant": "AG1.eyJhY3QiOiJhdHJpdW0ubm9vcF93cml0ZSIsImFwdiI6ImNvbmZvcm1hbmNlIiwiYmgiOiJBS1JjVWNjQjdRNEphTFdwd0JlZ0U2ck9IZ0JyQ2JscDdGZm1yNl80eTJvIiwiY3YiOjAsImV4cCI6MTc5MTkzNjA2MCwiaWF0IjoxNzkxOTM2MDAwLCJqdGkiOiJ2dkZ2SnYwZ3Y4dGxEWnZJcGJoeG1nIiwic3ViIjoic3ViXzU1ZTU4MWI0NmY1MCIsInRvb2wiOiJoZWxwZGVzayIsInR5cCI6ImdyYW50IiwidiI6MX0.Dqv_NriD-33KX7lvft0269okwnYZyub8C9OlNHmFfmrA74kT-1I_hJ3teurgcYzzHCBd18dwPeXi98sUQpaZDQ",
+       "Atrium-Signature": "JTVcaUSyAtVidVkGGSAtaOFPoprChZIIdBT-GrmQ8PMm-4Awf2ot5lfI78xEMgVUGpYwEK7S1AGqKz5TAlXVDg"
+      },
+      "body_b64": "eyJwYXJhbXMiOnsiZWNobyI6ImNvbmZvcm1hbmNlIn19",
+      "expect": {
+       "status": 403,
+       "code": "grant_mismatch"
+      }
+     },
+     {
+      "method": "POST",
+      "path": "/.atrium/v1/call/tickets.set_priority",
+      "headers": {
+       "Content-Type": "application/json",
+       "Atrium-Ticket": "AT1.eyJhY3QiOlsidGlja2V0cy5zZXRfcHJpb3JpdHkiXSwiY25mIjoiMERIWWpTZHE5ZU9sVXd5Q1ZSc0RWOC1iVTZpSjZwaXp3R1VKOUhwNVYtcyIsImN2IjowLCJleHAiOjE3OTE5MzYwNjAsImlhdCI6MTc5MTkzNjAwMCwianRpIjoidWdMVWVDTjJRM2lKbXJtY19tMHFkZyIsIm1vZGUiOiJhY3RpdmUiLCJybCI6eyJjYWxsc19wZXJfbWluIjowLCJwYW5lbF9wZXJfdXNlcl9ob3VyIjoxMH0sInN1YiI6InN1Yl81NWU1ODFiNDZmNTAiLCJ0b29sIjoiaGVscGRlc2siLCJ0eXAiOiJ0aWNrZXQiLCJ2IjoxfQ.WLAiqC7W1INEBnPpOJ7Zu2B4GeyvNCFL4CqVn9GrLEacApwiXaRn7ZdpL1v6sRdeCeoZWymCzUkSJFg-2-IcAQ",
+       "Atrium-Date": "1791936000",
+       "Atrium-Nonce": "eicMAgohlXgRV83ftWCsug",
+       "Atrium-Grant": "AG1.eyJhY3QiOiJ0aWNrZXRzLnNldF9wcmlvcml0eSIsImFwdiI6ImNvbmZvcm1hbmNlIiwiYmgiOiJoaDNvTUd2SEozcXo5dGxEZU0xSlotUTUyTWxmcGduNXJuNURZc3NNaXN3IiwiY3YiOjAsImV4cCI6MTc5MTkzNjA2MCwiaWF0IjoxNzkxOTM2MDAwLCJqdGkiOiJ1Q2hocWx5RVBNNzFlMzJ6VVBKODB3Iiwic3ViIjoic3ViXzU1ZTU4MWI0NmY1MCIsInRvb2wiOiJoZWxwZGVzayIsInR5cCI6ImdyYW50IiwidiI6MX0.XZejw0PHfXWaHMaikrqT483d95UJJX8Z5n4A4L309DDkl5DzmSSTtECltSqUtvdzPAXQ3CqFpHk-o53IBEQsDQ",
+       "Atrium-On-Behalf-Of": "atrium-conformance-probe",
+       "Atrium-Signature": "2BAegMxZi5k4wJnEpuBCHwNAsSLGamL0VHpzETP5cJRHwO3lA8Ctf0ZswRI760srFs_K4jJmzKOsD4P7BLsaBw"
+      },
+      "body_b64": "eyJwYXJhbXMiOnsicHJpb3JpdHkiOiJsb3ciLCJ0aWNrZXRfaWQiOjkwMDcxOTkyNTQ3NDA5OTF9fQ",
+      "expect": {
+       "status": 403,
+       "code": "grant_mismatch"
+      }
+     },
+     {
+      "method": "POST",
+      "path": "/.atrium/v1/call/tickets.delete",
+      "headers": {
+       "Content-Type": "application/json",
+       "Atrium-Ticket": "AT1.eyJhY3QiOlsidGlja2V0cy5kZWxldGUiXSwiY25mIjoiMERIWWpTZHE5ZU9sVXd5Q1ZSc0RWOC1iVTZpSjZwaXp3R1VKOUhwNVYtcyIsImN2IjowLCJleHAiOjE3OTE5MzYwNjAsImlhdCI6MTc5MTkzNjAwMCwianRpIjoickhlLV9pX0R1bldGaDUzS2V6MXlUQSIsIm1vZGUiOiJhY3RpdmUiLCJybCI6eyJjYWxsc19wZXJfbWluIjowLCJwYW5lbF9wZXJfdXNlcl9ob3VyIjoxMH0sInN1YiI6InN1Yl81NWU1ODFiNDZmNTAiLCJ0b29sIjoiaGVscGRlc2siLCJ0eXAiOiJ0aWNrZXQiLCJ2IjoxfQ.1N896aCRZYA05yY2p-0I6-ASnk4AB48fkxLBuVKeYM-0Bf9GmtR_5u3QF8vx8NbYVvVmp0TrptAnkLr1r5tzCA",
+       "Atrium-Date": "1791936000",
+       "Atrium-Nonce": "eJyozaezgkmnu40Tj0T5zA",
+       "Atrium-Grant": "AG1.eyJhY3QiOiJ0aWNrZXRzLmRlbGV0ZSIsImFwdiI6ImNvbmZvcm1hbmNlIiwiYmgiOiJHeHJCLXhzLVNINmswMWxFYXU4Z2o4Mk1kaW1EMzZEUXdMcnAwZl9jQTBvIiwiY3YiOjAsImV4cCI6MTc5MTkzNjA2MCwiaWF0IjoxNzkxOTM2MDAwLCJqdGkiOiI2VmJBUXp4UnFqZ0hqbl9XLXRYb3hnIiwic3ViIjoic3ViXzU1ZTU4MWI0NmY1MCIsInRvb2wiOiJoZWxwZGVzayIsInR5cCI6ImdyYW50IiwidiI6MX0.pitX922ui1FDJudEUV_9TTsnfm1WYQSNoQd02hRdL40VdJfbOI9XrzR3MPca8D0UxTmzli7MOXqdt9J6jmHeCA",
+       "Atrium-On-Behalf-Of": "atrium-conformance-probe",
+       "Atrium-Signature": "4nukzEbTmTdXzPVLIas8Ot-Js0vK3BdKsOYQ8QNqoXp2Y-aFwWNG317pS4-OBBI8NF4cEbvf7m-52uDR_qWYCw"
+      },
+      "body_b64": "eyJwYXJhbXMiOnsidGlja2V0X2lkIjo5MDA3MTk5MjU0NzQwOTkxfX0",
+      "expect": {
+       "status": 403,
+       "code": "grant_mismatch"
+      }
+     }
+    ]
+   },
+   {
+    "id": "V14",
+    "title": "a grant for another tool, then for another action, is refused",
+    "steps": [
+     {
+      "method": "POST",
+      "path": "/.atrium/v1/call/atrium.noop_write",
+      "headers": {
+       "Content-Type": "application/json",
+       "Atrium-Ticket": "AT1.eyJhY3QiOlsiYXRyaXVtLnBpbmciLCJhdHJpdW0uZGVzY3JpYmUiLCJhdHJpdW0ubm9vcF93cml0ZSIsImF0cml1bS5yZWNlaXB0Il0sImNuZiI6IjBESFlqU2RxOWVPbFV3eUNWUnNEVjgtYlU2aUo2cGl6d0dVSjlIcDVWLXMiLCJjdiI6MCwiZXhwIjoxNzkxOTM2MDYwLCJpYXQiOjE3OTE5MzYwMDAsImp0aSI6IlFvN0RYaDl2eU10QjFjQ1dkSDlwSmciLCJtb2RlIjoicHJvYmF0aW9uIiwicmwiOnsiY2FsbHNfcGVyX21pbiI6MTIwLCJwYW5lbF9wZXJfdXNlcl9ob3VyIjoxMH0sInN1YiI6InN1Yl81NWU1ODFiNDZmNTAiLCJ0b29sIjoiaGVscGRlc2siLCJ0eXAiOiJ0aWNrZXQiLCJ2IjoxfQ.7akFhrwJZd3VEJ-X3zqM6Y4aQk9-CbmdQaLi_dgsPmUYBtRnFp6ks5o6pr-fT96k0wgDw6V-8bk9FZqXBoYHDA",
+       "Atrium-Date": "1791936000",
+       "Atrium-Nonce": "6swD_S9U62yjX7NqlGNefg",
+       "Atrium-Grant": "AG1.eyJhY3QiOiJhdHJpdW0ubm9vcF93cml0ZSIsImFwdiI6ImNvbmZvcm1hbmNlIiwiYmgiOiJTMXl1RkhONFc5endOaVhYWmViSHo2Zm1BSGhwaW1CNDl5VVdMTlJrbmw0IiwiY3YiOjAsImV4cCI6MTc5MTkzNjA2MCwiaWF0IjoxNzkxOTM2MDAwLCJqdGkiOiI3SGNoeVJlam9HV2p6djE5MUd5Z1h3Iiwic3ViIjoic3ViXzU1ZTU4MWI0NmY1MCIsInRvb2wiOiJoZWxwZGVzay1vdGhlciIsInR5cCI6ImdyYW50IiwidiI6MX0.kE-7UJw_tFVimuoBl14-SVUu_7Xox0Xof90g158jVUod3aD1qNqInmowsUnFsC8EF2DSeswSD4YLavaFdiOQAQ",
+       "Atrium-Signature": "2aaqox-Op81VHx0E7rq9saB7JHLcgdWoBSWPNXtXtQtv4HI7bOwZ1W3akH4zKjXho1SH4AJwgeBbyDU3ZRy_CQ"
+      },
+      "body_b64": "eyJwYXJhbXMiOnsiZWNobyI6ImNvbmZvcm1hbmNlIn19",
+      "expect": {
+       "status": 403,
+       "code": "grant_mismatch"
+      }
+     },
+     {
+      "method": "POST",
+      "path": "/.atrium/v1/call/atrium.noop_write",
+      "headers": {
+       "Content-Type": "application/json",
+       "Atrium-Ticket": "AT1.eyJhY3QiOlsiYXRyaXVtLnBpbmciLCJhdHJpdW0uZGVzY3JpYmUiLCJhdHJpdW0ubm9vcF93cml0ZSIsImF0cml1bS5yZWNlaXB0Il0sImNuZiI6IjBESFlqU2RxOWVPbFV3eUNWUnNEVjgtYlU2aUo2cGl6d0dVSjlIcDVWLXMiLCJjdiI6MCwiZXhwIjoxNzkxOTM2MDYwLCJpYXQiOjE3OTE5MzYwMDAsImp0aSI6IlB3LWJaVVdfaXB3OXdmczdXUnNFWUEiLCJtb2RlIjoicHJvYmF0aW9uIiwicmwiOnsiY2FsbHNfcGVyX21pbiI6MTIwLCJwYW5lbF9wZXJfdXNlcl9ob3VyIjoxMH0sInN1YiI6InN1Yl81NWU1ODFiNDZmNTAiLCJ0b29sIjoiaGVscGRlc2siLCJ0eXAiOiJ0aWNrZXQiLCJ2IjoxfQ.xwZDDoTOW19Iil9a4kVIOQYa7_h7eQtMVJzKF9jPCFBmxe05MdSp18fyOkw1_PA4jjEXwNl6_6d92ehTRZQaBg",
+       "Atrium-Date": "1791936000",
+       "Atrium-Nonce": "3cWC90TyJG_wDHBPC21jWA",
+       "Atrium-Grant": "AG1.eyJhY3QiOiJhdHJpdW0ucmVjZWlwdCIsImFwdiI6ImNvbmZvcm1hbmNlIiwiYmgiOiJTMXl1RkhONFc5endOaVhYWmViSHo2Zm1BSGhwaW1CNDl5VVdMTlJrbmw0IiwiY3YiOjAsImV4cCI6MTc5MTkzNjA2MCwiaWF0IjoxNzkxOTM2MDAwLCJqdGkiOiJONVlaU1k3bnVuMTA0eXQ5RGdvZDh3Iiwic3ViIjoic3ViXzU1ZTU4MWI0NmY1MCIsInRvb2wiOiJoZWxwZGVzayIsInR5cCI6ImdyYW50IiwidiI6MX0.-896gEzWRzqvo31aB4xE3ggR8RVcfLutfwmQdjB2EU2DWCrGrWOr4oSOYW0Sgf2I9rIFwaO4CezBDqlxhzN-Cw",
+       "Atrium-Signature": "7XdoAbRGuyIP4BN-XZmIschOeO7zut8hbT8Xr_aDqVDcWd3gvIbwrq_wUoOfDb7hW6Y1wJt96vUB1LuSqqtgCw"
+      },
+      "body_b64": "eyJwYXJhbXMiOnsiZWNobyI6ImNvbmZvcm1hbmNlIn19",
+      "expect": {
+       "status": 403,
+       "code": "grant_mismatch"
+      }
+     }
+    ]
+   },
+   {
+    "id": "V15",
+    "title": "a valid grant is used once",
+    "steps": [
+     {
+      "method": "POST",
+      "path": "/.atrium/v1/call/atrium.noop_write",
+      "headers": {
+       "Content-Type": "application/json",
+       "Atrium-Ticket": "AT1.eyJhY3QiOlsiYXRyaXVtLnBpbmciLCJhdHJpdW0uZGVzY3JpYmUiLCJhdHJpdW0ubm9vcF93cml0ZSIsImF0cml1bS5yZWNlaXB0Il0sImNuZiI6IjBESFlqU2RxOWVPbFV3eUNWUnNEVjgtYlU2aUo2cGl6d0dVSjlIcDVWLXMiLCJjdiI6MCwiZXhwIjoxNzkxOTM2MDYwLCJpYXQiOjE3OTE5MzYwMDAsImp0aSI6ImRWY3JaT0FIMWRtOHNTa2JFZkVaMHciLCJtb2RlIjoicHJvYmF0aW9uIiwicmwiOnsiY2FsbHNfcGVyX21pbiI6MTIwLCJwYW5lbF9wZXJfdXNlcl9ob3VyIjoxMH0sInN1YiI6InN1Yl81NWU1ODFiNDZmNTAiLCJ0b29sIjoiaGVscGRlc2siLCJ0eXAiOiJ0aWNrZXQiLCJ2IjoxfQ.SjS63roUyaDtlNltrY2Tv3_DKFM1RtotoYjKHK8-kyX1I5PUxqS6KrG0qgRNNT-g6wZyTeCs1Iy9T4p63vZBDw",
+       "Atrium-Date": "1791936000",
+       "Atrium-Nonce": "YtRTOZrZWXRXehqVQxQKqw",
+       "Atrium-Grant": "AG1.eyJhY3QiOiJhdHJpdW0ubm9vcF93cml0ZSIsImFwdiI6ImNvbmZvcm1hbmNlIiwiYmgiOiJTMXl1RkhONFc5endOaVhYWmViSHo2Zm1BSGhwaW1CNDl5VVdMTlJrbmw0IiwiY3YiOjAsImV4cCI6MTc5MTkzNjA2MCwiaWF0IjoxNzkxOTM2MDAwLCJqdGkiOiJJa0dEMnRSUWxMcVhRVTBNcTlhMFhnIiwic3ViIjoic3ViXzU1ZTU4MWI0NmY1MCIsInRvb2wiOiJoZWxwZGVzayIsInR5cCI6ImdyYW50IiwidiI6MX0.pW64UQyiZrwy4SB4HSBU8oneElVNw6jy55cuPlrNm_4XG__2UFwDR2CbAQgO9h_XYLF8GqcB9Bfzv35YR1L7DQ",
+       "Atrium-Signature": "WqehymluBBMMgdqDbLvHPlFA5jwlLPiXE5p_bXLVqUG4NpcVH-pCx9frQSCsFPZ1eQeYrSBNHkLVWC7RGLthCg"
+      },
+      "body_b64": "eyJwYXJhbXMiOnsiZWNobyI6ImNvbmZvcm1hbmNlIn19",
+      "expect": {
+       "status": 200,
+       "json": {
+        "ok": true,
+        "result.executed": true,
+        "result.echo": "conformance"
+       }
+      }
+     },
+     {
+      "method": "POST",
+      "path": "/.atrium/v1/call/atrium.noop_write",
+      "headers": {
+       "Content-Type": "application/json",
+       "Atrium-Ticket": "AT1.eyJhY3QiOlsiYXRyaXVtLnBpbmciLCJhdHJpdW0uZGVzY3JpYmUiLCJhdHJpdW0ubm9vcF93cml0ZSIsImF0cml1bS5yZWNlaXB0Il0sImNuZiI6IjBESFlqU2RxOWVPbFV3eUNWUnNEVjgtYlU2aUo2cGl6d0dVSjlIcDVWLXMiLCJjdiI6MCwiZXhwIjoxNzkxOTM2MDYwLCJpYXQiOjE3OTE5MzYwMDAsImp0aSI6Il93UjcxSE1BcXFMUDlTb3NXM0FqN3ciLCJtb2RlIjoicHJvYmF0aW9uIiwicmwiOnsiY2FsbHNfcGVyX21pbiI6MTIwLCJwYW5lbF9wZXJfdXNlcl9ob3VyIjoxMH0sInN1YiI6InN1Yl81NWU1ODFiNDZmNTAiLCJ0b29sIjoiaGVscGRlc2siLCJ0eXAiOiJ0aWNrZXQiLCJ2IjoxfQ.8FYHTVw560pIKKjOy1ivjgibO4h3hPds2eoMVMWJy-Oshk7ZCDZBf3h7mzek0W-Y7Ua-9vRwCFMLz6fWyh9vDg",
+       "Atrium-Date": "1791936000",
+       "Atrium-Nonce": "v3tMxdr1STVvxR9j_ou7DA",
+       "Atrium-Grant": "AG1.eyJhY3QiOiJhdHJpdW0ubm9vcF93cml0ZSIsImFwdiI6ImNvbmZvcm1hbmNlIiwiYmgiOiJTMXl1RkhONFc5endOaVhYWmViSHo2Zm1BSGhwaW1CNDl5VVdMTlJrbmw0IiwiY3YiOjAsImV4cCI6MTc5MTkzNjA2MCwiaWF0IjoxNzkxOTM2MDAwLCJqdGkiOiJJa0dEMnRSUWxMcVhRVTBNcTlhMFhnIiwic3ViIjoic3ViXzU1ZTU4MWI0NmY1MCIsInRvb2wiOiJoZWxwZGVzayIsInR5cCI6ImdyYW50IiwidiI6MX0.pW64UQyiZrwy4SB4HSBU8oneElVNw6jy55cuPlrNm_4XG__2UFwDR2CbAQgO9h_XYLF8GqcB9Bfzv35YR1L7DQ",
+       "Atrium-Signature": "IZoO2KHfxqZZ5-u1CJtEPGEVpTix5nwnfI6LC53P6hesfbmHa9NYpBe3ZIDfjqzrPkcSjcpbe_K0ntkNBgpeCw"
+      },
+      "body_b64": "eyJwYXJhbXMiOnsiZWNobyI6ImNvbmZvcm1hbmNlIn19",
+      "expect": {
+       "status": 409,
+       "code": "grant_used"
+      }
+     }
+    ]
+   },
+   {
+    "id": "V16",
+    "title": "an unknown parameter is refused before anything runs",
+    "steps": [
+     {
+      "method": "POST",
+      "path": "/.atrium/v1/call/atrium.receipt",
+      "headers": {
+       "Content-Type": "application/json",
+       "Atrium-Ticket": "AT1.eyJhY3QiOlsiYXRyaXVtLnBpbmciLCJhdHJpdW0uZGVzY3JpYmUiLCJhdHJpdW0ubm9vcF93cml0ZSIsImF0cml1bS5yZWNlaXB0Il0sImNuZiI6IjBESFlqU2RxOWVPbFV3eUNWUnNEVjgtYlU2aUo2cGl6d0dVSjlIcDVWLXMiLCJjdiI6MCwiZXhwIjoxNzkxOTM2MDYwLCJpYXQiOjE3OTE5MzYwMDAsImp0aSI6Ik5WMGtfNVQ0WnllUzU3WFp4cEU2V2ciLCJtb2RlIjoicHJvYmF0aW9uIiwicmwiOnsiY2FsbHNfcGVyX21pbiI6MTIwLCJwYW5lbF9wZXJfdXNlcl9ob3VyIjoxMH0sInN1YiI6InN1Yl81NWU1ODFiNDZmNTAiLCJ0b29sIjoiaGVscGRlc2siLCJ0eXAiOiJ0aWNrZXQiLCJ2IjoxfQ.Pch2aAKKDR1UnapIfQmBRXeRRp637xEASCr2CepewCxrh8-3SpmKWj11xdCf814PIErxoHT40FaFGoGY40WTBA",
+       "Atrium-Date": "1791936000",
+       "Atrium-Nonce": "ZsZlUv2iG_6Bx-hGa7IQfQ",
+       "Atrium-Signature": "PPV0OtURTKgSh2pFuKgfATVzsn6zhp-XIGAf_r3WssTi3EDxbTi8C8CroCUenw3MxnhXgkysTT7r7DipQF_FDQ"
+      },
+      "body_b64": "eyJwYXJhbXMiOnsiZXh0cmEiOjEsImp0aSI6IngifX0",
+      "expect": {
+       "status": 422,
+       "code": "bad_params"
+      }
+     }
+    ]
+   },
+   {
+    "id": "V17",
+    "title": "a 70 KiB body is refused",
+    "steps": [
+     {
+      "method": "POST",
+      "path": "/.atrium/v1/call/atrium.ping",
+      "headers": {
+       "Content-Type": "application/json",
+       "Atrium-Ticket": "AT1.eyJhY3QiOlsiYXRyaXVtLnBpbmciLCJhdHJpdW0uZGVzY3JpYmUiLCJhdHJpdW0ubm9vcF93cml0ZSIsImF0cml1bS5yZWNlaXB0Il0sImNuZiI6IjBESFlqU2RxOWVPbFV3eUNWUnNEVjgtYlU2aUo2cGl6d0dVSjlIcDVWLXMiLCJjdiI6MCwiZXhwIjoxNzkxOTM2MDYwLCJpYXQiOjE3OTE5MzYwMDAsImp0aSI6ImYzQlNQRElsNTc3Zk96dHZkQ1lyWVEiLCJtb2RlIjoicHJvYmF0aW9uIiwicmwiOnsiY2FsbHNfcGVyX21pbiI6MTIwLCJwYW5lbF9wZXJfdXNlcl9ob3VyIjoxMH0sInN1YiI6InN1Yl81NWU1ODFiNDZmNTAiLCJ0b29sIjoiaGVscGRlc2siLCJ0eXAiOiJ0aWNrZXQiLCJ2IjoxfQ.gU2Rhg8KZiY7VvHFytKZMSOY3PIV7lNueFB4EKnuTnZxMB0LuMV5-WOL7X-lrXJMGgQMzkwQ-U2rqkIJZAv1Aw",
+       "Atrium-Date": "1791936000",
+       "Atrium-Nonce": "_EW_EqDWnVWCRWONp0dDHg",
+       "Atrium-Signature": "SFf9Eifr9Cq_oNHardGj0YnywboSkteXCCD2lEAUOFtDXmVpAzk5hb-R1R5kOZDvG_LQKGV55-qHu3b2bZ69DA"
+      },
+      "body_b64": "eyJwYXJhbXMiOnsiZWNobyI6Inh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHgifX0",
+      "expect": {
+       "status": 413,
+       "code": "too_large"
+      }
+     }
+    ]
+   },
+   {
+    "id": "V18",
+    "title": "a JOSE-style ticket (alg none) is refused",
+    "steps": [
+     {
+      "method": "POST",
+      "path": "/.atrium/v1/call/atrium.ping",
+      "headers": {
+       "Content-Type": "application/json",
+       "Atrium-Ticket": "eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJ2IjogMSwgInR5cCI6ICJ0aWNrZXQiLCAic3ViIjogInN1Yl81NWU1ODFiNDZmNTAiLCAidG9vbCI6ICJoZWxwZGVzayIsICJtb2RlIjogImFjdGl2ZSJ9.",
+       "Atrium-Date": "1791936000",
+       "Atrium-Nonce": "LZTqYg-WE4IrgSwNOf0oAA",
+       "Atrium-Signature": "R0CIjd27PmnsfriV9dJFA2hz0f3EPDii9uVLpyAwqioektCkMbpE-uczSNiBDjfrwn752ioqJaAH_148EgwWCw"
+      },
+      "body_b64": "eyJwYXJhbXMiOnt9fQ",
+      "expect": {
+       "status": 401,
+       "code": "bad_ticket"
+      }
+     }
+    ]
+   },
+   {
+    "id": "V19",
+    "title": "ping and describe answer with the approved manifest",
+    "steps": [
+     {
+      "method": "POST",
+      "path": "/.atrium/v1/call/atrium.ping",
+      "headers": {
+       "Content-Type": "application/json",
+       "Atrium-Ticket": "AT1.eyJhY3QiOlsiYXRyaXVtLnBpbmciLCJhdHJpdW0uZGVzY3JpYmUiLCJhdHJpdW0ubm9vcF93cml0ZSIsImF0cml1bS5yZWNlaXB0Il0sImNuZiI6IjBESFlqU2RxOWVPbFV3eUNWUnNEVjgtYlU2aUo2cGl6d0dVSjlIcDVWLXMiLCJjdiI6MCwiZXhwIjoxNzkxOTM2MDYwLCJpYXQiOjE3OTE5MzYwMDAsImp0aSI6IjRmT2h5SWY5VFNXQUd2c3IwSGViM0EiLCJtb2RlIjoicHJvYmF0aW9uIiwicmwiOnsiY2FsbHNfcGVyX21pbiI6MTIwLCJwYW5lbF9wZXJfdXNlcl9ob3VyIjoxMH0sInN1YiI6InN1Yl81NWU1ODFiNDZmNTAiLCJ0b29sIjoiaGVscGRlc2siLCJ0eXAiOiJ0aWNrZXQiLCJ2IjoxfQ.hfGZ7G2Dy5XWUkJh3IxLlhnffYI49s2bdfE0KubnZQQKVwvi8T02J9yifCRjsyTdxFXbCxzhvIEowK1eTRn_Cg",
+       "Atrium-Date": "1791936000",
+       "Atrium-Nonce": "h9CUaz_JAk9RVanle9Ve3Q",
+       "Atrium-Signature": "1WXQGJRCKypmo_lWLqxYd9nuxAIStTCCIVnx8rwA90qkObadrlvLmJlgVz5o0trMbYQtaEp91Jz1LKynSZMXCg"
+      },
+      "body_b64": "eyJwYXJhbXMiOnt9fQ",
+      "expect": {
+       "status": 200,
+       "json": {
+        "ok": true,
+        "result.contract": "atrium-bridge/1",
+        "result.tool": "helpdesk",
+        "result.manifest_sha256": "107758c6b6352b38b6c970dc1c364c187fe351300ac727967483a54cb6c7afa8"
+       }
+      }
+     },
+     {
+      "method": "POST",
+      "path": "/.atrium/v1/call/atrium.describe",
+      "headers": {
+       "Content-Type": "application/json",
+       "Atrium-Ticket": "AT1.eyJhY3QiOlsiYXRyaXVtLnBpbmciLCJhdHJpdW0uZGVzY3JpYmUiLCJhdHJpdW0ubm9vcF93cml0ZSIsImF0cml1bS5yZWNlaXB0Il0sImNuZiI6IjBESFlqU2RxOWVPbFV3eUNWUnNEVjgtYlU2aUo2cGl6d0dVSjlIcDVWLXMiLCJjdiI6MCwiZXhwIjoxNzkxOTM2MDYwLCJpYXQiOjE3OTE5MzYwMDAsImp0aSI6IktWY3ZUV0p6QmJqS1E4ZzRlc1hmckEiLCJtb2RlIjoicHJvYmF0aW9uIiwicmwiOnsiY2FsbHNfcGVyX21pbiI6MTIwLCJwYW5lbF9wZXJfdXNlcl9ob3VyIjoxMH0sInN1YiI6InN1Yl81NWU1ODFiNDZmNTAiLCJ0b29sIjoiaGVscGRlc2siLCJ0eXAiOiJ0aWNrZXQiLCJ2IjoxfQ.7U0VvEaZGrEH8vA6DWNMUzgQvFirWe7kBR32lfz-qvEruU9C_7AXD0mV3eNRpDlucZTSyB5rXDYDcYvsTaUcAQ",
+       "Atrium-Date": "1791936000",
+       "Atrium-Nonce": "2NSEUmmBk3JEMyvZiNKztQ",
+       "Atrium-Signature": "qpD_m8MuW0AQNDc7CWG-0cRLt14oqE0fvzhi0XWPj4OT-2CLYh2OXexAHDEYZGcH3WtQrDDex2KjypVPy0toCQ"
+      },
+      "body_b64": "eyJwYXJhbXMiOnt9fQ",
+      "expect": {
+       "status": 200,
+       "json": {
+        "ok": true,
+        "result.contract": "atrium-bridge/1",
+        "result.tool_id": "helpdesk"
+       }
+      }
+     }
+    ]
+   },
+   {
+    "id": "V20",
+    "title": "panel.js is served byte-identical to the vendored widget",
+    "steps": [
+     {
+      "method": "GET",
+      "path": "/.atrium/panel.js",
+      "headers": {},
+      "body_b64": "",
+      "expect": {
+       "status": 200,
+       "sha256": "215cec5d7ec48add620159d9b89ef27578bec12c56391ca861732f8d600d8e88"
+      }
+     }
+    ]
+   }
+  ]
+ },
+ "units": {
+  "b64u": [
+   {
+    "in": "AAEC",
+    "ok": true,
+    "hex": "000102"
+   },
+   {
+    "in": "",
+    "ok": true,
+    "hex": ""
+   },
+   {
+    "in": "_-8",
+    "ok": true,
+    "hex": "ffef"
+   },
+   {
+    "in": "AAE",
+    "ok": true,
+    "hex": "0001"
+   },
+   {
+    "in": "AAF",
+    "ok": false
+   },
+   {
+    "in": "AAE=",
+    "ok": false
+   },
+   {
+    "in": "AA+/",
+    "ok": false
+   },
+   {
+    "in": "A",
+    "ok": false
+   },
+   {
+    "in": "AA AA",
+    "ok": false
+   }
+  ],
+  "keys": [
+   {
+    "value": "_BYYgvrKSREXyHNi5QMNA4_-qMEevKERfIG_0xn4ZMQ",
+    "ok": true,
+    "count": 1
+   },
+   {
+    "value": "_BYYgvrKSREXyHNi5QMNA4_-qMEevKERfIG_0xn4ZMQ,fH7LRHtHq54dyN0to5bIxaq5-Hbm_mt2XtOYABEAZ34",
+    "ok": true,
+    "count": 2
+   },
+   {
+    "value": " _BYYgvrKSREXyHNi5QMNA4_-qMEevKERfIG_0xn4ZMQ , fH7LRHtHq54dyN0to5bIxaq5-Hbm_mt2XtOYABEAZ34 ",
+    "ok": true,
+    "count": 2
+   },
+   {
+    "value": "",
+    "ok": false
+   },
+   {
+    "value": "_BYYgvrKSREXyHNi5QMNA4_-qMEevKERfIG_0xn4ZMQ,fH7LRHtHq54dyN0to5bIxaq5-Hbm_mt2XtOYABEAZ34,_BYYgvrKSREXyHNi5QMNA4_-qMEevKERfIG_0xn4ZMQ",
+    "ok": false
+   },
+   {
+    "value": "not-a-key",
+    "ok": false
+   },
+   {
+    "value": "_BYYgvrKSREXyHNi5QMNA4_-qMEevKERfIG_0xn4ZM",
+    "ok": false
+   },
+   {
+    "value": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    "ok": false
+   }
+  ],
+  "tickets": {
+   "keys": "_BYYgvrKSREXyHNi5QMNA4_-qMEevKERfIG_0xn4ZMQ,fH7LRHtHq54dyN0to5bIxaq5-Hbm_mt2XtOYABEAZ34",
+   "tool": "helpdesk",
+   "sub": "sub_55e581b46f50",
+   "now": 1791936000,
+   "cases": [
+    {
+     "title": "a valid ticket",
+     "token": "AT1.eyJhY3QiOlsidGlja2V0cy5saXN0IiwiYXRyaXVtLnBpbmciXSwiY25mIjoiTTZDS3E5S1pydnVET1dDdVlRc0JEam4tLTRQcTN0OXQ2UnNDU3Z0V2tVOCIsImN2IjozLCJleHAiOjE3OTE5MzY2MDAsImlhdCI6MTc5MTkzNjAwMCwianRpIjoic2VMeUdkZmRjMHRQUkRRLWIteUk4dyIsIm1vZGUiOiJhY3RpdmUiLCJybCI6eyJjYWxsc19wZXJfbWluIjozMCwicGFuZWxfcGVyX3VzZXJfaG91ciI6MTB9LCJzdWIiOiJzdWJfNTVlNTgxYjQ2ZjUwIiwidG9vbCI6ImhlbHBkZXNrIiwidHlwIjoidGlja2V0IiwidiI6MX0.cr1hoO2RRoICWojCZ-YDtti1qnWDSJT9fpWgEnc1Ic8ShvIcFVx96cLvOieO5loJlN0lJLd1gRTQT0O7SDuOCw",
+     "ok": true,
+     "payload": {
+      "act": [
+       "tickets.list",
+       "atrium.ping"
+      ],
+      "cnf": "M6CKq9KZrvuDOWCuYQsBDjn--4Pq3t9t6RsCSvtWkU8",
+      "cv": 3,
+      "exp": 1791936600,
+      "iat": 1791936000,
+      "jti": "seLyGdfdc0tPRDQ-b-yI8w",
+      "mode": "active",
+      "rl": {
+       "calls_per_min": 30,
+       "panel_per_user_hour": 10
+      },
+      "sub": "sub_55e581b46f50",
+      "tool": "helpdesk",
+      "typ": "ticket",
+      "v": 1
+     }
+    },
+    {
+     "title": "signed with the staged next key",
+     "token": "AT1.eyJhY3QiOlsidGlja2V0cy5saXN0IiwiYXRyaXVtLnBpbmciXSwiY25mIjoiTTZDS3E5S1pydnVET1dDdVlRc0JEam4tLTRQcTN0OXQ2UnNDU3Z0V2tVOCIsImN2IjozLCJleHAiOjE3OTE5MzY2MDAsImlhdCI6MTc5MTkzNjAwMCwianRpIjoiQ0drN2RuZEJhVi1jRTlzdm9xbkVFZyIsIm1vZGUiOiJhY3RpdmUiLCJybCI6eyJjYWxsc19wZXJfbWluIjozMCwicGFuZWxfcGVyX3VzZXJfaG91ciI6MTB9LCJzdWIiOiJzdWJfNTVlNTgxYjQ2ZjUwIiwidG9vbCI6ImhlbHBkZXNrIiwidHlwIjoidGlja2V0IiwidiI6MX0.jOVIjGUbugay2fyCuqzJlVrrml-4IunufeFVK7wv6xxxTumskMJSwrFn46Cz9CAjPWdREm4KAzWYyu5ZUd6vCA",
+     "ok": true,
+     "payload": {
+      "act": [
+       "tickets.list",
+       "atrium.ping"
+      ],
+      "cnf": "M6CKq9KZrvuDOWCuYQsBDjn--4Pq3t9t6RsCSvtWkU8",
+      "cv": 3,
+      "exp": 1791936600,
+      "iat": 1791936000,
+      "jti": "CGk7dndBaV-cE9svoqnEEg",
+      "mode": "active",
+      "rl": {
+       "calls_per_min": 30,
+       "panel_per_user_hour": 10
+      },
+      "sub": "sub_55e581b46f50",
+      "tool": "helpdesk",
+      "typ": "ticket",
+      "v": 1
+     }
+    },
+    {
+     "title": "a probation ticket",
+     "token": "AT1.eyJhY3QiOlsiYXRyaXVtLnBpbmciLCJhdHJpdW0uZGVzY3JpYmUiLCJhdHJpdW0ubm9vcF93cml0ZSIsImF0cml1bS5yZWNlaXB0Il0sImNuZiI6Ik02Q0txOUtacnZ1RE9XQ3VZUXNCRGpuLS00UHEzdDl0NlJzQ1N2dFdrVTgiLCJjdiI6MywiZXhwIjoxNzkxOTM2NjAwLCJpYXQiOjE3OTE5MzYwMDAsImp0aSI6IklpQ3k3YmFiQnFCVkprV1ZIR0o2anciLCJtb2RlIjoicHJvYmF0aW9uIiwicmwiOnsiY2FsbHNfcGVyX21pbiI6MzAsInBhbmVsX3Blcl91c2VyX2hvdXIiOjEwfSwic3ViIjoic3ViXzU1ZTU4MWI0NmY1MCIsInRvb2wiOiJoZWxwZGVzayIsInR5cCI6InRpY2tldCIsInYiOjF9.8aZOlEKYhjFmlel8WQ9mUCvEfhE6iti-Rlsv3vPyaC246oE9hg03GD3c0Wg2AxiXaDwa3SaS8Atym4-J2WhCAw",
+     "ok": true,
+     "payload": {
+      "act": [
+       "atrium.ping",
+       "atrium.describe",
+       "atrium.noop_write",
+       "atrium.receipt"
+      ],
+      "cnf": "M6CKq9KZrvuDOWCuYQsBDjn--4Pq3t9t6RsCSvtWkU8",
+      "cv": 3,
+      "exp": 1791936600,
+      "iat": 1791936000,
+      "jti": "IiCy7babBqBVJkWVHGJ6jw",
+      "mode": "probation",
+      "rl": {
+       "calls_per_min": 30,
+       "panel_per_user_hour": 10
+      },
+      "sub": "sub_55e581b46f50",
+      "tool": "helpdesk",
+      "typ": "ticket",
+      "v": 1
+     }
+    },
+    {
+     "title": "expired 30 s ago: within the leeway",
+     "token": "AT1.eyJhY3QiOlsidGlja2V0cy5saXN0IiwiYXRyaXVtLnBpbmciXSwiY25mIjoiTTZDS3E5S1pydnVET1dDdVlRc0JEam4tLTRQcTN0OXQ2UnNDU3Z0V2tVOCIsImN2IjozLCJleHAiOjE3OTE5MzU5NzAsImlhdCI6MTc5MTkzNTM3MCwianRpIjoicm9lZE1xSE1UbC1CbU93Y29obnpoZyIsIm1vZGUiOiJhY3RpdmUiLCJybCI6eyJjYWxsc19wZXJfbWluIjozMCwicGFuZWxfcGVyX3VzZXJfaG91ciI6MTB9LCJzdWIiOiJzdWJfNTVlNTgxYjQ2ZjUwIiwidG9vbCI6ImhlbHBkZXNrIiwidHlwIjoidGlja2V0IiwidiI6MX0.efSOQpWnymY85wilPTE0LRyAfWLNDtKEkZSDLYKs_pGVgp6wQDHB7UcI5A4MdCVtL6bXj7tK6dtZflwQfrMYCw",
+     "ok": true,
+     "payload": {
+      "act": [
+       "tickets.list",
+       "atrium.ping"
+      ],
+      "cnf": "M6CKq9KZrvuDOWCuYQsBDjn--4Pq3t9t6RsCSvtWkU8",
+      "cv": 3,
+      "exp": 1791935970,
+      "iat": 1791935370,
+      "jti": "roedMqHMTl-BmOwcohnzhg",
+      "mode": "active",
+      "rl": {
+       "calls_per_min": 30,
+       "panel_per_user_hour": 10
+      },
+      "sub": "sub_55e581b46f50",
+      "tool": "helpdesk",
+      "typ": "ticket",
+      "v": 1
+     }
+    },
+    {
+     "title": "issued 30 s in the future: within the leeway",
+     "token": "AT1.eyJhY3QiOlsidGlja2V0cy5saXN0IiwiYXRyaXVtLnBpbmciXSwiY25mIjoiTTZDS3E5S1pydnVET1dDdVlRc0JEam4tLTRQcTN0OXQ2UnNDU3Z0V2tVOCIsImN2IjozLCJleHAiOjE3OTE5MzY2MzAsImlhdCI6MTc5MTkzNjAzMCwianRpIjoiMkNNZWxTSkVGOHM3OE15ZHRwX1V5QSIsIm1vZGUiOiJhY3RpdmUiLCJybCI6eyJjYWxsc19wZXJfbWluIjozMCwicGFuZWxfcGVyX3VzZXJfaG91ciI6MTB9LCJzdWIiOiJzdWJfNTVlNTgxYjQ2ZjUwIiwidG9vbCI6ImhlbHBkZXNrIiwidHlwIjoidGlja2V0IiwidiI6MX0.Z6xJ_xOL-jBxgJtXp-726lXpzT0A4THaNEnjwBOf6Hh9jWjtL-nplsJio4yza4n5a3AMB0h1pRRDx9sT_GxyCg",
+     "ok": true,
+     "payload": {
+      "act": [
+       "tickets.list",
+       "atrium.ping"
+      ],
+      "cnf": "M6CKq9KZrvuDOWCuYQsBDjn--4Pq3t9t6RsCSvtWkU8",
+      "cv": 3,
+      "exp": 1791936630,
+      "iat": 1791936030,
+      "jti": "2CMelSJEF8s78Mydtp_UyA",
+      "mode": "active",
+      "rl": {
+       "calls_per_min": 30,
+       "panel_per_user_hour": 10
+      },
+      "sub": "sub_55e581b46f50",
+      "tool": "helpdesk",
+      "typ": "ticket",
+      "v": 1
+     }
+    },
+    {
+     "title": "signed with another key",
+     "token": "AT1.eyJhY3QiOlsidGlja2V0cy5saXN0IiwiYXRyaXVtLnBpbmciXSwiY25mIjoiTTZDS3E5S1pydnVET1dDdVlRc0JEam4tLTRQcTN0OXQ2UnNDU3Z0V2tVOCIsImN2IjozLCJleHAiOjE3OTE5MzY2MDAsImlhdCI6MTc5MTkzNjAwMCwianRpIjoiSTVxajFvR0ViQWUtSUItcnVsNnFNdyIsIm1vZGUiOiJhY3RpdmUiLCJybCI6eyJjYWxsc19wZXJfbWluIjozMCwicGFuZWxfcGVyX3VzZXJfaG91ciI6MTB9LCJzdWIiOiJzdWJfNTVlNTgxYjQ2ZjUwIiwidG9vbCI6ImhlbHBkZXNrIiwidHlwIjoidGlja2V0IiwidiI6MX0.VWuW_Xkv14N7fQYFe9wVw58S5Ouo1ZTCoabUBc4JBxS5VX2_pKh4IWLJHXHy5ich4B52khUilGFPUpbkoaRYCA",
+     "ok": false,
+     "code": "bad_ticket"
+    },
+    {
+     "title": "the payload changed after signing",
+     "ok": false,
+     "code": "bad_ticket",
+     "token": "AT1.eyJhY3QiOlsidGlja2V0cy5kZWxldGUiXSwiY25mIjoiTTZDS3E5S1pydnVET1dDdVlRc0JEam4tLTRQcTN0OXQ2UnNDU3Z0V2tVOCIsImN2IjozLCJleHAiOjE3OTE5MzY2MDAsImlhdCI6MTc5MTkzNjAwMCwianRpIjoieCIsIm1vZGUiOiJhY3RpdmUiLCJybCI6eyJjYWxsc19wZXJfbWluIjozMCwicGFuZWxfcGVyX3VzZXJfaG91ciI6MTB9LCJzdWIiOiJzdWJfNTVlNTgxYjQ2ZjUwIiwidG9vbCI6ImhlbHBkZXNrIiwidHlwIjoidGlja2V0IiwidiI6MX0.cr1hoO2RRoICWojCZ-YDtti1qnWDSJT9fpWgEnc1Ic8ShvIcFVx96cLvOieO5loJlN0lJLd1gRTQT0O7SDuOCw"
+    },
+    {
+     "title": "the AG1 prefix on a ticket",
+     "token": "AG1.eyJhY3QiOlsidGlja2V0cy5saXN0IiwiYXRyaXVtLnBpbmciXSwiY25mIjoiTTZDS3E5S1pydnVET1dDdVlRc0JEam4tLTRQcTN0OXQ2UnNDU3Z0V2tVOCIsImN2IjozLCJleHAiOjE3OTE5MzY2MDAsImlhdCI6MTc5MTkzNjAwMCwianRpIjoiWmY2LWR2QktiVHh3WXdHWUtwdDRwdyIsIm1vZGUiOiJhY3RpdmUiLCJybCI6eyJjYWxsc19wZXJfbWluIjozMCwicGFuZWxfcGVyX3VzZXJfaG91ciI6MTB9LCJzdWIiOiJzdWJfNTVlNTgxYjQ2ZjUwIiwidG9vbCI6ImhlbHBkZXNrIiwidHlwIjoidGlja2V0IiwidiI6MX0.PfheeyYDwGPUo-UTMMFZ-D42SnLvpaf0SJu88yPzUF4nY9mM2hiTDhjruRzie3P3mgkV7Ub_HMelD_mH8AGeAQ",
+     "ok": false,
+     "code": "bad_ticket"
+    },
+    {
+     "title": "typ grant under AT1",
+     "token": "AT1.eyJhY3QiOlsidGlja2V0cy5saXN0IiwiYXRyaXVtLnBpbmciXSwiY25mIjoiTTZDS3E5S1pydnVET1dDdVlRc0JEam4tLTRQcTN0OXQ2UnNDU3Z0V2tVOCIsImN2IjozLCJleHAiOjE3OTE5MzY2MDAsImlhdCI6MTc5MTkzNjAwMCwianRpIjoibW5fa3ZhY1FEYzhXbmVYcTlNNnoxUSIsIm1vZGUiOiJhY3RpdmUiLCJybCI6eyJjYWxsc19wZXJfbWluIjozMCwicGFuZWxfcGVyX3VzZXJfaG91ciI6MTB9LCJzdWIiOiJzdWJfNTVlNTgxYjQ2ZjUwIiwidG9vbCI6ImhlbHBkZXNrIiwidHlwIjoiZ3JhbnQiLCJ2IjoxfQ.DP0OMUNq7iqZM1RINYpX8voU4hjUxBJZejpV96Rd3k7efS30dlYNKnjE8Q-0PpjCqkyUS_LakFYhiNgUZ9LeBw",
+     "ok": false,
+     "code": "bad_ticket"
+    },
+    {
+     "title": "v 2",
+     "token": "AT1.eyJhY3QiOlsidGlja2V0cy5saXN0IiwiYXRyaXVtLnBpbmciXSwiY25mIjoiTTZDS3E5S1pydnVET1dDdVlRc0JEam4tLTRQcTN0OXQ2UnNDU3Z0V2tVOCIsImN2IjozLCJleHAiOjE3OTE5MzY2MDAsImlhdCI6MTc5MTkzNjAwMCwianRpIjoiN2M1OUdDeldmYlZiOENSWTNEbEhoQSIsIm1vZGUiOiJhY3RpdmUiLCJybCI6eyJjYWxsc19wZXJfbWluIjozMCwicGFuZWxfcGVyX3VzZXJfaG91ciI6MTB9LCJzdWIiOiJzdWJfNTVlNTgxYjQ2ZjUwIiwidG9vbCI6ImhlbHBkZXNrIiwidHlwIjoidGlja2V0IiwidiI6Mn0.-jOwO5PNIa7rjIinP2QH80682AMfNOM6mkwlnQ_nNGe2ZUim1osCHJWLEU6rRQ3s3uf-MaQiJeTjKV59x7JgCw",
+     "ok": false,
+     "code": "bad_ticket"
+    },
+    {
+     "title": "v true",
+     "token": "AT1.eyJhY3QiOlsidGlja2V0cy5saXN0IiwiYXRyaXVtLnBpbmciXSwiY25mIjoiTTZDS3E5S1pydnVET1dDdVlRc0JEam4tLTRQcTN0OXQ2UnNDU3Z0V2tVOCIsImN2IjozLCJleHAiOjE3OTE5MzY2MDAsImlhdCI6MTc5MTkzNjAwMCwianRpIjoiY1VKVGtJa2d3WGVqWUdnc2RzaGI3QSIsIm1vZGUiOiJhY3RpdmUiLCJybCI6eyJjYWxsc19wZXJfbWluIjozMCwicGFuZWxfcGVyX3VzZXJfaG91ciI6MTB9LCJzdWIiOiJzdWJfNTVlNTgxYjQ2ZjUwIiwidG9vbCI6ImhlbHBkZXNrIiwidHlwIjoidGlja2V0IiwidiI6dHJ1ZX0.208hBx-SNn28cH2q904tlWK_5lE0drhBcNfyh97-i3O7kmysUfcXJRW1aSDuuSCAZuCMeyAl4GjrxDgA0x9TDw",
+     "ok": false,
+     "code": "bad_ticket"
+    },
+    {
+     "title": "another tool",
+     "token": "AT1.eyJhY3QiOlsidGlja2V0cy5saXN0IiwiYXRyaXVtLnBpbmciXSwiY25mIjoiTTZDS3E5S1pydnVET1dDdVlRc0JEam4tLTRQcTN0OXQ2UnNDU3Z0V2tVOCIsImN2IjozLCJleHAiOjE3OTE5MzY2MDAsImlhdCI6MTc5MTkzNjAwMCwianRpIjoicG5OcFVydXFxaWluQW5LaEFqcmRhUSIsIm1vZGUiOiJhY3RpdmUiLCJybCI6eyJjYWxsc19wZXJfbWluIjozMCwicGFuZWxfcGVyX3VzZXJfaG91ciI6MTB9LCJzdWIiOiJzdWJfNTVlNTgxYjQ2ZjUwIiwidG9vbCI6Indpa2kiLCJ0eXAiOiJ0aWNrZXQiLCJ2IjoxfQ.TuvI2hNF3LT3LXvGGldGIOJU8oGxSmqQBEOQGRxj-dzM8qC-qA8DX3gRTMvtzoyci6uIGtyYb0SIBwpsL8g_Dw",
+     "ok": false,
+     "code": "bad_ticket"
+    },
+    {
+     "title": "another subsidiary",
+     "token": "AT1.eyJhY3QiOlsidGlja2V0cy5saXN0IiwiYXRyaXVtLnBpbmciXSwiY25mIjoiTTZDS3E5S1pydnVET1dDdVlRc0JEam4tLTRQcTN0OXQ2UnNDU3Z0V2tVOCIsImN2IjozLCJleHAiOjE3OTE5MzY2MDAsImlhdCI6MTc5MTkzNjAwMCwianRpIjoiNGl0dE04aG03ZERCaVVxZnJfeElRUSIsIm1vZGUiOiJhY3RpdmUiLCJybCI6eyJjYWxsc19wZXJfbWluIjozMCwicGFuZWxfcGVyX3VzZXJfaG91ciI6MTB9LCJzdWIiOiJzdWJfMDAwMDAwMDAwMDAwIiwidG9vbCI6ImhlbHBkZXNrIiwidHlwIjoidGlja2V0IiwidiI6MX0.xmkfYdyuSbB0CWshub0zp7H57-OCDNtskNUuV5uBwnCxC0oVWvX5bXKNUaanF1tDPVAHFr_RqBOK5k-1b5OVDg",
+     "ok": false,
+     "code": "bad_ticket"
+    },
+    {
+     "title": "expired",
+     "token": "AT1.eyJhY3QiOlsidGlja2V0cy5saXN0IiwiYXRyaXVtLnBpbmciXSwiY25mIjoiTTZDS3E5S1pydnVET1dDdVlRc0JEam4tLTRQcTN0OXQ2UnNDU3Z0V2tVOCIsImN2IjozLCJleHAiOjE3OTE5MzU5MDAsImlhdCI6MTc5MTkzNTMwMCwianRpIjoieDEtYUhWNjNmd3I0aVVjb0oxWFRidyIsIm1vZGUiOiJhY3RpdmUiLCJybCI6eyJjYWxsc19wZXJfbWluIjozMCwicGFuZWxfcGVyX3VzZXJfaG91ciI6MTB9LCJzdWIiOiJzdWJfNTVlNTgxYjQ2ZjUwIiwidG9vbCI6ImhlbHBkZXNrIiwidHlwIjoidGlja2V0IiwidiI6MX0.NTE8Uyp9IGtvyi09H2Kn9aiqM8Dvzp9BUG4FJ3AX0Cev0ZmY-LvzNlZ-8JP_B0oJ7Ro702vwxJC2rz_yCgt-Dw",
+     "ok": false,
+     "code": "expired"
+    },
+    {
+     "title": "issued 2 minutes in the future",
+     "token": "AT1.eyJhY3QiOlsidGlja2V0cy5saXN0IiwiYXRyaXVtLnBpbmciXSwiY25mIjoiTTZDS3E5S1pydnVET1dDdVlRc0JEam4tLTRQcTN0OXQ2UnNDU3Z0V2tVOCIsImN2IjozLCJleHAiOjE3OTE5MzY3MjAsImlhdCI6MTc5MTkzNjEyMCwianRpIjoiRk8zY1VVcEZZX0JqTDdLS0toT0t1QSIsIm1vZGUiOiJhY3RpdmUiLCJybCI6eyJjYWxsc19wZXJfbWluIjozMCwicGFuZWxfcGVyX3VzZXJfaG91ciI6MTB9LCJzdWIiOiJzdWJfNTVlNTgxYjQ2ZjUwIiwidG9vbCI6ImhlbHBkZXNrIiwidHlwIjoidGlja2V0IiwidiI6MX0.rJ3fgorqCskUGXPP52xMvhSF2-h9hkWrKWwfzRPqVd3npHSZ00US5FEhMWmsTkd14pWZXT2Uz2bvMoAc-xzeBw",
+     "ok": false,
+     "code": "bad_ticket"
+    },
+    {
+     "title": "an unknown mode",
+     "token": "AT1.eyJhY3QiOlsidGlja2V0cy5saXN0IiwiYXRyaXVtLnBpbmciXSwiY25mIjoiTTZDS3E5S1pydnVET1dDdVlRc0JEam4tLTRQcTN0OXQ2UnNDU3Z0V2tVOCIsImN2IjozLCJleHAiOjE3OTE5MzY2MDAsImlhdCI6MTc5MTkzNjAwMCwianRpIjoiekd5WkdSS0QyMjJOV3YxTV9tOV9EQSIsIm1vZGUiOiJhZG1pbiIsInJsIjp7ImNhbGxzX3Blcl9taW4iOjMwLCJwYW5lbF9wZXJfdXNlcl9ob3VyIjoxMH0sInN1YiI6InN1Yl81NWU1ODFiNDZmNTAiLCJ0b29sIjoiaGVscGRlc2siLCJ0eXAiOiJ0aWNrZXQiLCJ2IjoxfQ.Wgocg6mEPkM2J2-2g0F9dFq4bkeJWMQwBuAiwfRsJ4f2YDgyQ5qOZejCmC0DhRjfbS4sgLUQ0x8gqW5v02d3AA",
+     "ok": false,
+     "code": "bad_ticket"
+    },
+    {
+     "title": "a cnf that is not a key",
+     "token": "AT1.eyJhY3QiOlsidGlja2V0cy5saXN0IiwiYXRyaXVtLnBpbmciXSwiY25mIjoibm90LWEta2V5IiwiY3YiOjMsImV4cCI6MTc5MTkzNjYwMCwiaWF0IjoxNzkxOTM2MDAwLCJqdGkiOiJ2TmJfdnJ1S1RSanRMd1NyM1BjRXdRIiwibW9kZSI6ImFjdGl2ZSIsInJsIjp7ImNhbGxzX3Blcl9taW4iOjMwLCJwYW5lbF9wZXJfdXNlcl9ob3VyIjoxMH0sInN1YiI6InN1Yl81NWU1ODFiNDZmNTAiLCJ0b29sIjoiaGVscGRlc2siLCJ0eXAiOiJ0aWNrZXQiLCJ2IjoxfQ.s5LlawR64dM7p4hV1IGOIP8xB1sTTCJf6V71km-zD9ZkHEBOpxozCWgErU0SyXFQUz05XPsOnWnURElcrYxfDQ",
+     "ok": false,
+     "code": "bad_ticket"
+    },
+    {
+     "title": "a string expiry",
+     "token": "AT1.eyJhY3QiOlsidGlja2V0cy5saXN0IiwiYXRyaXVtLnBpbmciXSwiY25mIjoiTTZDS3E5S1pydnVET1dDdVlRc0JEam4tLTRQcTN0OXQ2UnNDU3Z0V2tVOCIsImN2IjozLCJleHAiOiIxNzkxOTM2NjAwIiwiaWF0IjoxNzkxOTM2MDAwLCJqdGkiOiJSUW94d2tuM2JTcGJ6Q2VPc185SVp3IiwibW9kZSI6ImFjdGl2ZSIsInJsIjp7ImNhbGxzX3Blcl9taW4iOjMwLCJwYW5lbF9wZXJfdXNlcl9ob3VyIjoxMH0sInN1YiI6InN1Yl81NWU1ODFiNDZmNTAiLCJ0b29sIjoiaGVscGRlc2siLCJ0eXAiOiJ0aWNrZXQiLCJ2IjoxfQ.9rbfcpHn89S5fF2Hnlhk6xkjerFd8-4-lWFJp1kg-YyaMtQHJ4Js9tkprfCVLieHhOqR98f75eOo4FQopDaaBw",
+     "ok": false,
+     "code": "bad_ticket"
+    },
+    {
+     "title": "a signed payload that is not JSON",
+     "token": "AT1.bm90IGpzb24._SnpvRayfrJ2gsn3dKUi3wJWXQ2dv5ad3XFxzxACFRyquFG-PPBduVxKIEi5y4pyR1ulMUHS6cUA8GH7EMrODA",
+     "ok": false,
+     "code": "bad_ticket"
+    },
+    {
+     "title": "a signed payload over 4 KiB",
+     "ok": false,
+     "code": "bad_ticket",
+     "token": "AT1.eyJhY3QiOlsidGlja2V0cy5saXN0IiwiYXRyaXVtLnBpbmciXSwiY25mIjoiTTZDS3E5S1pydnVET1dDdVlRc0JEam4tLTRQcTN0OXQ2UnNDU3Z0V2tVOCIsImN2IjozLCJleHAiOjE3OTE5MzY2MDAsImlhdCI6MTc5MTkzNjAwMCwianRpIjoiaiIsIm1vZGUiOiJhY3RpdmUiLCJwYWQiOiJ4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHgiLCJybCI6eyJjYWxsc19wZXJfbWluIjozMCwicGFuZWxfcGVyX3VzZXJfaG91ciI6MTB9LCJzdWIiOiJzdWJfNTVlNTgxYjQ2ZjUwIiwidG9vbCI6ImhlbHBkZXNrIiwidHlwIjoidGlja2V0IiwidiI6MX0.1FvC0nwC32jTVHhwjsjTfaTYohFSnZk4HMs8PatiKLPFSZWCf7wT5sCPEIJW0MM00HblEZmCyF8XYvGDQdJvBw"
+    },
+    {
+     "title": "padding on the signature",
+     "token": "AT1.eyJhY3QiOlsidGlja2V0cy5saXN0IiwiYXRyaXVtLnBpbmciXSwiY25mIjoiTTZDS3E5S1pydnVET1dDdVlRc0JEam4tLTRQcTN0OXQ2UnNDU3Z0V2tVOCIsImN2IjozLCJleHAiOjE3OTE5MzY2MDAsImlhdCI6MTc5MTkzNjAwMCwianRpIjoic2VMeUdkZmRjMHRQUkRRLWIteUk4dyIsIm1vZGUiOiJhY3RpdmUiLCJybCI6eyJjYWxsc19wZXJfbWluIjozMCwicGFuZWxfcGVyX3VzZXJfaG91ciI6MTB9LCJzdWIiOiJzdWJfNTVlNTgxYjQ2ZjUwIiwidG9vbCI6ImhlbHBkZXNrIiwidHlwIjoidGlja2V0IiwidiI6MX0.cr1hoO2RRoICWojCZ-YDtti1qnWDSJT9fpWgEnc1Ic8ShvIcFVx96cLvOieO5loJlN0lJLd1gRTQT0O7SDuOCw=",
+     "ok": false,
+     "code": "bad_ticket"
+    },
+    {
+     "title": "four parts",
+     "token": "AT1.eyJhY3QiOlsidGlja2V0cy5saXN0IiwiYXRyaXVtLnBpbmciXSwiY25mIjoiTTZDS3E5S1pydnVET1dDdVlRc0JEam4tLTRQcTN0OXQ2UnNDU3Z0V2tVOCIsImN2IjozLCJleHAiOjE3OTE5MzY2MDAsImlhdCI6MTc5MTkzNjAwMCwianRpIjoic2VMeUdkZmRjMHRQUkRRLWIteUk4dyIsIm1vZGUiOiJhY3RpdmUiLCJybCI6eyJjYWxsc19wZXJfbWluIjozMCwicGFuZWxfcGVyX3VzZXJfaG91ciI6MTB9LCJzdWIiOiJzdWJfNTVlNTgxYjQ2ZjUwIiwidG9vbCI6ImhlbHBkZXNrIiwidHlwIjoidGlja2V0IiwidiI6MX0.cr1hoO2RRoICWojCZ-YDtti1qnWDSJT9fpWgEnc1Ic8ShvIcFVx96cLvOieO5loJlN0lJLd1gRTQT0O7SDuOCw.x",
+     "ok": false,
+     "code": "bad_ticket"
+    },
+    {
+     "title": "a JOSE header with alg none",
+     "ok": false,
+     "code": "bad_ticket",
+     "token": "eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJ2IjogMSwgInR5cCI6ICJ0aWNrZXQiLCAic3ViIjogInN1Yl81NWU1ODFiNDZmNTAiLCAidG9vbCI6ICJoZWxwZGVzayIsICJjdiI6IDMsICJtb2RlIjogImFjdGl2ZSIsICJhY3QiOiBbInRpY2tldHMubGlzdCIsICJhdHJpdW0ucGluZyJdLCAiY25mIjogIk02Q0txOUtacnZ1RE9XQ3VZUXNCRGpuLS00UHEzdDl0NlJzQ1N2dFdrVTgiLCAicmwiOiB7ImNhbGxzX3Blcl9taW4iOiAzMCwgInBhbmVsX3Blcl91c2VyX2hvdXIiOiAxMH0sICJpYXQiOiAxNzkxOTM2MDAwLCAiZXhwIjogMTc5MTkzNjYwMH0."
+    },
+    {
+     "title": "empty",
+     "token": "",
+     "ok": false,
+     "code": "bad_ticket"
+    }
+   ]
+  },
+  "grants": {
+   "keys": "_BYYgvrKSREXyHNi5QMNA4_-qMEevKERfIG_0xn4ZMQ",
+   "tool": "helpdesk",
+   "sub": "sub_55e581b46f50",
+   "now": 1791936000,
+   "cases": [
+    {
+     "title": "a valid grant",
+     "token": "AG1.eyJhY3QiOiJ0aWNrZXRzLnNldF9wcmlvcml0eSIsImFwdiI6ImFwXzAxMjM0NTY3ODlhYiIsImJoIjoiOWVvU0UwRngwUFVnU3dsTDJvb2NHOUJWM0pJbE9fczhzS1BiaUNORk5LNCIsImN2IjozLCJleHAiOjE3OTE5MzY2MDAsImlhdCI6MTc5MTkzNjAwMCwianRpIjoiSXBxekN2blhRaDlGZ3Rod051UE0xUSIsInN1YiI6InN1Yl81NWU1ODFiNDZmNTAiLCJ0b29sIjoiaGVscGRlc2siLCJ0eXAiOiJncmFudCIsInYiOjF9.48--VJWVlG1Ok4i0uqkbqJ_BLHUNGiouHLGP5ghKTYKqTSPrhoNcTtYGvWke_S37tLsKT6Rjo1LN04eSX1YxBA",
+     "action": "tickets.set_priority",
+     "ok": true,
+     "payload": {
+      "act": "tickets.set_priority",
+      "apv": "ap_0123456789ab",
+      "bh": "9eoSE0Fx0PUgSwlL2oocG9BV3JIlO_s8sKPbiCNFNK4",
+      "cv": 3,
+      "exp": 1791936600,
+      "iat": 1791936000,
+      "jti": "IpqzCvnXQh9FgthwNuPM1Q",
+      "sub": "sub_55e581b46f50",
+      "tool": "helpdesk",
+      "typ": "grant",
+      "v": 1
+     },
+     "body_b64": "eyJwYXJhbXMiOnsicHJpb3JpdHkiOiJoaWdoIiwidGlja2V0X2lkIjo0Mn19"
+    },
+    {
+     "title": "expired 30 s ago: within the leeway",
+     "token": "AG1.eyJhY3QiOiJ0aWNrZXRzLnNldF9wcmlvcml0eSIsImFwdiI6ImFwXzAxMjM0NTY3ODlhYiIsImJoIjoiOWVvU0UwRngwUFVnU3dsTDJvb2NHOUJWM0pJbE9fczhzS1BiaUNORk5LNCIsImN2IjozLCJleHAiOjE3OTE5MzU5NzAsImlhdCI6MTc5MTkzNjAwMCwianRpIjoibDlpN2cyOXZ5TThWYU1scHQ2ckNYUSIsInN1YiI6InN1Yl81NWU1ODFiNDZmNTAiLCJ0b29sIjoiaGVscGRlc2siLCJ0eXAiOiJncmFudCIsInYiOjF9.PLzaVesSNKFbvM9hO26RSEwrfr3_NbtzjViKVOZu0BW3PnIY5nOr6nzkbWZ-rcGB2aXegCSJQGPYUpOBNHiwAQ",
+     "action": "tickets.set_priority",
+     "ok": true,
+     "payload": {
+      "act": "tickets.set_priority",
+      "apv": "ap_0123456789ab",
+      "bh": "9eoSE0Fx0PUgSwlL2oocG9BV3JIlO_s8sKPbiCNFNK4",
+      "cv": 3,
+      "exp": 1791935970,
+      "iat": 1791936000,
+      "jti": "l9i7g29vyM8VaMlpt6rCXQ",
+      "sub": "sub_55e581b46f50",
+      "tool": "helpdesk",
+      "typ": "grant",
+      "v": 1
+     },
+     "body_b64": "eyJwYXJhbXMiOnsicHJpb3JpdHkiOiJoaWdoIiwidGlja2V0X2lkIjo0Mn19"
+    },
+    {
+     "title": "another body",
+     "token": "AG1.eyJhY3QiOiJ0aWNrZXRzLnNldF9wcmlvcml0eSIsImFwdiI6ImFwXzAxMjM0NTY3ODlhYiIsImJoIjoiOWVvU0UwRngwUFVnU3dsTDJvb2NHOUJWM0pJbE9fczhzS1BiaUNORk5LNCIsImN2IjozLCJleHAiOjE3OTE5MzY2MDAsImlhdCI6MTc5MTkzNjAwMCwianRpIjoiNnpSMF9XYTV6TUZvQktLaVVRQVdyUSIsInN1YiI6InN1Yl81NWU1ODFiNDZmNTAiLCJ0b29sIjoiaGVscGRlc2siLCJ0eXAiOiJncmFudCIsInYiOjF9.ls9Qtsh8D4OPbabP-94fQQzZ4qnFq25vXAs_9XFt6sN6nvEJuU-B5Q0otGLwEVC5zWiHp1pAFGXWNOzUgoR8DA",
+     "action": "tickets.set_priority",
+     "ok": false,
+     "code": "grant_mismatch",
+     "body_b64": "eyJwYXJhbXMiOnsicHJpb3JpdHkiOiJsb3ciLCJ0aWNrZXRfaWQiOjQyfX0="
+    },
+    {
+     "title": "the same params serialized differently",
+     "token": "AG1.eyJhY3QiOiJ0aWNrZXRzLnNldF9wcmlvcml0eSIsImFwdiI6ImFwXzAxMjM0NTY3ODlhYiIsImJoIjoiOWVvU0UwRngwUFVnU3dsTDJvb2NHOUJWM0pJbE9fczhzS1BiaUNORk5LNCIsImN2IjozLCJleHAiOjE3OTE5MzY2MDAsImlhdCI6MTc5MTkzNjAwMCwianRpIjoicDhRTExzd1NlQlZpSkF1Z0Y4OVZzUSIsInN1YiI6InN1Yl81NWU1ODFiNDZmNTAiLCJ0b29sIjoiaGVscGRlc2siLCJ0eXAiOiJncmFudCIsInYiOjF9.pg2osO4C9KUsWFFX7thAIdrD0a7vQv2gKNCelp3L1zfVK0DG_6ZU-xicDc0ievUdY33OsVRDTMo_T5b6U_ipCQ",
+     "action": "tickets.set_priority",
+     "ok": false,
+     "code": "grant_mismatch",
+     "body_b64": "eyJwYXJhbXMiOiB7InByaW9yaXR5IjogImhpZ2giLCAidGlja2V0X2lkIjogNDJ9fQ=="
+    },
+    {
+     "title": "another action",
+     "token": "AG1.eyJhY3QiOiJ0aWNrZXRzLnNldF9wcmlvcml0eSIsImFwdiI6ImFwXzAxMjM0NTY3ODlhYiIsImJoIjoiOWVvU0UwRngwUFVnU3dsTDJvb2NHOUJWM0pJbE9fczhzS1BiaUNORk5LNCIsImN2IjozLCJleHAiOjE3OTE5MzY2MDAsImlhdCI6MTc5MTkzNjAwMCwianRpIjoidlVIaWdhZHVBWmhoN0I1bnpZWUhHUSIsInN1YiI6InN1Yl81NWU1ODFiNDZmNTAiLCJ0b29sIjoiaGVscGRlc2siLCJ0eXAiOiJncmFudCIsInYiOjF9.7ZmD6O5zPEYQWqcAOOH-SPf6GDvI3JTUsHjhXr0QTfaE8QnLAsB2WqtGhsIUodKlvLNcvxzzWRDw2RiP2daVBQ",
+     "action": "tickets.delete",
+     "ok": false,
+     "code": "grant_mismatch",
+     "body_b64": "eyJwYXJhbXMiOnsicHJpb3JpdHkiOiJoaWdoIiwidGlja2V0X2lkIjo0Mn19"
+    },
+    {
+     "title": "another tool",
+     "token": "AG1.eyJhY3QiOiJ0aWNrZXRzLnNldF9wcmlvcml0eSIsImFwdiI6ImFwXzAxMjM0NTY3ODlhYiIsImJoIjoiOWVvU0UwRngwUFVnU3dsTDJvb2NHOUJWM0pJbE9fczhzS1BiaUNORk5LNCIsImN2IjozLCJleHAiOjE3OTE5MzY2MDAsImlhdCI6MTc5MTkzNjAwMCwianRpIjoiWWJET25VRUVJVURrSlhWeUdRbmJPdyIsInN1YiI6InN1Yl81NWU1ODFiNDZmNTAiLCJ0b29sIjoid2lraSIsInR5cCI6ImdyYW50IiwidiI6MX0.ZZTuoUJWTxDLHa6CtZ8uTYbf9317-rGCHlSDFnutg8QrdTZpjXno2v-cxpF5V-AGxdI49yIxnugCJYxfaiv-Dg",
+     "action": "tickets.set_priority",
+     "ok": false,
+     "code": "grant_mismatch",
+     "body_b64": "eyJwYXJhbXMiOnsicHJpb3JpdHkiOiJoaWdoIiwidGlja2V0X2lkIjo0Mn19"
+    },
+    {
+     "title": "another subsidiary",
+     "token": "AG1.eyJhY3QiOiJ0aWNrZXRzLnNldF9wcmlvcml0eSIsImFwdiI6ImFwXzAxMjM0NTY3ODlhYiIsImJoIjoiOWVvU0UwRngwUFVnU3dsTDJvb2NHOUJWM0pJbE9fczhzS1BiaUNORk5LNCIsImN2IjozLCJleHAiOjE3OTE5MzY2MDAsImlhdCI6MTc5MTkzNjAwMCwianRpIjoicG1JbVRqNDdQLVVjeEt0RkRmWWlMQSIsInN1YiI6InN1Yl8wMDAwMDAwMDAwMDAiLCJ0b29sIjoiaGVscGRlc2siLCJ0eXAiOiJncmFudCIsInYiOjF9.3AxqS5tXWYScQgIpBa_0IQyOcdSVkTx4xCZ56qyzyv7q4L1wgTSn2h84L6QZ95jCtD4bB-Hsyk8N6NrQwB3NAg",
+     "action": "tickets.set_priority",
+     "ok": false,
+     "code": "grant_mismatch",
+     "body_b64": "eyJwYXJhbXMiOnsicHJpb3JpdHkiOiJoaWdoIiwidGlja2V0X2lkIjo0Mn19"
+    },
+    {
+     "title": "signed with another key",
+     "token": "AG1.eyJhY3QiOiJ0aWNrZXRzLnNldF9wcmlvcml0eSIsImFwdiI6ImFwXzAxMjM0NTY3ODlhYiIsImJoIjoiOWVvU0UwRngwUFVnU3dsTDJvb2NHOUJWM0pJbE9fczhzS1BiaUNORk5LNCIsImN2IjozLCJleHAiOjE3OTE5MzY2MDAsImlhdCI6MTc5MTkzNjAwMCwianRpIjoiNFViNkt6X3p5anFlR2VhRmFmZXJEUSIsInN1YiI6InN1Yl81NWU1ODFiNDZmNTAiLCJ0b29sIjoiaGVscGRlc2siLCJ0eXAiOiJncmFudCIsInYiOjF9.GQFFSWLW8pYBP7auywVqgFj938I9yM_dgFPqHWN8sTFlOfMMPu97Z4E6KIi7wqjn6xR5C0XfD5vWOGjGM_JgDQ",
+     "action": "tickets.set_priority",
+     "ok": false,
+     "code": "grant_mismatch",
+     "body_b64": "eyJwYXJhbXMiOnsicHJpb3JpdHkiOiJoaWdoIiwidGlja2V0X2lkIjo0Mn19"
+    },
+    {
+     "title": "the AT1 prefix on a grant",
+     "token": "AT1.eyJhY3QiOiJ0aWNrZXRzLnNldF9wcmlvcml0eSIsImFwdiI6ImFwXzAxMjM0NTY3ODlhYiIsImJoIjoiOWVvU0UwRngwUFVnU3dsTDJvb2NHOUJWM0pJbE9fczhzS1BiaUNORk5LNCIsImN2IjozLCJleHAiOjE3OTE5MzY2MDAsImlhdCI6MTc5MTkzNjAwMCwianRpIjoiTHpxWmdTQ05FWlRNLW44YXFwclA2dyIsInN1YiI6InN1Yl81NWU1ODFiNDZmNTAiLCJ0b29sIjoiaGVscGRlc2siLCJ0eXAiOiJncmFudCIsInYiOjF9.UhJGIqdm8SZ4AFc16WG5nlt9_IO504zUsldLzQmT6QnkV50G4Ypym4HPyVtkqfrGDFVujFTOz6NaFadw05HbDQ",
+     "action": "tickets.set_priority",
+     "ok": false,
+     "code": "grant_mismatch",
+     "body_b64": "eyJwYXJhbXMiOnsicHJpb3JpdHkiOiJoaWdoIiwidGlja2V0X2lkIjo0Mn19"
+    },
+    {
+     "title": "typ ticket under AG1",
+     "token": "AG1.eyJhY3QiOiJ0aWNrZXRzLnNldF9wcmlvcml0eSIsImFwdiI6ImFwXzAxMjM0NTY3ODlhYiIsImJoIjoiOWVvU0UwRngwUFVnU3dsTDJvb2NHOUJWM0pJbE9fczhzS1BiaUNORk5LNCIsImN2IjozLCJleHAiOjE3OTE5MzY2MDAsImlhdCI6MTc5MTkzNjAwMCwianRpIjoiVl9Ocy10d2JMaEJkam5pV0xXVFhPZyIsInN1YiI6InN1Yl81NWU1ODFiNDZmNTAiLCJ0b29sIjoiaGVscGRlc2siLCJ0eXAiOiJ0aWNrZXQiLCJ2IjoxfQ.v6USXGcMmUO3lqKXfVEcILYwBwTD12wml6WOmKHxM927AIcFu9AlkgJCLOc-Gn2sV-1E6FSsS4YlDo9172LdDQ",
+     "action": "tickets.set_priority",
+     "ok": false,
+     "code": "grant_mismatch",
+     "body_b64": "eyJwYXJhbXMiOnsicHJpb3JpdHkiOiJoaWdoIiwidGlja2V0X2lkIjo0Mn19"
+    },
+    {
+     "title": "expired",
+     "token": "AG1.eyJhY3QiOiJ0aWNrZXRzLnNldF9wcmlvcml0eSIsImFwdiI6ImFwXzAxMjM0NTY3ODlhYiIsImJoIjoiOWVvU0UwRngwUFVnU3dsTDJvb2NHOUJWM0pJbE9fczhzS1BiaUNORk5LNCIsImN2IjozLCJleHAiOjE3OTE5MzU5MDAsImlhdCI6MTc5MTkzNTMwMCwianRpIjoiQXZDeW5sUjJJcTZXMG5WWWRnSm1XUSIsInN1YiI6InN1Yl81NWU1ODFiNDZmNTAiLCJ0b29sIjoiaGVscGRlc2siLCJ0eXAiOiJncmFudCIsInYiOjF9.v5-0bxDyT1Pb8rN-rT6A23FUSfp-q512YUFqjYY4PnlH1NN_UUxCkFMY3TiZcQ4Sc-tSm7Sd3mYe_kaoS3K3Dw",
+     "action": "tickets.set_priority",
+     "ok": false,
+     "code": "expired",
+     "body_b64": "eyJwYXJhbXMiOnsicHJpb3JpdHkiOiJoaWdoIiwidGlja2V0X2lkIjo0Mn19"
+    }
+   ]
+  },
+  "signing": [
+   {
+    "title": "a read call",
+    "method": "POST",
+    "path": "/.atrium/v1/call/tickets.list",
+    "date": "1791936000",
+    "nonce": "UUkB7OrIIHk4afJmpvyw7A",
+    "body_b64": "eyJwYXJhbXMiOnsic3RhdHVzIjoib3BlbiJ9fQ==",
+    "body_sha256": "d249593696f48dab4d6bed02cf6cd346bc66d95fbce8cad43eb91f3a52713937",
+    "ticket_jti": "mdHcVCP0tn-gokDvqYPlDg",
+    "grant_jti": null,
+    "on_behalf_of": null,
+    "string": "atrium-bridge/1\nPOST\n/.atrium/v1/call/tickets.list\n1791936000\nUUkB7OrIIHk4afJmpvyw7A\nd249593696f48dab4d6bed02cf6cd346bc66d95fbce8cad43eb91f3a52713937\nmdHcVCP0tn-gokDvqYPlDg\n-\n-",
+    "cnf": "M6CKq9KZrvuDOWCuYQsBDjn--4Pq3t9t6RsCSvtWkU8",
+    "signature": "wB1DAzpSA-jh4-wqw8EYKUcW3hIvf1uPg3Nc_84QHDoefTE7ERHFIVL9L7UNdhM10BbSvo4HJzR3NS5FfcZ2Dg",
+    "valid": true
+   },
+   {
+    "title": "a granted write",
+    "method": "POST",
+    "path": "/.atrium/v1/call/tickets.set_priority",
+    "date": "1791936000",
+    "nonce": "MzG9rK_SVA28sKz911Mpdg",
+    "body_b64": "eyJwYXJhbXMiOnsicHJpb3JpdHkiOiJoaWdoIiwidGlja2V0X2lkIjo0Mn19",
+    "body_sha256": "f5ea12134171d0f5204b094bda8a1c1bd055dc92253bfb3cb0a3db88234534ae",
+    "ticket_jti": "FVlk9H6Ih5cGiP8AKr-6_g",
+    "grant_jti": "Zm9vYmFyYmF6cXV4cXV1eA",
+    "on_behalf_of": null,
+    "string": "atrium-bridge/1\nPOST\n/.atrium/v1/call/tickets.set_priority\n1791936000\nMzG9rK_SVA28sKz911Mpdg\nf5ea12134171d0f5204b094bda8a1c1bd055dc92253bfb3cb0a3db88234534ae\nFVlk9H6Ih5cGiP8AKr-6_g\nZm9vYmFyYmF6cXV4cXV1eA\n-",
+    "cnf": "M6CKq9KZrvuDOWCuYQsBDjn--4Pq3t9t6RsCSvtWkU8",
+    "signature": "bUQdQ2Jx7njP5vcnVi5gaBuGILHCQxw5dsEjAtIAGo3tUwls5ZIcidEobYOHC-8fjM7wPxyH7AbRPEpRoB7KBA",
+    "valid": true
+   },
+   {
+    "title": "a panel run's read, with a query string",
+    "method": "POST",
+    "path": "/.atrium/v1/call/tickets.list?page=2",
+    "date": "1791936000",
+    "nonce": "35Qx0N50zJ9ZHac1xWSoLg",
+    "body_b64": "eyJwYXJhbXMiOnsicSI6ImNhZsOpIn19",
+    "body_sha256": "6ea0c3fdf912da168884b65abb54a7782e7b63fc4f03681e60b1592ae8a798c8",
+    "ticket_jti": "f5Yh1KpTr9PBTf63ldSxVA",
+    "grant_jti": null,
+    "on_behalf_of": "q_91",
+    "string": "atrium-bridge/1\nPOST\n/.atrium/v1/call/tickets.list?page=2\n1791936000\n35Qx0N50zJ9ZHac1xWSoLg\n6ea0c3fdf912da168884b65abb54a7782e7b63fc4f03681e60b1592ae8a798c8\nf5Yh1KpTr9PBTf63ldSxVA\n-\nq_91",
+    "cnf": "M6CKq9KZrvuDOWCuYQsBDjn--4Pq3t9t6RsCSvtWkU8",
+    "signature": "rdHthRwlOiybN9AVIhJrkwBWR2iWmemiWrqA6eSSXsHdy-5awjQpNLrTpZCcYpK7BzLUUWOPE3bJs1-_kIw7CA",
+    "valid": true
+   },
+   {
+    "title": "an empty body",
+    "method": "POST",
+    "path": "/.atrium/v1/call/atrium.ping",
+    "date": "1791936000",
+    "nonce": "IqtgqmsjRlYc4oqowsABbg",
+    "body_b64": "",
+    "body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "ticket_jti": "1tMR55M-2a1MO4pqdsdbxw",
+    "grant_jti": null,
+    "on_behalf_of": null,
+    "string": "atrium-bridge/1\nPOST\n/.atrium/v1/call/atrium.ping\n1791936000\nIqtgqmsjRlYc4oqowsABbg\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\n1tMR55M-2a1MO4pqdsdbxw\n-\n-",
+    "cnf": "M6CKq9KZrvuDOWCuYQsBDjn--4Pq3t9t6RsCSvtWkU8",
+    "signature": "ehFe-m3uJmEEj3N7tH3fPS8esudtP3M8zGikbM7EzPa7hqnW2bcgjfW71zN_sM5BQrrqVQw5klxP0XEjL76aCw",
+    "valid": true
+   },
+   {
+    "title": "signed with a key other than cnf",
+    "method": "POST",
+    "path": "/.atrium/v1/call/tickets.list",
+    "date": "1791936000",
+    "nonce": "UUkB7OrIIHk4afJmpvyw7A",
+    "body_b64": "eyJwYXJhbXMiOnsic3RhdHVzIjoib3BlbiJ9fQ==",
+    "body_sha256": "d249593696f48dab4d6bed02cf6cd346bc66d95fbce8cad43eb91f3a52713937",
+    "ticket_jti": "mdHcVCP0tn-gokDvqYPlDg",
+    "grant_jti": null,
+    "on_behalf_of": null,
+    "string": "atrium-bridge/1\nPOST\n/.atrium/v1/call/tickets.list\n1791936000\nUUkB7OrIIHk4afJmpvyw7A\nd249593696f48dab4d6bed02cf6cd346bc66d95fbce8cad43eb91f3a52713937\nmdHcVCP0tn-gokDvqYPlDg\n-\n-",
+    "cnf": "M6CKq9KZrvuDOWCuYQsBDjn--4Pq3t9t6RsCSvtWkU8",
+    "signature": "-O3vbiKyei4w8hESQJCcZsouUPmhLqCtN1xObAg1z7_tc7W18_eKQmYNuU665BjJeXc8JkHLD1TPn3nzwOnJBA",
+    "valid": false
+   },
+   {
+    "title": "the body changed after signing",
+    "method": "POST",
+    "path": "/.atrium/v1/call/tickets.list",
+    "date": "1791936000",
+    "nonce": "UUkB7OrIIHk4afJmpvyw7A",
+    "body_b64": "eyJwYXJhbXMiOnsic3RhdHVzIjoiY2xvc2VkIn19",
+    "body_sha256": "6c020394e8dd9ec811e690aa272a165fcda92937c765d18aa3baaa7129e16be3",
+    "ticket_jti": "mdHcVCP0tn-gokDvqYPlDg",
+    "grant_jti": null,
+    "on_behalf_of": null,
+    "string": "atrium-bridge/1\nPOST\n/.atrium/v1/call/tickets.list\n1791936000\nUUkB7OrIIHk4afJmpvyw7A\n6c020394e8dd9ec811e690aa272a165fcda92937c765d18aa3baaa7129e16be3\nmdHcVCP0tn-gokDvqYPlDg\n-\n-",
+    "cnf": "M6CKq9KZrvuDOWCuYQsBDjn--4Pq3t9t6RsCSvtWkU8",
+    "signature": "wB1DAzpSA-jh4-wqw8EYKUcW3hIvf1uPg3Nc_84QHDoefTE7ERHFIVL9L7UNdhM10BbSvo4HJzR3NS5FfcZ2Dg",
+    "valid": false
+   }
+  ],
+  "params": {
+   "schemas": {
+    "query": {
+     "type": "object",
+     "additionalProperties": false,
+     "required": [],
+     "properties": {
+      "status": {
+       "enum": [
+        "open",
+        "pending",
+        "closed"
+       ]
+      },
+      "q": {
+       "type": "string",
+       "maxLength": 5
+      },
+      "limit": {
+       "type": "integer",
+       "minimum": 1,
+       "maximum": 50
+      },
+      "tags": {
+       "type": "array",
+       "maxItems": 2,
+       "items": {
+        "type": "string",
+        "maxLength": 3
+       }
+      },
+      "urgent": {
+       "type": "boolean"
+      },
+      "level": {
+       "enum": [
+        1,
+        2,
+        3
+       ]
+      }
+     }
+    },
+    "ticket": {
+     "type": "object",
+     "additionalProperties": false,
+     "required": [
+      "ticket_id"
+     ],
+     "properties": {
+      "ticket_id": {
+       "type": "integer"
+      }
+     }
+    }
+   },
+   "cases": [
+    {
+     "title": "no params",
+     "schema": "query",
+     "body_b64": "eyJwYXJhbXMiOnt9fQ==",
+     "ok": true,
+     "params": {}
+    },
+    {
+     "title": "an enum value and a short string",
+     "schema": "query",
+     "body_b64": "eyJwYXJhbXMiOnsic3RhdHVzIjoib3BlbiIsInEiOiJhYmMifX0=",
+     "ok": true,
+     "params": {
+      "status": "open",
+      "q": "abc"
+     }
+    },
+    {
+     "title": "a value outside the enum",
+     "schema": "query",
+     "body_b64": "eyJwYXJhbXMiOnsic3RhdHVzIjoiYXJjaGl2ZWQifX0=",
+     "ok": false,
+     "code": "bad_params"
+    },
+    {
+     "title": "a string over maxLength",
+     "schema": "query",
+     "body_b64": "eyJwYXJhbXMiOnsicSI6ImFiY2RlZiJ9fQ==",
+     "ok": false,
+     "code": "bad_params"
+    },
+    {
+     "title": "maxLength counts code points: five emoji fit",
+     "schema": "query",
+     "body_b64": "eyJwYXJhbXMiOnsicSI6IvCfmIDwn5iA8J+YgPCfmIDwn5iAIn19",
+     "ok": true,
+     "params": {
+      "q": "😀😀😀😀😀"
+     }
+    },
+    {
+     "title": "maxLength counts code points: six emoji do not",
+     "schema": "query",
+     "body_b64": "eyJwYXJhbXMiOnsicSI6IvCfmIDwn5iA8J+YgPCfmIDwn5iA8J+YgCJ9fQ==",
+     "ok": false,
+     "code": "bad_params"
+    },
+    {
+     "title": "an escaped string counts its characters",
+     "schema": "query",
+     "body_b64": "eyJwYXJhbXMiOnsicSI6Ilx1MDBlOXRcdTAwZTkifX0=",
+     "ok": true,
+     "params": {
+      "q": "été"
+     }
+    },
+    {
+     "title": "2.0 is an integer",
+     "schema": "query",
+     "body_b64": "eyJwYXJhbXMiOnsibGltaXQiOjIuMH19",
+     "ok": true,
+     "params": {
+      "limit": 2
+     }
+    },
+    {
+     "title": "1e1 is an integer",
+     "schema": "query",
+     "body_b64": "eyJwYXJhbXMiOnsibGltaXQiOjFlMX19",
+     "ok": true,
+     "params": {
+      "limit": 10
+     }
+    },
+    {
+     "title": "2.5 is not an integer",
+     "schema": "query",
+     "body_b64": "eyJwYXJhbXMiOnsibGltaXQiOjIuNX19",
+     "ok": false,
+     "code": "bad_params"
+    },
+    {
+     "title": "below minimum",
+     "schema": "query",
+     "body_b64": "eyJwYXJhbXMiOnsibGltaXQiOjB9fQ==",
+     "ok": false,
+     "code": "bad_params"
+    },
+    {
+     "title": "above maximum",
+     "schema": "query",
+     "body_b64": "eyJwYXJhbXMiOnsibGltaXQiOjUxfX0=",
+     "ok": false,
+     "code": "bad_params"
+    },
+    {
+     "title": "true is not an integer",
+     "schema": "query",
+     "body_b64": "eyJwYXJhbXMiOnsibGltaXQiOnRydWV9fQ==",
+     "ok": false,
+     "code": "bad_params"
+    },
+    {
+     "title": "a numeric string is not an integer",
+     "schema": "query",
+     "body_b64": "eyJwYXJhbXMiOnsibGltaXQiOiI1In19",
+     "ok": false,
+     "code": "bad_params"
+    },
+    {
+     "title": "an array within maxItems",
+     "schema": "query",
+     "body_b64": "eyJwYXJhbXMiOnsidGFncyI6WyJhIiwiYmMiXX19",
+     "ok": true,
+     "params": {
+      "tags": [
+       "a",
+       "bc"
+      ]
+     }
+    },
+    {
+     "title": "an array over maxItems",
+     "schema": "query",
+     "body_b64": "eyJwYXJhbXMiOnsidGFncyI6WyJhIiwiYiIsImMiXX19",
+     "ok": false,
+     "code": "bad_params"
+    },
+    {
+     "title": "an array item over its maxLength",
+     "schema": "query",
+     "body_b64": "eyJwYXJhbXMiOnsidGFncyI6WyJhYmNkIl19fQ==",
+     "ok": false,
+     "code": "bad_params"
+    },
+    {
+     "title": "an array item of the wrong type",
+     "schema": "query",
+     "body_b64": "eyJwYXJhbXMiOnsidGFncyI6WzFdfX0=",
+     "ok": false,
+     "code": "bad_params"
+    },
+    {
+     "title": "1 is not a boolean",
+     "schema": "query",
+     "body_b64": "eyJwYXJhbXMiOnsidXJnZW50IjoxfX0=",
+     "ok": false,
+     "code": "bad_params"
+    },
+    {
+     "title": "a boolean",
+     "schema": "query",
+     "body_b64": "eyJwYXJhbXMiOnsidXJnZW50IjpmYWxzZX19",
+     "ok": true,
+     "params": {
+      "urgent": false
+     }
+    },
+    {
+     "title": "an integer enum",
+     "schema": "query",
+     "body_b64": "eyJwYXJhbXMiOnsibGV2ZWwiOjJ9fQ==",
+     "ok": true,
+     "params": {
+      "level": 2
+     }
+    },
+    {
+     "title": "true is not in an integer enum",
+     "schema": "query",
+     "body_b64": "eyJwYXJhbXMiOnsibGV2ZWwiOnRydWV9fQ==",
+     "ok": false,
+     "code": "bad_params"
+    },
+    {
+     "title": "\"2\" is not in an integer enum",
+     "schema": "query",
+     "body_b64": "eyJwYXJhbXMiOnsibGV2ZWwiOiIyIn19",
+     "ok": false,
+     "code": "bad_params"
+    },
+    {
+     "title": "null is never a value",
+     "schema": "query",
+     "body_b64": "eyJwYXJhbXMiOnsicSI6bnVsbH19",
+     "ok": false,
+     "code": "bad_params"
+    },
+    {
+     "title": "an unknown parameter",
+     "schema": "query",
+     "body_b64": "eyJwYXJhbXMiOnsiZXh0cmEiOjF9fQ==",
+     "ok": false,
+     "code": "bad_params"
+    },
+    {
+     "title": "a missing required parameter",
+     "schema": "ticket",
+     "body_b64": "eyJwYXJhbXMiOnt9fQ==",
+     "ok": false,
+     "code": "bad_params"
+    },
+    {
+     "title": "the largest safe integer",
+     "schema": "ticket",
+     "body_b64": "eyJwYXJhbXMiOnsidGlja2V0X2lkIjo5MDA3MTk5MjU0NzQwOTkxfX0=",
+     "ok": true,
+     "params": {
+      "ticket_id": 9007199254740991
+     }
+    },
+    {
+     "title": "the smallest safe integer",
+     "schema": "ticket",
+     "body_b64": "eyJwYXJhbXMiOnsidGlja2V0X2lkIjotOTAwNzE5OTI1NDc0MDk5MX19",
+     "ok": true,
+     "params": {
+      "ticket_id": -9007199254740991
+     }
+    },
+    {
+     "title": "beyond the safe integers",
+     "schema": "ticket",
+     "body_b64": "eyJwYXJhbXMiOnsidGlja2V0X2lkIjo5MDA3MTk5MjU0NzQwOTkyfX0=",
+     "ok": false,
+     "code": "bad_params"
+    },
+    {
+     "title": "a member besides params",
+     "schema": "ticket",
+     "body_b64": "eyJwYXJhbXMiOnsidGlja2V0X2lkIjoxfSwiZXh0cmEiOjF9",
+     "ok": false,
+     "code": "bad_params"
+    },
+    {
+     "title": "params is not an object",
+     "schema": "ticket",
+     "body_b64": "eyJwYXJhbXMiOlsxXX0=",
+     "ok": false,
+     "code": "bad_params"
+    },
+    {
+     "title": "the body is not an object",
+     "schema": "ticket",
+     "body_b64": "W3sidGlja2V0X2lkIjoxfV0=",
+     "ok": false,
+     "code": "bad_params"
+    },
+    {
+     "title": "NaN is not JSON",
+     "schema": "ticket",
+     "body_b64": "eyJwYXJhbXMiOnsidGlja2V0X2lkIjpOYU59fQ==",
+     "ok": false,
+     "code": "bad_params"
+    },
+    {
+     "title": "not JSON",
+     "schema": "ticket",
+     "body_b64": "dGlja2V0X2lkPTE=",
+     "ok": false,
+     "code": "bad_params"
+    },
+    {
+     "title": "not UTF-8",
+     "schema": "ticket",
+     "body_b64": "eyJwYXJhbXMiOnsidGlja2V0X2lkIjoxLCJ4Ijoi/yJ9fQ==",
+     "ok": false,
+     "code": "bad_params"
+    }
+   ]
+  },
+  "tool_names": {
+   "forward": [
+    {
+     "action": "tickets.list",
+     "name": "act__tickets-list"
+    },
+    {
+     "action": "tickets.set_priority",
+     "name": "act__tickets-set_priority"
+    },
+    {
+     "action": "kb.articles.draft",
+     "name": "act__kb-articles-draft"
+    },
+    {
+     "action": "abbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbc",
+     "name": "act__abbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbc"
+    }
+   ],
+   "reverse": [
+    {
+     "name": "act__tickets-list",
+     "action": "tickets.list"
+    },
+    {
+     "name": "act__atrium-ping",
+     "action": null
+    },
+    {
+     "name": "tickets.list",
+     "action": null
+    },
+    {
+     "name": "act__Tickets-list",
+     "action": null
+    },
+    {
+     "name": "act__",
+     "action": null
+    },
+    {
+     "name": "atrium__get_tool",
+     "action": null
+    }
+   ]
+  }
+ }
+}

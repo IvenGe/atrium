@@ -4,7 +4,8 @@ Two rules hold for every decision:
 - Second person: an approval whose payload records ``proposed_by`` (the person who proposed it), and every self-patch
   and device change, cannot be APPROVED by that same person while the second-person guardrail for it is on -
   ``device_changes_need_second_person`` (default on) for kind ``firewall``, ``approvals_need_second_person`` (default
-  off) for everything else. Refused with ``DecisionRefused`` (code ``same_person``; the API answers 403). Rejecting
+  off) for everything else - and always for a subsidiary's charters, in-tool actions and bridge patches. Refused
+  with ``DecisionRefused`` (code ``same_person``; the API answers 403). Rejecting
   one's own proposal stays possible. An API token counts as the person who created it (``identities``), so an
   administrator cannot approve their own proposal with a token they made; device changes are approved by people
   only (the API answers 403 ``person_required`` to a token).
@@ -93,7 +94,9 @@ class Approvals:
         approval = Approval(id=new_id("ap_"), kind=kind, title=title, detail=detail, payload=payload,  # type: ignore[arg-type]
                             requested_by=requested_by)
         self._save(approval)
-        self.hub.activity(requested_by, "warn", f"Awaiting approval: {title}", approval_id=approval.id)
+        from .agents import notify  # "Awaiting approval: ..." - a notification when the agent that asks wants one
+
+        notify.approval_requested(self.hub, approval)
         return approval
 
     def get(self, approval_id: str) -> Approval | None:
@@ -135,6 +138,9 @@ class Approvals:
 
         if approval.kind == "firewall":
             return bool(guardrails.value(self.hub, "device_changes_need_second_person"))
+        if approval.kind in ("subsidiary_charter", "subsidiary_action") or (
+                approval.kind == "patch" and (approval.payload or {}).get("strategy") == "atrium_bridge"):
+            return True  # a subsidiary's proposer never approves their own request (whatever the guardrail says)
         if approval.kind == "self_patch" or approval.payload.get("proposed_by"):
             return bool(guardrails.value(self.hub, "approvals_need_second_person"))
         return False

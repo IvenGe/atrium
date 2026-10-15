@@ -5,13 +5,11 @@
 #
 # Without Compose: docker build -t atrium . && docker run -d -p 127.0.0.1:8710:8710 -v atrium-data:/data atrium
 # The hub's database, cloned tools, adapters and patch worktrees live in the /data volume.
+#
+# The sidecar of a subsidiary (docs/SUBSIDIARIES.md) is the "sidecar" target of the same base:
+#     docker build --target sidecar -t atrium-sidecar .
 ARG PYTHON_VERSION=3.13
-FROM python:${PYTHON_VERSION}-slim
-
-# git: importing tools and code patches; openssh-client: hosts reached over SSH.
-RUN apt-get update \
-    && apt-get install --yes --no-install-recommends git openssh-client \
-    && rm -rf /var/lib/apt/lists/*
+FROM python:${PYTHON_VERSION}-slim AS base
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -20,6 +18,30 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_ROOT_USER_ACTION=ignore
 
 WORKDIR /opt/atrium
+
+# The sidecar: no extras (httpx, pydantic and cryptography are base dependencies), no git or ssh, its own
+# non-root user 10001, a state directory for its key and token, and no port: it only connects out.
+FROM base AS sidecar
+COPY pyproject.toml README.md ./
+COPY hub ./hub
+RUN pip install . \
+    && useradd --system --uid 10001 --user-group --no-create-home --shell /usr/sbin/nologin atrium-sidecar \
+    && mkdir -p /var/lib/atrium-sidecar \
+    && chown 10001:10001 /var/lib/atrium-sidecar \
+    && chmod 0700 /var/lib/atrium-sidecar
+USER 10001
+VOLUME ["/var/lib/atrium-sidecar"]
+ENTRYPOINT ["atrium-sidecar"]
+CMD ["--config", "/etc/atrium-sidecar/config.json"]
+
+# Atrium itself: the last stage, so a plain `docker build .` (and Compose) builds it.
+FROM base AS hub
+
+# git: importing tools and code patches; openssh-client: hosts reached over SSH.
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends git openssh-client \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY pyproject.toml README.md ./
 COPY hub ./hub
 RUN pip install ".[ai,ssh]"

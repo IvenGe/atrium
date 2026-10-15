@@ -11,6 +11,7 @@ from ..bus import Message
 from ..connectors.base import redact
 from ..execution import policy
 from ..execution.runner import CommandResult, run_local, run_ssh
+from ..integration.analyzer import parse_env_file, read_repo_file
 from ..secrets import hub_secret_values
 from .base import BaseAgent
 
@@ -24,6 +25,20 @@ DISCOVERY_SCRIPT = (
     'echo "@@disk_root"; df -h / 2>/dev/null | tail -1; '
     'echo "@@uptime"; uptime -p 2>/dev/null || uptime'
 )
+
+
+ENV_KEY = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
+
+
+def env_files(hub, tool_id: str, files: list[str]) -> dict[str, str]:
+    """The KEY=value lines of a tool's launch.env_files (adapter-relative, e.g. subsidiary/bridge.env: public values
+    Atrium generated), merged in order; a file is never read through a symbolic link or outside the adapter folder."""
+    root = hub.settings.workspace / "adapters" / tool_id
+    values: dict[str, str] = {}
+    for rel in files:
+        text = read_repo_file(root, rel, 64_000) if root.is_dir() else None
+        values.update({k: v for k, v in parse_env_file(text or "").items() if ENV_KEY.match(k)})
+    return values
 
 
 def from_person(sender: str) -> bool:
@@ -234,7 +249,7 @@ class OperatorAgent(BaseAgent):
         cwd = tool.path
         if cwd and launch.cwd and launch.cwd != ".":
             cwd = f"{cwd}/{launch.cwd}"
-        env = dict(launch.env)
+        env = {**launch.env, **env_files(self.hub, tool.id, launch.env_files)}
         if launch.port:
             env.setdefault("PORT", str(launch.port))
         return await self.hub.processes.start(tool.id, launch.command, cwd=cwd, env=env)

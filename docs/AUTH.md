@@ -11,14 +11,21 @@ shows the sign-in screen until you are signed in.
 ## Roles
 
 Roles are ordered `viewer` < `operator` < `admin`; each role can do everything the roles before it
-can. `integration` is a separate role that exists only for API tokens.
+can. `integration` is a separate role that exists only for API tokens, and `subsidiary` one that exists only for the
+token of a subsidiary's sidecar ([Subsidiary tokens](#subsidiary-tokens)).
 
 | Role | May do |
 | --- | --- |
-| `viewer` | Read everything: every page, every `GET /api` endpoint, the live event stream (`/api/events`) and the API docs (`/api/docs`). Changes nothing. |
-| `operator` | Everything a viewer can, plus every state-changing call: import and remove tools, analyse, start (an administrator approves it) and stop tools, propose patches, approve or reject (except extensions, self-patches, agent teams and device changes, and never their own proposal while a second-person guardrail applies; commands on the hub machine, tool starts and repairs of a network device's connection they may reject but not approve), run commands on SSH hosts and read-only commands on the hub machine (anything else there waits for an administrator, see [Commands on the hub machine](#commands-on-the-hub-machine)), add/remove/discover hosts, add and edit assets, sync, edit compliance controls, risks and policies, chat with the Hub Supervisor and any team agent (`POST /api/agents/{id}/chat`), run a team agent's task (`POST /api/agents/{id}/run`), ask a tool's supervisor for an agent team (`POST /api/tools/{id}/team`; an administrator decides the proposal), choose a tool's identity provider (`POST /api/tools/{id}/sso`) and run provider registrations (`POST /api/tools/{id}/sso/register`), test connections and list a connection field's choices (`GET /api/tools/{id}/connection/options/{field}`, which uses the stored credentials), run, schedule and repair data flows, request scans and triage vulnerabilities, add, edit and remove people, link accounts, unassign a leaver's assets (`POST /api/people/{id}/actions/unassign_assets`), add, edit and remove records of extension apps (`/api/x/{key}`), draw data flows and arrange the shared map layouts (`POST /api/flows`, `PATCH` / `DELETE /api/layouts/{view}`), start and score framework self-assessments (`/api/frameworks/{id}/assessments`), refresh network devices, take device backups, acknowledge drift, place assets on the segmentation map, and preview, propose, withdraw (their own) and revert device changes and propose backup restores ([NETWORK.md](NETWORK.md#roles)). |
-| `admin` | Everything an operator can, plus accounts (`/api/users`), API tokens (`/api/tokens`), hub settings (`PATCH /api/settings`: autonomy level, default model, vulnerability SLA days, guardrails), the agent guardrails (`PATCH /api/settings/guardrails`), agent definitions (`POST /api/agents`, `PATCH` / `DELETE /api/agents/{id}`: create, configure and remove agents; core agents can only be paused and reconfigured), the AI model providers, which may hold API keys (`POST /api/llm/providers`, `PATCH` / `DELETE /api/llm/providers/{id}`, `POST /api/llm/providers/{id}/test`), the suite's identity providers (`PUT /api/identity-providers/default`, `PATCH /api/identity-providers/{id}`, `POST /api/identity-providers/{id}/atrium`), tool connections, which hold the tools' API credentials (`PUT` / `DELETE /api/tools/{id}/connection`), the [Sign-in & SSO settings](#sign-in--sso-settings) (`GET` / `PUT` / `DELETE /api/auth/sso`, `POST /api/auth/sso/test`), disabling a leaver's Atrium account (`POST /api/people/{id}/actions/disable_atrium_account`), extension packs (`POST /api/extensions`, `PATCH` / `DELETE /api/extensions/{id}`, `POST /api/extensions/{id}/rollback`, `POST /api/tools/{id}/extend`), self-patches (`POST /api/self-patches`, `POST /api/self-patches/{id}/apply`), the Network app's baselines, backup downloads and settings (`POST` / `DELETE /api/network/devices/{id}/baseline`, `GET /api/network/backups/{id}/download`, `PATCH /api/network/settings`), segmentation zone roles and policy (`PATCH /api/segmentation/zones/{id}`, `PUT /api/segmentation/policy`), emergency device changes (`POST /api/segmentation/changes/{id}/emergency`), maintenance windows (`POST` / `PATCH` / `DELETE /api/network/maintenance-windows[/{id}]`), deleting framework self-assessments (`DELETE /api/frameworks/{id}/assessments/{aid}`), and deciding approvals of kind `extension` and `self_patch` (changes to Atrium itself), `agent_team` (they create agent definitions) and `firewall` (device changes, `code: admin_required`), and approving a `command` on the hub machine or a `process` that starts a tool (`code: admin_required`) - checked by `POST /api/approvals/{id}`, 403 for others. Running commands on the hub machine directly and starting tools directly. |
+| `viewer` | Read everything: every page, every `GET /api` endpoint, the live event stream (`/api/events`) and the API docs (`/api/docs`). Changes nothing. One exception by design: other people's chats with agents - the message log and the event stream keep only who chatted with which agent and the length of the text ([AGENTS.md](AGENTS.md#chat-memory-and-privacy)). |
+| `operator` | Everything a viewer can, plus every state-changing call: import and remove tools, analyse, start (an administrator approves it) and stop tools, propose patches, approve or reject (except extensions, self-patches, agent teams and device changes, and never their own proposal while a second-person guardrail applies; an agent's escalation (`agent_escalation`) they acknowledge or dismiss with an answer the agent reads in its next turn; commands on the hub machine, tool starts and repairs of a network device's connection they may reject but not approve), run commands on SSH hosts and read-only commands on the hub machine (anything else there waits for an administrator, see [Commands on the hub machine](#commands-on-the-hub-machine)), add/remove/discover hosts, add and edit assets, sync, edit compliance controls, risks and policies, chat with the Hub Supervisor and any team agent (`POST /api/agents/{id}/chat`; a reached AI budget or rate limit
+answers 429), read and delete their own conversation with an agent (`GET` / `DELETE /api/agents/{id}/conversation`:
+only the caller's own - administrators may delete, never read, another person's), run a team agent's task (`POST /api/agents/{id}/run`), ask a tool's supervisor for an agent team (`POST /api/tools/{id}/team`; an administrator decides the proposal), choose a tool's identity provider (`POST /api/tools/{id}/sso`) and run provider registrations (`POST /api/tools/{id}/sso/register`), test connections and list a connection field's choices (`GET /api/tools/{id}/connection/options/{field}`, which uses the stored credentials), run, schedule and repair data flows, request scans and triage vulnerabilities, add, edit and remove people, link accounts, unassign a leaver's assets (`POST /api/people/{id}/actions/unassign_assets`), add, edit and remove records of extension apps (`/api/x/{key}`), draw data flows and arrange the shared map layouts (`POST /api/flows`, `PATCH` / `DELETE /api/layouts/{view}`), start and score framework self-assessments (`/api/frameworks/{id}/assessments`), refresh network devices, take device backups, acknowledge drift, place assets on the segmentation map, and preview, propose, withdraw (their own) and revert device changes and propose backup restores ([NETWORK.md](NETWORK.md#roles)), and for agent teams inside tools ([SUBSIDIARIES.md](SUBSIDIARIES.md#working-with-a-team)): ask a tool for a team (`POST /api/tools/{id}/subsidiary`), pause one subsidiary or all (`POST /api/subsidiaries/{id}/pause`, `POST /api/subsidiaries/pause-all`), give its staff a task (`POST /api/subsidiaries/{id}/tasks`), read its audit trail's detail and verify the chain (`GET /api/subsidiaries/{id}/audit?detail=1`, `POST /api/subsidiaries/{id}/audit/verify`), read, close and promote its reports, and approve its ordinary in-tool changes (`subsidiary_action`; signed in as a person, never a change their own task or chat led to). |
+| `admin` | Everything an operator can, plus accounts (`/api/users`), API tokens (`/api/tokens`), hub settings (`PATCH /api/settings`: autonomy level, Claude's default model, vulnerability SLA days, guardrails), the agent guardrails (`PATCH /api/settings/guardrails`), agent definitions (`POST /api/agents`, `PATCH` / `DELETE /api/agents/{id}`: create, configure and remove agents; core agents can only be paused and reconfigured), the AI model providers, which may hold API keys (`POST /api/llm/providers`, `PATCH` / `DELETE /api/llm/providers/{id}`, `POST /api/llm/providers/{id}/test`, and `POST /api/llm/providers/{id}/probe`, which spends a few tokens to check a model's tools and JSON support), the AI price table behind the cost estimates (`PUT /api/llm/prices`; viewers read it), which model agents use (`PATCH /api/llm/selection`: the suite, task and team defaults and the fallback chain; `PATCH /api/agents/{id}/settings`: an agent's own model, instructions, tools, budgets, limits, memory, escalation and notifications, and
+`POST /api/agents/{id}/settings/restore` to bring back an earlier version; viewers read both and the history), the agent
+playground, which spends tokens and may act (`POST /api/agents/{id}/playground`), lifting an agent's budget stop for
+the day (`POST /api/agents/{id}/budget/override`), resuming a team agent's schedule paused after failed runs (`POST /api/agents/{id}/schedule/resume`), the suite's identity providers (`PUT /api/identity-providers/default`, `PATCH /api/identity-providers/{id}`, `POST /api/identity-providers/{id}/atrium`), tool connections, which hold the tools' API credentials (`PUT` / `DELETE /api/tools/{id}/connection`), the [Sign-in & SSO settings](#sign-in--sso-settings) (`GET` / `PUT` / `DELETE /api/auth/sso`, `POST /api/auth/sso/test`), disabling a leaver's Atrium account (`POST /api/people/{id}/actions/disable_atrium_account`), extension packs (`POST /api/extensions`, `PATCH` / `DELETE /api/extensions/{id}`, `POST /api/extensions/{id}/rollback`, `POST /api/tools/{id}/extend`), self-patches (`POST /api/self-patches`, `POST /api/self-patches/{id}/apply`), the Network app's baselines, backup downloads and settings (`POST` / `DELETE /api/network/devices/{id}/baseline`, `GET /api/network/backups/{id}/download`, `PATCH /api/network/settings`), segmentation zone roles and policy (`PATCH /api/segmentation/zones/{id}`, `PUT /api/segmentation/policy`), emergency device changes (`POST /api/segmentation/changes/{id}/emergency`), maintenance windows (`POST` / `PATCH` / `DELETE /api/network/maintenance-windows[/{id}]`), deleting framework self-assessments (`DELETE /api/frameworks/{id}/assessments/{aid}`), shared Home dashboards and the default one (`POST /api/dashboards/shared`, `PUT` / `DELETE /api/dashboards/shared/{id}`, `PUT /api/dashboards/default`), and deciding approvals of kind `extension` and `self_patch` (changes to Atrium itself), `agent_team` (they create agent definitions) and `firewall` (device changes, `code: admin_required`), a subsidiary's charter (`subsidiary_charter`), its bridge patch (`patch` with the strategy `atrium_bridge`) and its in-tool changes of `admin` risk or with an external effect (`code: admin_required`; approving any subsidiary approval needs a signed-in person, `code: person_required` for a token), the subsidiaries' charters, dedicated credentials, enrollments, conformance runs, signing keys, resume, stop and archive (`PUT /api/subsidiaries/{id}/charter`, `PUT` / `DELETE /api/subsidiaries/{id}/credential`, `POST /api/subsidiaries/{id}/enrollment`, `/conformance`, `/rotate-key`, `/resume`, `/stop`, `DELETE /api/subsidiaries/{id}`; enrollment, resume and stop signed in as a person), and approving a `command` on the hub machine or a `process` that starts a tool (`code: admin_required`) - checked by `POST /api/approvals/{id}`, 403 for others. Running commands on the hub machine directly and starting tools directly. |
 | `integration` | API tokens only. Exactly two calls: `POST /api/bus/publish` and `GET /api/health`. |
+| `subsidiary` | The token of a subsidiary's sidecar only, created by its enrollment. Only `/api/subsidiary/v1/*`, and only for its own subsidiary ([below](#subsidiary-tokens)). |
 
 Endpoints outside the role ladder:
 
@@ -26,6 +33,9 @@ Endpoints outside the role ladder:
 | --- | --- |
 | `GET /api/health`, `GET /api/auth/me`, `POST /api/auth/login`, `POST /api/auth/setup`, `GET /api/auth/oidc/login`, `GET /api/auth/oidc/callback` | Anyone (public) |
 | `POST /api/auth/logout`, `POST /api/auth/password`, `GET` and `DELETE /api/auth/sessions` | Any signed-in person (self-service) |
+| `POST /api/dashboards/mine`, `PUT` / `DELETE /api/dashboards/mine/{id}`, `PUT /api/dashboards/prefs` | Any signed-in person, for their own Home dashboards and tabs only (self-service; API tokens get 403 `person_required`; [DASHBOARD.md](DASHBOARD.md#roles)) |
+| `POST /api/subsidiary/v1/enroll` | Anyone with a subsidiary's one-time enrollment code (public, throttled like sign-ins) |
+| every other `/api/subsidiary/v1/*` route | A `subsidiary` token only, for its own subsidiary (401 without a token; 403 for people and other tokens) |
 
 The UI hides controls your role cannot use, but that is a convenience only: the server checks the
 role on every call.
@@ -38,6 +48,7 @@ Refusals:
 | 403 | `{"detail": "Your role (viewer) cannot do this."}` | The role is too low. |
 | 403 | `{"detail": "Change your password first.", "code": "password_change_required"}` | The account must change its password; only `GET /api/auth/me`, `POST /api/auth/logout` and `POST /api/auth/password` work until it does. |
 | 403 | | An `integration` token on anything other than its two endpoints. |
+| 403 | `{"detail": "Subsidiary tokens can only use the subsidiary API."}` | A `subsidiary` token outside `/api/subsidiary/v1/*`; people and other tokens on that API get `{"detail": "Only a subsidiary's sidecar calls this API."}`. |
 | 403 | `{"detail": "Missing X-Hub-Request header"}` | A state-changing browser request without `X-Hub-Request: 1` (see [Security notes](#security-notes)). |
 
 ## First-run setup
@@ -281,7 +292,8 @@ curl -H "Authorization: Bearer $HUB_TOKEN" http://127.0.0.1:8710/api/tools
   without approval), and a command on the hub machine from a token without the admin role always
   waits for an administrator. Commands a signed-in person types run directly, within
   [Commands on the hub machine](#commands-on-the-hub-machine).
-- Tokens cannot use the self-service endpoints (passwords, sessions).
+- Tokens cannot use the self-service endpoints (passwords, sessions, personal dashboards); they read the shared
+  dashboards only.
 
 ### Integration tokens for tools that publish events
 
@@ -305,6 +317,24 @@ other `source` is refused with `403`, so a leaked or misbehaving adapter cannot 
 events (an identity provider's `user.deleted`, say). Integration tokens from before this rule are
 bound to the first source they publish as. The delivery log records who published each event
 (`by`, e.g. `token:grafana-events`).
+
+### Subsidiary tokens
+
+The sidecar of an agent team inside a tool ([SUBSIDIARIES.md](SUBSIDIARIES.md)) has a token of its own role,
+`subsidiary`. It is never created on **Users & access** (`POST /api/tokens` refuses the role):
+
+- **Enrollment.** An administrator, signed in as a person, issues a one-time code on the subsidiary's Setup tab
+  (`POST /api/subsidiaries/{tool}/enrollment`): 32 random bytes, valid 30 minutes, shown once, of which Atrium keeps
+  only the SHA-256. The sidecar sends it with its own public key to `POST /api/subsidiary/v1/enroll` (public, single
+  use, throttled per address like sign-ins) and receives the token. Issuing a new enrollment revokes the current
+  token.
+- **Owner binding.** The token is owned by the administrator who issued the enrollment and works only while that
+  account exists, is enabled and is an administrator; disabling, deleting or demoting it revokes the token, and the
+  subsidiary shows the flag `owner_disabled` until another administrator enrolls the sidecar again.
+- **Lifetime.** 30 days; the sidecar asks for a new one at half-life (`POST /api/subsidiary/v1/rotate`), and the old one
+  works until the new one is first used.
+- **Reach.** Only `/api/subsidiary/v1/*`, and only its own subsidiary: everywhere else 403. Its actor and bus id are
+  `subsidiary:<tool>`, never a person, so it can neither propose nor decide approvals.
 
 ## Commands on the hub machine
 
@@ -620,6 +650,11 @@ terminated still has an enabled Atrium account with their email address (or an a
 [PEOPLE.md](PEOPLE.md#leavers).
 
 ## Security notes
+
+- **Chats are private.** A person's chat with an agent reaches no other account: the agent keeps a separate memory per
+  person (an API token shares its owner's; deleting an account drops its conversations), and the message log and the
+  event stream carry a chat's routing and size, never its text. What is sent to an AI model has every secret the hub
+  knows masked ([AGENTS.md](AGENTS.md#models-and-providers)).
 
 - **Put TLS in front.** Without TLS, passwords and session cookies cross the network in clear text.
   Keep the hub bound to `127.0.0.1` and put a reverse proxy (Caddy, nginx, Traefik, ...) in front that

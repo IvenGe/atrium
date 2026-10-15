@@ -18,6 +18,7 @@ PUBLIC = {
     ("POST", "/api/auth/setup"),
     ("GET", "/api/auth/oidc/login"),
     ("GET", "/api/auth/oidc/callback"),
+    ("POST", "/api/subsidiary/v1/enroll"),  # a subsidiary's sidecar with its one-time code (throttled)
 }
 SELF_SERVICE = {
     ("POST", "/api/auth/logout"),
@@ -26,10 +27,13 @@ SELF_SERVICE = {
     ("DELETE", "/api/auth/sessions"),
 }
 ADMIN_TREES = ("/api/users", "/api/tokens")
-# Single routes that need admin: settings (SLA, guardrails), agent definitions (create, configure, remove), the AI
-# model providers (they may hold API keys), the identity providers (credentials for sign-in), tool connections
-# (they hold the tools' API credentials), the Sign-in & SSO settings, disabling a person's Atrium account, extensions
-# and self-patches.
+# Single routes that need admin: settings (SLA, guardrails), agent definitions (create, configure, remove) and their
+# settings (model, instructions, tools, budgets, escalation; restoring a version; lifting a budget stop; resuming a
+# schedule paused after failed runs; the playground, which spends tokens), the AI model providers (they may hold API
+# keys; testing and probing them spends tokens), the suite's model selection and the AI price table, the
+# identity providers (credentials for sign-in), tool connections
+# (they hold the tools' API credentials), the Sign-in & SSO settings, disabling a person's Atrium account, extensions,
+# self-patches, and the shared Home dashboards with the default dashboard.
 # Everything else in the People app follows the default: viewers read, operators change people and links.
 ADMIN_ROUTES = (
     ("PATCH", re.compile(r"/api/settings")),
@@ -41,6 +45,14 @@ ADMIN_ROUTES = (
     ("PATCH", re.compile(r"/api/llm/providers/[^/]+")),
     ("DELETE", re.compile(r"/api/llm/providers/[^/]+")),
     ("POST", re.compile(r"/api/llm/providers/[^/]+/test")),
+    ("POST", re.compile(r"/api/llm/providers/[^/]+/probe")),  # a few paid tokens per check
+    ("PUT", re.compile(r"/api/llm/prices")),  # the price table behind cost estimates (and later budgets)
+    ("PATCH", re.compile(r"/api/llm/selection")),  # which model agents use by default (suite, purposes, teams)
+    ("PATCH", re.compile(r"/api/agents/[^/]+/settings")),  # an agent's own model, instructions, tools and limits
+    ("POST", re.compile(r"/api/agents/[^/]+/settings/restore")),  # bring back an earlier version of them
+    ("POST", re.compile(r"/api/agents/[^/]+/playground")),  # spends tokens; may act (approvals apply) when asked
+    ("POST", re.compile(r"/api/agents/[^/]+/budget/override")),  # lifts today's budget stop of an agent
+    ("POST", re.compile(r"/api/agents/[^/]+/schedule/resume")),  # runs a schedule paused after failed runs again
     ("PUT", re.compile(r"/api/identity-providers/default")),
     ("PATCH", re.compile(r"/api/identity-providers/[^/]+")),
     ("POST", re.compile(r"/api/identity-providers/[^/]+/atrium")),
@@ -87,12 +99,44 @@ ADMIN_ROUTES = (
     # Compliance frameworks: viewers read catalogs, assessments and audit packs, operators start and score
     # self-assessments (the default); deleting one removes evidence of past assessments, so it needs admin.
     ("DELETE", re.compile(r"/api/frameworks/[^/]+/assessments/[^/]+")),
+    # Home dashboards (hub/dashboards_api.py): shared dashboards and the default are the administrators'; everyone
+    # arranges their own (SELF_SERVICE_ROUTES below) and reads the widgets their role allows (the default).
+    ("POST", re.compile(r"/api/dashboards/shared")),
+    ("PUT", re.compile(r"/api/dashboards/shared/[^/]+")),
+    ("DELETE", re.compile(r"/api/dashboards/shared/[^/]+")),
+    ("PUT", re.compile(r"/api/dashboards/default")),
+    # Subsidiaries (hub/subsidiary/routes.py): viewers read (runs too), operators propose, pause (protective), give
+    # tasks (POST .../tasks) and handle reports (the default); the charter, the dedicated credential, enrollment, conformance, signing keys,
+    # resume, stop and archive are the administrators' (enrollment, resume and stop signed in as a person; deciding
+    # charters, bridge patches and admin-risk in-tool actions needs admin too - checked by the approvals route).
+    ("PUT", re.compile(r"/api/subsidiaries/[^/]+/charter")),
+    ("PUT", re.compile(r"/api/subsidiaries/[^/]+/credential")),
+    ("DELETE", re.compile(r"/api/subsidiaries/[^/]+/credential")),
+    ("POST", re.compile(r"/api/subsidiaries/[^/]+/enrollment")),
+    ("POST", re.compile(r"/api/subsidiaries/[^/]+/conformance")),
+    ("POST", re.compile(r"/api/subsidiaries/[^/]+/rotate-key")),
+    ("POST", re.compile(r"/api/subsidiaries/[^/]+/resume")),
+    ("POST", re.compile(r"/api/subsidiaries/[^/]+/stop")),
+    ("DELETE", re.compile(r"/api/subsidiaries/[^/]+")),
 )
-# Reads that act on a tool with its stored credentials, so they need operator.
+# Self-service writes: a signed-in person's own dashboards and dashboard preferences, at any role. The handler scopes
+# every write to the caller's user id and refuses API tokens (person_required).
+SELF_SERVICE_ROUTES = (
+    ("POST", re.compile(r"/api/dashboards/mine")),
+    ("PUT", re.compile(r"/api/dashboards/mine/[^/]+")),
+    ("DELETE", re.compile(r"/api/dashboards/mine/[^/]+")),
+    ("PUT", re.compile(r"/api/dashboards/prefs")),
+)
+# Reads that act on a tool with its stored credentials, so they need operator - and a person's own conversation with
+# an agent (chatting needs operator; the handler returns only the caller's own, DELETE of it follows the default).
 OPERATOR_READS = (
     ("GET", re.compile(r"/api/tools/[^/]+/connection/options/[^/]+")),
+    ("GET", re.compile(r"/api/agents/[^/]+/conversation")),
 )
 INTEGRATION = {("POST", "/api/bus/publish"), ("GET", "/api/health")}
+# The sidecar API of subsidiaries: only a subsidiary token (role "subsidiary", bound to its subsidiary by the route)
+# reaches it - and a subsidiary token reaches nothing else. Enrolling is public (a one-time code, throttled).
+SUBSIDIARY_API = "/api/subsidiary/v1/"
 PASSWORD_CHANGE = {("GET", "/api/auth/me"), ("POST", "/api/auth/logout"), ("POST", "/api/auth/password")}
 
 
@@ -109,11 +153,17 @@ def _key(method: str, path: str) -> tuple[str, str]:
     return ("GET" if method == "HEAD" else method), (path.rstrip("/") or "/")
 
 
+def is_subsidiary_api(path: str) -> bool:
+    return path.startswith(SUBSIDIARY_API) and ".." not in path.split("/")
+
+
 def required_role(method: str, path: str) -> str | None:
-    """The minimum role for a request; None means the route is public."""
+    """The minimum role for a request; None means the route is public. "subsidiary": only a subsidiary's sidecar."""
     method, path = _key(method, path)
     if (method, path) in PUBLIC:
         return None
+    if _under(path, SUBSIDIARY_API.rstrip("/")):
+        return "subsidiary"
     if (method, path) in SELF_SERVICE:
         return "viewer"
     if any(_under(path, root) for root in ADMIN_TREES):
@@ -122,6 +172,8 @@ def required_role(method: str, path: str) -> str | None:
         return "admin"
     if any(method == m and rx.fullmatch(path) for m, rx in OPERATOR_READS):
         return "operator"
+    if any(method == m and rx.fullmatch(path) for m, rx in SELF_SERVICE_ROUTES):
+        return "viewer"
     if method == "GET":
         return "viewer"
     return "operator"
@@ -136,6 +188,8 @@ def authorize(principal: "Principal | None", method: str, path: str) -> tuple[in
     key = _key(method, path)
     if principal is not None and principal.role == "integration":
         return None if key in INTEGRATION else (403, {"detail": "Integration tokens can only publish events."})
+    if principal is not None and principal.role == "subsidiary":
+        return None if is_subsidiary_api(path) else (403, {"detail": "Subsidiary tokens can only use the subsidiary API."})
     if principal is not None and principal.must_change_password and key not in PASSWORD_CHANGE:
         return 403, {"detail": "Change your password first.", "code": "password_change_required"}
     required = required_role(method, path)
@@ -143,6 +197,8 @@ def authorize(principal: "Principal | None", method: str, path: str) -> tuple[in
         return None
     if principal is None:
         return 401, {"detail": "Sign in required"}
+    if required == "subsidiary":
+        return 403, {"detail": "Only a subsidiary's sidecar calls this API."}
     if not role_allows(principal.role, required):
         return 403, {"detail": f"Your role ({principal.role}) cannot do this."}
     return None

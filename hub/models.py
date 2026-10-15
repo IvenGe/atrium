@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 import time
 import unicodedata
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 from urllib.parse import parse_qsl, urlsplit, urlunsplit
 
 from pydantic import BaseModel, Field, computed_field, field_validator
@@ -57,6 +57,19 @@ class Launch(BaseModel):
     cwd: str | None = None
     port: int | None = None
     env: dict[str, str] = {}
+    # adapter-relative files of public KEY=value lines merged into the child environment (e.g. subsidiary/bridge.env)
+    env_files: list[str] = Field([], max_length=8)
+    test: str | None = Field(None, max_length=500)  # the tool's own test command (bridge patches run it sandboxed)
+
+    @field_validator("env_files")
+    @classmethod
+    def _env_files(cls, value: list[str]) -> list[str]:
+        for path in value:
+            parts = str(path).replace("\\", "/").split("/")
+            if not path or len(path) > 200 or path.startswith("/") or re.match(r"^[A-Za-z]:", path) \
+                    or any(p in ("", ".", "..") for p in parts):
+                raise ValueError("env_files are adapter-relative paths")
+        return value
 
 
 class Health(BaseModel):
@@ -121,6 +134,16 @@ class PortalUi(BaseModel):
     icon: str | None = None
     color: str | None = None
     embed: bool = False
+    # Dashboard widgets the tool suggests (hub.extensions.pack.WidgetDecl, at most 10; round4-dashboard-spec.md 6.6):
+    # untrusted data, only ever offered as gallery suggestions scoped to this tool.
+    widgets: list[dict[str, Any]] = Field(default_factory=list, max_length=10)
+
+    @field_validator("widgets")
+    @classmethod
+    def _widgets(cls, value: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        from .extensions.pack import WidgetDecl  # the pack module imports this one
+
+        return [WidgetDecl.model_validate(w).model_dump(mode="json") for w in value]
 
     # Both come from a repository's hub.manifest.yaml: anything else is dropped (the UI then uses its own colour and
     # the tool's first letter) rather than refusing the whole manifest.
@@ -135,6 +158,17 @@ class PortalUi(BaseModel):
         if not isinstance(value, str) or len(text := value.strip()) > 16:
             return None
         return text if 1 <= (icon_glyphs(text) or 0) <= ICON_GLYPHS else None
+
+
+class BridgeSpec(BaseModel):
+    """An Atrium bridge in the tool's code (docs/SUBSIDIARIES.md): the contract it implements and the SHA-256 of the
+    raw bytes of its committed atrium-bridge.json."""
+
+    contract: str = "atrium-bridge/1"
+    stack: str = Field(max_length=40)
+    core: str = Field(max_length=60)
+    manifest_path: str = "atrium-bridge.json"
+    manifest_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
 class Manifest(BaseModel):
@@ -155,6 +189,7 @@ class Manifest(BaseModel):
     events: Events = Field(default_factory=Events)
     ui: PortalUi = Field(default_factory=PortalUi)
     native: bool = False  # True when the tool ships (or adopted) its own hub manifest
+    bridge: BridgeSpec | None = None  # set when an approved bridge patch is applied
 
     def public(self) -> dict[str, Any]:
         """The manifest as the API, the bus log and SSE show it (every viewer sees it): whether a webhook URL is set
@@ -226,7 +261,7 @@ class Host(BaseModel):
 class Approval(BaseModel):
     id: str
     kind: Literal["command", "patch", "process", "flow", "scan", "repair", "agent_team", "extension", "self_patch",
-                  "firewall"]
+                  "firewall", "agent_escalation", "subsidiary_charter", "subsidiary_action"]
     title: str
     detail: str = ""
     payload: dict[str, Any] = {}
@@ -258,6 +293,30 @@ class SsoPlan(BaseModel):
     register_command: str | None = None  # set when the patch is applied
 
 
+class BridgePlan(BaseModel):
+    """What a bridge patch (strategy "atrium_bridge", hub/subsidiary) adds to a tool, as Atrium computed it: the
+    approval card shows these facts, never a model's own description of them."""
+
+    subsidiary_id: str
+    contract: str = "atrium-bridge/1"
+    stack: str = Field(max_length=40)
+    core: str = Field(max_length=60)  # "<family>/<version>"
+    vendored_core: bool = False  # False: a model wrote the core (the conformance vectors gate it)
+    designer: Literal["model", "templates"] = "templates"
+    manifest_path: str = "atrium-bridge.json"
+    manifest_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    actions: list[dict[str, Any]] = []  # the action table: risks at their floors (hub.subsidiary.contract)
+    removed: list[dict[str, Any]] = []  # proposed actions left out: {id, rule, reason}
+    raised: list[dict[str, Any]] = []  # risks raised to their floors: {id, declared, risk, reason}
+    events: list[str] = []
+    panel: bool = False
+    mounted: bool = True  # False: mount_steps are the lines a person adds
+    mount_steps: list[str] = []
+    setup_steps: list[str] = []  # the in-app service principal "atrium-team": a migration or a manual step
+    checks: list[dict[str, Any]] = []  # static check findings: {rule, file, line, detail}
+    checks_ok: bool = False
+
+
 class Patch(BaseModel):
     id: str
     tool_id: str
@@ -274,6 +333,10 @@ class Patch(BaseModel):
     branch: str | None = None
     location: str | None = None
     error: str | None = None
+    generated_by: dict[str, str] | None = None  # {provider, model} of the AI model that wrote it (HB-CM-2 evidence)
+    bridge: BridgePlan | None = None  # strategy "atrium_bridge"
+    tests: dict[str, Any] | None = None  # the tool's own tests at proposal: {ok: true|false|None, status, reason?, ...}
+    commit: str | None = None  # the commit an approval binds (patches proposed on a branch)
     created_at: float = Field(default_factory=now)
 
 
@@ -411,9 +474,10 @@ class SyncLink(BaseModel):
 # Agent teams: custom agents and the model providers they run on
 # --------------------------------------------------------------------------------------
 
-AgentPermission = Literal["read", "tool_api", "commands", "patches", "flows", "assets_write", "grc_write", "agents"]
+AgentPermission = Literal["read", "tool_api", "commands", "patches", "flows", "assets_write", "grc_write", "agents",
+                          "tool_actions"]
 AGENT_PERMISSIONS: tuple[str, ...] = ("read", "tool_api", "commands", "patches", "flows", "assets_write", "grc_write",
-                                      "agents")
+                                      "agents", "tool_actions")
 AGENT_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,47}$")
 MIN_SCHEDULE = 5  # minutes
 
@@ -426,16 +490,20 @@ class AgentDef(BaseModel):
     title: str = Field("Team agent", max_length=80)  # its role in the team
     description: str = Field("", max_length=1000)
     instructions: str = Field("", max_length=20_000)
-    provider: str = "rules"  # "anthropic" | a local provider id | "rules"
+    provider: str = ""  # "" inherit (the suite's model choice) | "anthropic" | a provider id | "rules"
     model: str = Field("", max_length=200)  # empty: the provider's default
     permissions: list[AgentPermission] = ["read"]
     team: str = "hub"  # a tool id, "hub", or a built-in app's agent id ("module:assets", ...)
+    # "sidecar": staff of the team's tool subsidiary, running next to the tool (hub/subsidiary); set at creation,
+    # changed only through the subsidiary's charter
+    placement: Literal["hub", "sidecar"] = "hub"
     parent: str | None = None  # the agent that created it (for agents people create: the lead of its team)
     depth: int = Field(1, ge=1)
     schedule_minutes: int = Field(0, ge=0, le=525_600)  # 0 = no schedule, else at least MIN_SCHEDULE
     task: str = Field("", max_length=4000)  # the standing task it runs on its schedule
     enabled: bool = True
-    template: str | None = None  # "<category>:<role>" or "claude" for proposed members
+    template: str | None = None  # "<category>:<role>", or "model" ("claude" before) for members an AI model designed
+    config: AgentConfig = Field(default_factory=lambda: AgentConfig())  # per-task models, local only (defined below)
     created_by: str = ""
     created_at: float = Field(default_factory=now)
     updated_by: str = ""
@@ -443,6 +511,9 @@ class AgentDef(BaseModel):
     running: float | None = None  # set while a run is under way
     last_run: float | None = None
     last_result: dict[str, Any] | None = None  # {ok, reply, trigger, at, duration}
+    failures: int = Field(0, ge=0)  # failed runs in a row (a skipped run does not count)
+    schedule_paused: bool = False  # paused after config.escalation.failed_runs failures; resumed by an administrator
+    inbox: list[dict[str, Any]] = Field([], max_length=10)  # answers to its escalations, for its next model turn
 
     @field_validator("id")
     @classmethod
@@ -464,25 +535,168 @@ class AgentDef(BaseModel):
         return value
 
 
+LlmKind = Literal["anthropic", "openai", "openai_compatible"]
+
+
+class ModelCaps(BaseModel):
+    """What one model of a provider supports (hub/llm/types.py Caps, stored); None = unknown."""
+
+    tools: bool | None = None
+    json_schema: bool | None = None
+    json_object: bool | None = None
+    temperature: bool | None = None
+    effort_levels: list[str] | None = None
+    max_output_tokens: int | None = None
+    context_window: int | None = None
+    lifecycle: str | None = None
+    retires_at: str | None = None
+    source: Literal["api", "probe", "learned", "admin", "default"] = "default"
+    at: float | None = None
+
+
+class Supplier(BaseModel):
+    """Who answers for a cloud AI provider as a supplier, and when its terms / data processing agreement were last
+    reviewed (compliance control HB-SC-1)."""
+
+    owner: str = Field("", max_length=200)  # a person from the People app, or free text
+    reviewed_at: float | None = None
+    notes: str = Field("", max_length=500)
+
+
 class LlmProvider(BaseModel):
-    """A local model server with an OpenAI-compatible API (Ollama, LM Studio, vLLM, llama.cpp server).
-    Stored in "llm_providers"; the API key is Fernet-encrypted and never returned."""
+    """An AI model provider: the built-in Claude ("anthropic") and OpenAI ("openai") records, and model servers with
+    an OpenAI-compatible API (Ollama, LM Studio, vLLM, llama.cpp server). Stored in "llm_providers"; the API key is
+    Fernet-encrypted and never returned."""
 
     id: str
     name: str = Field(min_length=1, max_length=80)
-    kind: Literal["openai_compatible"] = "openai_compatible"
+    kind: LlmKind = "openai_compatible"
+    variant: Literal["openai", "azure"] | None = None  # kind "openai"
     base_url: str
     default_model: str = Field("", max_length=200)
     api_key: str | None = None  # Fernet token
     endpoint: str = ""  # scheme://host:port the key was entered for
+    enabled: bool = True
     tools: bool = True  # send tool definitions (servers without tool calling answer in plain text)
+    structured_output: Literal["auto", "json_schema", "json_object", "prompt"] = "auto"  # openai_compatible
+    send_effort: bool = False  # openai_compatible: send reasoning_effort
+    location: Literal["self_hosted", "third_party"] = "self_hosted"  # always third_party for anthropic / openai
+    location_confirmed: bool = False  # an administrator marked a public host self-hosted
     timeout: float = Field(300, ge=5, le=3600)
+    requests_per_minute: int | None = Field(None, ge=1, le=100_000)  # more wait briefly, then fail as rate-limited
+    max_concurrency: int = Field(4, ge=1, le=64)  # calls at a time; more wait their turn
     models: list[str] = []  # from the last successful test
+    pinned_models: list[str] = []  # shown first in pickers
+    capabilities: dict[str, ModelCaps] = {}  # per model id
+    supplier: Supplier = Supplier()
     last_test: dict[str, Any] | None = None
     created_by: str = ""
     created_at: float = Field(default_factory=now)
     updated_by: str = ""
     updated_at: float = Field(default_factory=now)
+
+
+class LlmChoice(BaseModel):
+    provider: str = Field("", max_length=64)  # "" inherit | "auto" (suite default only) | "rules" | a provider id
+    model: str = Field("", max_length=200)  # "" = the provider's default model
+
+
+class TeamLlm(LlmChoice):
+    local_only: bool = False
+
+
+class LlmSelection(BaseModel):
+    """Which model agents use when they do not choose one (settings doc "llm_selection"; hub/llm/resolve.py)."""
+
+    default: LlmChoice = LlmChoice(provider="auto")
+    purposes: dict[Literal["chat", "code", "generate"], LlmChoice] = {}
+    fallback: list[str] = Field([], max_length=8)  # provider ids, in order; rules is always last
+    teams: dict[str, TeamLlm] = {}
+    language: str = "auto"
+    version: int = 0
+    updated_by: str = ""
+    updated_at: float = 0
+
+
+EFFORT_LEVELS = ("none", "low", "medium", "high", "xhigh", "max")
+
+
+class ModelParams(BaseModel):
+    """How an agent's model calls run; "" / None = each call's own default (hub/llm applies them to every call)."""
+
+    effort: Literal["", "none", "low", "medium", "high", "xhigh", "max"] = ""
+    temperature: float | None = Field(None, ge=0, le=2)  # only where the model accepts it
+    max_output_tokens: int | None = Field(None, ge=256, le=200_000)  # a cap: a call never asks for more
+    max_tool_rounds: int = Field(12, ge=1, le=30)
+
+
+class Budget(BaseModel):
+    """An agent's AI spending limits per UTC day / month (None = no limit). With `hard_stop` off a reached budget is
+    only reported."""
+
+    daily_tokens: int | None = Field(None, ge=1_000, le=10_000_000_000)
+    daily_cost_usd: float | None = Field(None, ge=0.01, le=100_000)
+    monthly_cost_usd: float | None = Field(None, ge=0.01, le=1_000_000)
+    hard_stop: bool = True
+
+
+class RateLimit(BaseModel):
+    calls_per_minute: int | None = Field(None, ge=1, le=600)  # model calls
+    runs_per_hour: int | None = Field(None, ge=1, le=3_600)  # chat turns and task runs
+
+
+class MemoryConfig(BaseModel):
+    """What an agent remembers of a person's conversation - always per person (hub/llm/memory.py)."""
+
+    mode: Literal["off", "session", "persisted"] = "session"
+    max_turns: int = Field(40, ge=2, le=200)  # then the conversation starts afresh (with a notice)
+    retention_days: int = Field(30, ge=1, le=365)  # persisted: purged after this many days without a message
+
+
+class EscalationConfig(BaseModel):
+    """How a chat agent asks a person (hub/agents/notify.py): the `escalate` tool (an "agent_escalation" approval
+    that operators acknowledge or dismiss, with a note the agent reads in its next turn), the cases it must escalate,
+    and - custom agents - pausing its schedule after failed runs in a row (0 = never)."""
+
+    tool: bool = True
+    rules: list[Annotated[str, Field(max_length=300)]] = Field([], max_length=20)
+    failed_runs: int = Field(3, ge=0, le=20)
+    pause_schedule: bool = True
+    max_per_day: int = Field(5, ge=1, le=50)  # beyond it the tool says so: the queue cannot be flooded
+
+
+NotifyEvent = Literal["run_failed", "budget_reached", "escalation", "approval_requested", "run_done"]
+
+
+class NotifyConfig(BaseModel):
+    """Which of an agent's events are notifications (an activity entry with data.notify = the targets, shown in the
+    Agents page's "Needs attention" strip) and whether they also go to integrated tools (tool bus hub.agent.<event>)."""
+
+    events: list[NotifyEvent] = Field(["run_failed", "budget_reached", "escalation"], max_length=5)
+    targets: list[str] = Field(["role:admin"], max_length=20)  # "role:admin" | "role:operator" | "user:<id>"
+    toolbus: bool = False
+
+
+class AgentConfig(BaseModel):
+    """An agent's own settings beyond its definition, the same for core agents (the "agents" document) and custom
+    agents (AgentDef.config): per-task model choices (the Patch Agent's code changes and structured generation),
+    whether it may only run on self-hosted models, model parameters, instructions added to the built-in ones (core
+    agents), its reply language, the tools it may use (None = all its permissions allow), budgets, rate limits,
+    memory, escalation and notifications. `version` counts the changes (optimistic concurrency; hub/agents/settings.py keeps the history)."""
+
+    purposes: dict[Literal["code", "generate"], LlmChoice] = {}
+    local_only: bool = False
+    params: ModelParams = Field(default_factory=ModelParams)
+    instructions_mode: Literal["append", "replace"] = "append"  # core agents: "replace" = the `instructions` text
+    extra_instructions: str = Field("", max_length=20_000)  # core agents, appended to the built-in instructions
+    language: str = Field("", max_length=35)  # "" = the suite default; "auto" = no reply language; else BCP 47
+    allowed_tools: list[str] | None = Field(None, max_length=100)
+    budget: Budget = Field(default_factory=Budget)
+    rate: RateLimit = Field(default_factory=RateLimit)
+    memory: MemoryConfig = Field(default_factory=MemoryConfig)
+    escalation: EscalationConfig = Field(default_factory=EscalationConfig)
+    notify: NotifyConfig = Field(default_factory=NotifyConfig)
+    version: int = 0
 
 
 # --------------------------------------------------------------------------------------
@@ -603,7 +817,8 @@ class ControlState(BaseModel):
 # --------------------------------------------------------------------------------------
 
 UserRole = Literal["viewer", "operator", "admin"]
-TokenRole = Literal["viewer", "operator", "admin", "integration"]
+# "subsidiary": a subsidiary's sidecar (hub/subsidiary); only issued by its enrollment, never by POST /api/tokens
+TokenRole = Literal["viewer", "operator", "admin", "integration", "subsidiary"]
 USERNAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{1,63}$")
 
 
@@ -653,6 +868,8 @@ class ApiToken(BaseModel):
     # Integration tokens: the tool whose events the token publishes - /api/bus/publish refuses any other source
     # (review F31). Tokens from before are bound to the first source they publish as.
     tool_id: str | None = None
+    # Subsidiary tokens: the subsidiary (sub_<12 hex>) whose sidecar API alone the token reaches; tool_id is its tool
+    subsidiary_id: str | None = None
     created_at: float = Field(default_factory=now)
     last_used: float | None = None
     expires_at: float | None = None
@@ -664,4 +881,5 @@ def public_user(user: User) -> dict[str, Any]:
 
 
 def public_token(token: ApiToken) -> dict[str, Any]:
-    return token.model_dump(mode="json", exclude={"token_hash", "owner_id"} | ({"tool_id"} if token.tool_id is None else set()))
+    hidden = {"token_hash", "owner_id"} | {k for k in ("tool_id", "subsidiary_id") if getattr(token, k) is None}
+    return token.model_dump(mode="json", exclude=hidden)

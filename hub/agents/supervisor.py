@@ -14,8 +14,10 @@ from ..extensions import registry as extension_registry
 from ..integration import connections, flows, identity, importer, strategies
 from ..integration.compatibility import evaluate_suite, suite_matrix
 from ..integration.identity import SSO_STRATEGIES
-from ..models import AGENT_PERMISSIONS, strip_url_credentials
-from . import teams, toolkit
+from ..llm import Limited, LLMUnavailable, Msg, ReplyMeta
+from ..models import AGENT_PERMISSIONS, AgentConfig, strip_url_credentials
+from . import notify, teams, toolkit
+from . import settings as agent_settings
 from .base import BaseAgent
 
 HELP = (
@@ -25,7 +27,8 @@ HELP = (
     "- `analyze <tool>` / `patch <tool>` / `start <tool>` / `stop <tool>`\n"
     "- `run <command>` or `run on <host>: <command>`\n"
     "- `health`, `assets`, `compliance`\n"
-    "With ANTHROPIC_API_KEY set I also understand plain language and can plan multi-step work."
+    "With an AI model (Claude, or a local model - Settings > AI providers) I also understand plain language and can "
+    "plan multi-step work."
 )
 
 SYSTEM = """You are the Hub Supervisor, the orchestrating agent of an integration hub - an "office suite" that brings
@@ -55,6 +58,7 @@ class HubSupervisor(BaseAgent):
     role = "supervisor"
     title = "Hub Supervisor"
     uses_llm = True
+    purposes = ("chat",)
     max_concurrency = 16  # imports can take minutes; chat must stay responsive
     permissions = AGENT_PERMISSIONS  # its chat gets every tool of the shared toolkit
     description = ("Orchestrates the hub. Imports tools, assigns a supervisor to each, scores how well the suite "
@@ -63,8 +67,6 @@ class HubSupervisor(BaseAgent):
 
     def __init__(self, hub):
         super().__init__(hub, "supervisor", "Hub Supervisor")
-        self._history: list[dict[str, Any]] = []
-        self._chat_lock = asyncio.Lock()
 
     # -- tool lifecycle ----------------------------------------------------------------
 
@@ -200,6 +202,8 @@ class HubSupervisor(BaseAgent):
         return asked
 
     async def on_approval_decided(self, body: dict[str, Any], msg: Message) -> None:
+        if notify.answered(self.hub, self.id, body):  # a person answered its escalation: for its next chat turn
+            return
         approval = self.hub.approvals.get(body["approval_id"])
         if approval is not None and approval.kind == "agent_team":  # members it proposed from chat
             teams.settle(self.hub, approval.id, bool(body.get("approved")))
@@ -268,31 +272,52 @@ class HubSupervisor(BaseAgent):
     async def on_chat(self, body: dict[str, Any], msg: Message) -> dict[str, Any]:
         text = str(body.get("text", "")).strip()
         person = msg.sender if sender_person(msg.sender) else None  # commands asked for in chat are judged by them (F1)
-        if self.hub.llm.available:
+        res = self.hub.llm.resolve(self.id, "chat")
+        if res.ready:
+            config = self.hub.llm.config(self.id)
+            self.hub.llm.start_run(self.id, config)  # its chats per hour (RateLimited: HTTP 429)
             try:
-                return {"reply": await self._llm_chat(text, person), "mode": "llm"}
-            except Exception as exc:  # fall back to rules on any API failure
-                note = f"(Claude unavailable: {exc.__class__.__name__}. Falling back to built-in commands.)\n\n"
+                reply, meta, notice = await self._llm_chat(text, msg.sender, person, config)
+                return {"reply": f"{notice}\n\n{reply}" if notice else reply, "mode": self.hub.llm.mode(meta.provider),
+                        "meta": meta.model_dump(mode="json")}
+            except Limited:
+                raise  # a person asked: they see why (HTTP 429), not a rules answer
+            except Exception as exc:  # fall back to rules on any provider failure (the cause, never its text)
+                cause = getattr(exc.__cause__, "kind", None) or exc.__class__.__name__
+                note = f"({res.provider_label} unavailable: {cause}. Falling back to built-in commands.)\n\n"
                 return {"reply": note + await self._rules_chat(text, person), "mode": "rules"}
         return {"reply": await self._rules_chat(text, person), "mode": "rules"}
 
     async def on_chat_reset(self, body: dict[str, Any], msg: Message) -> dict[str, Any]:
-        async with self._chat_lock:
-            self._history = []
+        memory = self.hub.llm.memory
+        memory.reset(self.id, memory.person_of(msg.sender))
         return {"ok": True}
 
-    async def _llm_chat(self, text: str, person: str | None = None) -> str:
-        async with self._chat_lock:
-            if len(self._history) > 80:  # start a fresh conversation instead of editing history
-                self._history = []
-            self._history.append({"role": "user", "content": text})
+    async def _llm_chat(self, text: str, sender: str, person: str | None = None,
+                        config: AgentConfig | None = None) -> tuple[str, ReplyMeta, str | None]:
+        """One turn of the sender's own conversation (memory is per person, review D7; how long it lasts is the
+        agent's memory setting): (reply, what it ran on, a notice when the conversation started afresh)."""
+        memory = self.hub.llm.memory
+        key = memory.person_of(sender)
+        config = config or self.hub.llm.config(self.id)
+        res = self.hub.llm.resolve(self.id, "chat")
+        async with memory.turn(self.id, key, res.provider, res.model, config.memory) as turn:
+            turn.messages.append(Msg(role="user", text=text))
             ctx = toolkit.ToolContext(self.hub, self, frozenset(self.permissions), requested_by=person)
+            tools, allowed = agent_settings.allowed_definitions(self, ctx.permissions, config)
 
             async def run(name: str, args: dict[str, Any]) -> Any:
+                agent_settings.check_allowed(self, name, ctx.permissions, allowed)
                 return await toolkit.execute(ctx, name, args)
 
-            return await toolkit.claude_loop(self.hub, self._history, system=self.instructions,
-                                             tools=toolkit.definitions(ctx.permissions), model=self.model, run=run)
+            system, answers = notify.with_answers(self.hub, self.id, self.instructions)  # answers to its escalations
+            found = await self.hub.llm.converse(self.id, "chat", system=system, history=turn.messages,
+                                                tools=tools, run=run, trigger="chat", person=key if person else None,
+                                                resolved=res, config=config)
+            if found is None:
+                raise LLMUnavailable("no AI model")
+            notify.clear_answers(self.hub, self.id, answers)  # the model read them
+            return found[0], found[1], turn.notice
 
     async def _rules_chat(self, text: str, person: str | None = None) -> str:
         low = text.lower().strip()
@@ -360,4 +385,4 @@ class HubSupervisor(BaseAgent):
             frameworks = "\n".join(f"- {f['name']}: {f['score']}%" for f in s["frameworks"])
             failing = "\n".join(f"- {c}" for c in s["failing_controls"][:6]) or "- none"
             return f"{frameworks}\n\nFailing or partial controls:\n{failing}"
-        return "I'm running without an LLM, so I only understand a few commands.\n\n" + HELP
+        return "I'm running without an AI model, so I only understand a few commands.\n\n" + HELP

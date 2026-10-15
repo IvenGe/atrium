@@ -150,15 +150,15 @@ def test_identity_providers_end_to_end(client, wait_for, browser, sign_in, tmp_p
     assert after["default"] is None and "keycloak" not in (hub.prefs.get("idp_settings") or {})
 
 
-def test_code_patch_adds_oidc_login_with_claude(client, wait_for, tmp_path: Path, plain_repo: Path):
-    from test_llm_paths import FakeLLM
+def test_code_patch_adds_oidc_login_with_claude(client, wait_for, tmp_path: Path, plain_repo: Path, monkeypatch):
+    from llm_fakes import use_claude
 
     hub = client.app.state.hub
     keycloak = compose_project(tmp_path / "keycloak", {"keycloak": {"image": "quay.io/keycloak/keycloak:26.0", "ports": ["8080:8080"]}})
     import_tool(client, wait_for, keycloak)
     new_app = (plain_repo / "app.py").read_text() + "\nimport os\nOIDC_ISSUER = os.environ.get('OIDC_ISSUER')\n"
-    fake = hub.llm = FakeLLM(json_result={"title": "Add OIDC sign-in", "rationale": "People sign in through the suite.",
-                                          "health_path": "", "changes": [{"path": "app.py", "content": new_app}]})
+    fake = use_claude(hub, monkeypatch, json_result={"title": "Add OIDC sign-in", "rationale": "People sign in through the suite.",
+                                                     "health_path": "", "changes": [{"path": "app.py", "content": new_app}]})
     import_tool(client, wait_for, plain_repo)
     patch = wait_for(lambda: next((p for p in client.get("/api/tools/notes").json()["patches"] if p["strategy"] == "sso_code"), None))
     assert patch["target"] == "repo" and patch["sso"]["provider"] == "keycloak"

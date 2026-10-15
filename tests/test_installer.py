@@ -9,6 +9,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -184,11 +185,26 @@ def dockerfile() -> list[tuple[str, str]]:
     return pairs
 
 
+def stages() -> dict[str, list[tuple[str, str]]]:
+    """The Dockerfile's steps by stage name (FROM <image> AS <name>), in order; the last stage is the default target."""
+    out: dict[str, list[tuple[str, str]]] = {}
+    current = None
+    for instruction, args in dockerfile():
+        if instruction == "FROM":
+            current = args.split(" AS ")[-1].strip() if " AS " in args else args
+            out[current] = [(instruction, args)]
+        elif current is not None:
+            out[current].append((instruction, args))
+    return out
+
+
 def test_dockerfile() -> None:
-    steps = dockerfile()
-    args = {a.split("=")[0]: a.split("=")[1] for i, a in steps if i == "ARG" and "=" in a}
-    froms = [a for i, a in steps if i == "FROM"]
-    assert froms == ["python:${PYTHON_VERSION}-slim"]
+    args = {a.split("=")[0]: a.split("=")[1] for i, a in dockerfile() if i == "ARG" and "=" in a}
+    froms = [a for i, a in dockerfile() if i == "FROM"]
+    # one Python base image; the hub is the last stage, so `docker build .` and Compose build it
+    assert froms == ["python:${PYTHON_VERSION}-slim AS base", "base AS sidecar", "base AS hub"]
+    assert list(stages())[-1] == "hub"
+    steps = stages()["base"] + stages()["hub"]
     major, minor = (int(part) for part in args["PYTHON_VERSION"].split("."))
     assert (major, minor) >= (3, 12)
     run = " ".join(a for i, a in steps if i == "RUN")
@@ -204,6 +220,21 @@ def test_dockerfile() -> None:
     health = [a for i, a in steps if i == "HEALTHCHECK"]
     assert len(health) == 1 and '"python"' in health[0] and "/api/health" in health[0]
     assert ("ENTRYPOINT", '["atrium"]') in steps and ("CMD", '["serve"]') in steps
+
+
+def test_dockerfile_sidecar_target() -> None:
+    """The sidecar of a subsidiary (docs/SUBSIDIARIES.md): no extras, its own non-root user, no port, a state volume."""
+    steps = stages()["sidecar"]
+    run = " ".join(a for i, a in steps if i == "RUN")
+    assert re.search(r"pip install \.( |$)", run) and "[ai" not in run and "apt-get" not in run
+    assert "--uid 10001" in run and "chmod 0700 /var/lib/atrium-sidecar" in run
+    assert [a for i, a in steps if i == "USER"] == ["10001"]
+    assert not [a for i, a in steps if i in ("EXPOSE", "HEALTHCHECK")]
+    assert ("VOLUME", '["/var/lib/atrium-sidecar"]') in steps
+    assert ("ENTRYPOINT", '["atrium-sidecar"]') in steps
+    assert ("CMD", '["--config", "/etc/atrium-sidecar/config.json"]') in steps
+    project = tomllib.loads(read("pyproject.toml"))
+    assert project["project"]["scripts"]["atrium-sidecar"] == "hub.subsidiary.sidecar.__main__:main"
 
 
 def test_dockerfile_command_parses() -> None:

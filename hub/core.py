@@ -23,6 +23,7 @@ from .integration import changes as device_changes
 from .integration import flows
 from .integration.toolbus import ToolBus
 from .llm import LLM
+from .llm import usage as llm_usage
 from .models import Host, Patch, Tool
 from .secrets import SecretBox
 from .store import Store
@@ -43,7 +44,7 @@ DEFAULT_SLA_DAYS = {"critical": 7, "high": 30, "medium": 90, "low": 180}
 SLA_CHECK_INTERVAL = 3600.0
 # How many entries of the operational logs are kept (review F38); the activity log and the command history are the
 # audit trail and are kept.
-LOG_RETENTION = {"messages": 50_000, "toolbus": 20_000}
+LOG_RETENTION = {"messages": 50_000, "toolbus": 20_000, "llm_usage": 200_000}
 PRUNE_INTERVAL = 3600.0
 
 
@@ -70,6 +71,17 @@ class Hub:
         self.restart_required: dict[str, Any] | None = None  # set when a self-patch was merged; a restart clears it
         self.approvals.guards["self_patch"] = lambda approval, approve: selfpatch.check_decision(self, approval, approve)
         self.approvals.guards["firewall"] = lambda approval, approve: device_changes.check_decision(self, approval, approve)
+        # subsidiaries (hub/subsidiary): in-process state, injectable clock and transports, and their approvals' guards
+        from .subsidiary import governance as subsidiaries
+        from .subsidiary import runtime as subsidiary_runtime
+
+        self.subsidiary_config = subsidiary_runtime.SubsidiaryConfig()
+        self.subsidiaries = subsidiary_runtime.SubsidiaryRuntime(self)
+        self.approvals.guards["subsidiary_charter"] = lambda a, ok: subsidiaries.check_charter_decision(self, a, ok)
+        self.approvals.guards["subsidiary_action"] = lambda a, ok: subsidiaries.check_action_decision(self, a, ok)
+        from .subsidiary import bridgepatch  # bridge patches (strategy atrium_bridge); other patches pass
+
+        self.approvals.guards["patch"] = lambda a, ok: bridgepatch.check_decision(self, a, ok)
         self._background: list[asyncio.Task[None]] = []
         self._sla_checked = 0.0
         self._pruned = 0.0
@@ -77,12 +89,16 @@ class Hub:
     # -- lifecycle -------------------------------------------------------------------
 
     async def start(self) -> None:
+        self.llm.migrate()  # the built-in AI providers, the model selection (hub/llm/registry.py)
         self.agents.start_core()
         for tool in self.tools():
             self.agents.ensure_tool_supervisor(tool)
         self.agents.start_custom()
         flows.reset_running(self)
         teams.reset_running(self)
+        from . import dashboards
+
+        dashboards.migrate(self)  # the shared Overview dashboard, once (R4-DASH 5.6)
         if self.settings.start_background_tasks:
             self._background.append(asyncio.create_task(self._health_loop()))
             self._background.append(asyncio.create_task(self._flow_loop()))
@@ -162,6 +178,11 @@ class Hub:
         # device changes: expiry, scheduled changes whose maintenance window opened, changes left verifying
         if not self._paused("module:network"):
             await self.bus.tell("hub", "module:network", "changes.tick")
+        # subsidiaries: offline sidecars, unusable tokens, expired enrollments and inbox messages, the circuit breaker
+        from .subsidiary import governance as subsidiaries
+
+        if subsidiaries.tick(self):
+            await self.bus.tell("hub", "module:grc", "evaluate")
         if now - self._pruned >= PRUNE_INTERVAL:
             self._pruned = now
             self.prune_logs()
@@ -170,7 +191,10 @@ class Hub:
     def prune_logs(self) -> dict[str, int]:
         """Keep the agent message and tool event logs to their LOG_RETENTION size (the activity log and the command
         history are never pruned)."""
-        return {stream: self.store.prune(stream, keep) for stream, keep in LOG_RETENTION.items()}
+        pruned = {stream: self.store.prune(stream, keep) for stream, keep in LOG_RETENTION.items()}
+        pruned["llm_usage_daily"] = llm_usage.prune_daily(self)
+        pruned["agent_conversations"] = self.llm.memory.prune()  # stored chats past their agent's retention
+        return pruned
 
     # -- preferences -----------------------------------------------------------------
 
@@ -188,6 +212,7 @@ class Hub:
             raise ValueError(f"autonomy must be one of {', '.join(AUTONOMY_LEVELS)}")
         stored = (self.store.get("settings", "prefs") or {}).get("values", {})
         self.store.put("settings", {"id": "prefs", "values": {**stored, **values}})
+        self.llm.invalidate()  # resolved models may depend on preferences
         self.activity(actor, "info", "Settings changed: " + ", ".join(f"{k}={v}" for k, v in values.items()))
         return self.prefs
 

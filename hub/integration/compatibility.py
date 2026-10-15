@@ -20,7 +20,7 @@ def sso_check(tool: Tool, others: list[Tool], idp: IdentityPrefs | None = None) 
 
     - no identity provider in the suite: pass when the tool supports SSO, else fail with "sso_proxy";
     - the selected provider and the tool's native OIDC/SAML support (catalog, .env keys, manifest): "sso_connect";
-    - source code, no native SSO, Claude available: "sso_code";
+    - source code, no native SSO, an AI model available: "sso_code";
     - otherwise "sso_proxy" (SaaS: configure SSO in the vendor's console; no fix)."""
     m = tool.manifest
     assert m is not None
@@ -66,7 +66,7 @@ def sso_check(tool: Tool, others: list[Tool], idp: IdentityPrefs | None = None) 
         reason = f"{entry.name} supports {'/'.join(p.upper() for p in entry.protocols)} only, which {provider.name} does not offer"
     if m.kind == "oss" and tool.path and idp.llm and not entry:
         return check(status, f"{prefix}{reason}. The Patch Agent can add OpenID Connect sign-in through {provider.name} "
-                             "to the code (with Claude).", "sso_code")
+                             "to the code (with an AI model).", "sso_code")
     if m.kind != "saas":
         return check(status, f"{prefix}{reason}. An SSO proxy in front of it signs people in through {provider.name}.",
                      "sso_proxy")

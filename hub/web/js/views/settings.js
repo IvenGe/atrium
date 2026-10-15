@@ -1,6 +1,10 @@
 import { del, get, patch, post } from "../api.js";
+import { homeButton, keepHomeButton, onHomeAdd } from "../dashboard/addhome.js";
+import { mount as mountDefaults } from "../settings/ai-defaults.js";
+import { mount as mountProviders } from "../settings/ai-providers.js";
+import { mount as mountUsage } from "../settings/ai-usage.js";
 import { mountSso } from "../signin.js";
-import { actions, badge, can, confirmDialog, dateTime, emptyState, field, html, icon, modal, options, setHTML, timeAgo, timeIn, toast } from "../ui.js";
+import { actions, badge, can, confirmDialog, dateTime, emptyState, field, html, icon, modal, options, setHTML, timeIn, toast } from "../ui.js";
 
 const LEVELS = [
   ["manual", "Manual", "Every agent command and patch waits for your approval."],
@@ -10,12 +14,12 @@ const LEVELS = [
 const SLA = ["critical", "high", "medium", "low"];
 const GUARD_GROUPS = {
   teams: "Agent teams", agents: "Agent actions", commands: "Commands", scans: "Vulnerability scans",
-  extensions: "Extensions", self_patching: "Self-patching (changes to Atrium's own code)",
+  extensions: "Extensions", self_patching: "Self-patching (changes to Atrium's own code)", models: "AI models and spending",
+  subsidiaries: "Subsidiaries (agent teams inside tools)",
 };
-const SERVERS = "Ollama: http://localhost:11434/v1 - LM Studio: http://localhost:1234/v1 - vLLM: http://<host>:8000/v1 - llama.cpp server: http://<host>:8080/v1";
 // Switches whose protective side is not their default (safe_value in hub/guardrails.py): "allow_*" switches are on by
-// default but off is safe; the general second-person rule is off by default but on is safe. The catalog does not carry
-// that yet, so it is named here (or read from `safe`).
+// default but off is safe; the general second-person rule is off by default but on is safe. The catalog carries it as
+// `safe`; this map only covers an older hub without that field.
 const SAFE_SIDE = { allow_extensions: false, allow_self_patching: false, approvals_need_second_person: true };
 const safeSide = (g) => g.safe ?? (g.key in SAFE_SIDE ? SAFE_SIDE[g.key] : g.default);
 const DAYS = [["mon", "Mon"], ["tue", "Tue"], ["wed", "Wed"], ["thu", "Thu"], ["fri", "Fri"], ["sat", "Sat"], ["sun", "Sun"]];
@@ -35,6 +39,8 @@ function relaxes(g, value) {
 const DISRUPTS = {
   allow_extensions: "Every enabled pack becomes inactive at once: its apps leave the sidebar, its data flows stop running, and its SSO recipes, compliance rules and team templates no longer apply. Packs and records are kept, and switching it back on restores them. Connector mappings already merged into tools' connections stay until a pack is disabled.",
   allow_self_patching: "The Patch Agent no longer proposes changes to Atrium's own code. Self-patches already waiting in Approvals stay there.",
+  allow_cloud_llm: "Agents that use Claude, OpenAI or another cloud provider switch at once to a local model or to rules. Running conversations continue on the new model; a tool round already sent to a cloud provider finishes, and no further round goes there.",
+  allow_subsidiaries: "This is the subsidiaries' kill switch: every agent team inside a tool is paused at once, its pending approvals are withdrawn and its sidecar gets no answers, tickets or grants. Bridges refuse every call once their last ticket expires. An administrator resumes each subsidiary after switching it back on.",
   device_changes: "This is the kill switch: approved and scheduled device changes that were not applied yet are blocked at once and never applied (they must be proposed again). A change being verified right now completes or rolls back as usual. Atrium keeps reading the devices.",
 };
 
@@ -65,7 +71,8 @@ function guardrailsView(catalog, admin) {
   const agentGuards = catalog.filter((g) => g.group !== "network"); // device changes have their own card
   const groups = [...new Set(agentGuards.map((g) => g.group))];
   const relaxed = agentGuards.filter((g) => g.relaxed).length;
-  return html`<header><h2>Agent guardrails</h2>${relaxed ? badge(`${relaxed} relaxed`, "warn") : badge("all protections on", "ok")}</header>
+  return html`<header><h2>Agent guardrails</h2><div class="card-actions">${relaxed ? badge(`${relaxed} relaxed`, "warn") : badge("all protections on", "ok")}
+      ${homeButton("safety_settings")}</div></header>
     <p class="muted" style="margin-bottom:12px">Safety switches for the AI agents. Every change is logged with your name; relaxing one is logged as a warning
       and shows up in the compliance controls. Device changes are under Network changes.</p>
     ${groups.map((group) => html`<div class="guard-group"><h3>${GUARD_GROUPS[group] || group}</h3>
@@ -78,8 +85,8 @@ function networkView(catalog, windows, net, devices, admin) {
   const on = guards.find((g) => g.key === "device_changes")?.value;
   const relaxed = guards.filter((g) => g.relaxed && g.key !== "device_changes").length;
   const names = Object.fromEntries(devices.map((d) => [d.tool_id, d.name]));
-  return html`<header><h2>Network changes</h2><div class="row" style="gap:6px">${on ? badge("device changes on", "warn") : badge("read-only: changes off", "ok")}
-      ${relaxed ? badge(`${relaxed} relaxed`, "warn") : ""}</div></header>
+  return html`<header><h2>Network changes</h2><div class="row card-actions" style="gap:6px">${on ? badge("device changes on", "warn") : badge("read-only: changes off", "ok")}
+      ${relaxed ? badge(`${relaxed} relaxed`, "warn") : ""}${homeButton("network_overview")}</div></header>
     <p class="muted" style="margin-bottom:12px">Whether Atrium may change firewalls and network devices (the <a href="#/network">Network app</a>), and under which rules.
       Every change is a proposal; with the defaults an administrator other than the proposer approves it, a backup is taken first, and it is applied in a
       maintenance window with the device's automatic rollback. Control HB-CM-3 reflects these switches.</p>
@@ -163,34 +170,6 @@ function windowForm(w, devices, done) {
   });
 }
 
-function providersView(pv) {
-  const claude = pv.anthropic || {};
-  return html`<header><h2>AI providers</h2><button type="button" class="btn sm" data-act="prov-add" data-min-role="admin">${icon("plus")}Add local provider</button></header>
-    <p class="muted" style="margin-bottom:12px">Team agents run on Claude, on a local model server with an OpenAI-compatible API (Ollama, LM Studio, vLLM,
-      llama.cpp server), or on rules. Pick the provider per agent on the Agents page.</p>
-    <div class="stack" style="gap:8px">
-      <div class="provider"><div class="row" style="gap:6px"><b>Claude</b>${claude.available ? badge("connected", "ok") : badge("not connected", "warn")}</div>
-        <div class="faint" style="font-size:12px">Anthropic API - see "AI model" for the default model.</div></div>
-      ${pv.providers.map((p) => html`<div class="provider">
-        <div class="row" style="gap:6px"><b>${p.name}</b>${badge("local", "info")}
-          ${p.last_test ? badge(p.last_test.ok ? "tested ok" : "test failed", p.last_test.ok ? "ok" : "bad") : badge("not tested", "warn")}
-          <span class="spacer"></span>
-          <span class="row" style="gap:4px" data-min-role="admin">
-            <button type="button" class="btn sm" data-act="prov-test" data-id="${p.id}">${icon("activity")}Test</button>
-            <button type="button" class="icon-btn sm" data-act="prov-edit" data-id="${p.id}" title="Edit" aria-label="Edit ${p.name}">${icon("edit")}</button>
-            <button type="button" class="icon-btn sm danger" data-act="prov-remove" data-id="${p.id}" title="Remove" aria-label="Remove ${p.name}">${icon("trash")}</button></span></div>
-        <div class="url mono">${p.base_url}</div>
-        <div class="faint" style="font-size:12px">Default model: ${p.default_model || "none"} - ${p.api_key_set ? "API key stored" : "no API key"} -
-          ${p.tools ? "tool calling on" : "tool calling off"} - timeout ${p.timeout}s</div>
-        ${p.default_model ? "" : html`<div class="warn-text" style="font-size:12px">No default model: agents on this provider need their own model. Edit it to pick one${p.models?.length ? " from the tested list" : ""}.</div>`}
-        ${p.last_test ? html`<div class="faint" style="font-size:12px;overflow-wrap:anywhere">Last test ${timeAgo(p.last_test.at)}: ${p.last_test.detail}</div>` : ""}
-        ${p.models?.length ? html`<details><summary class="faint" style="cursor:pointer;font-size:12px">${p.models.length} model${p.models.length === 1 ? "" : "s"}</summary>
-          <div class="tag-list" style="margin-top:6px">${p.models.map((m) => html`<span class="badge mono">${m}</span>`)}</div></details>` : ""}
-      </div>`)}
-      ${pv.providers.length ? "" : html`<p class="faint" style="font-size:12.5px">No local model providers yet. Add one to run team agents on your own hardware.</p>`}
-    </div>`;
-}
-
 /** Asks before a guardrail is relaxed, showing what that risks; resolves true to go ahead. */
 function confirmRelax(g, value) {
   return new Promise((resolve) => {
@@ -208,7 +187,7 @@ function confirmRelax(g, value) {
 }
 
 export async function render(el, ctx) {
-  let [s, pv] = await Promise.all([get("/settings"), get("/llm/providers")]);
+  let s = await get("/settings");
   const net = { windows: { windows: [], required: true }, settings: {}, devices: [], error: null };
   const loadNetwork = async () => {
     try {
@@ -225,7 +204,7 @@ export async function render(el, ctx) {
     ${admin ? "" : html`<div class="notice" style="margin-bottom:16px">${icon("lock")}<div class="muted">Only administrators can change these settings.</div></div>`}
     <form id="settings-form" class="grid split">
       <section class="stack">
-        <div class="card"><header><h2>Agent autonomy</h2></header>
+        <div class="card"><header><h2>Agent autonomy</h2><div class="card-actions">${homeButton("safety_settings")}</div></header>
           <div class="stack" style="gap:10px">${LEVELS.map(([value, title, text]) => html`<label class="radio-card">
             <input type="radio" name="autonomy" value="${value}" ${s.autonomy === value ? "checked" : ""}>
             <div><b>${title}</b><p class="muted">${text}</p></div></label>`)}</div></div>
@@ -237,13 +216,6 @@ export async function render(el, ctx) {
           <p class="faint" style="font-size:12.5px">Whether scheduled and agent-started scans wait for approval is an agent guardrail (below).</p></div>
       </section>
       <section class="stack">
-        <div class="card"><header><h2>AI model</h2>${s.llm.available ? badge("Claude connected", "ok") : badge("rules mode", "warn")}</header>
-          ${field("Default model for all agents", html`<input name="model" list="model-list" value="${s.model}">
-            <datalist id="model-list"><option value="claude-opus-5-5"><option value="claude-sonnet-5-5"><option value="claude-haiku-5-5"><option value="claude-fable-5-1"></datalist>`,
-            "Individual agents can override this on the Agents page.")}
-          ${s.llm.available ? "" : html`<div class="notice">${icon("bot")}<div class="muted">No Claude credentials found. Set <code>ANTHROPIC_API_KEY</code> (or run <code>ant auth login</code>)
-            and restart the hub. Without it the agents use deterministic rules and templates, or a local model provider.</div></div>`}
-          ${s.llm.last_error ? html`<p style="color:var(--bad);margin-top:8px;font-size:12.5px">Last error: ${s.llm.last_error}</p>` : ""}</div>
         <div class="card" data-min-role="admin"><header><h2>Users &amp; access</h2>${icon("users")}</header>
           <p class="muted" style="margin-bottom:10px">Accounts, roles and API tokens for scripts and integrations; single sign-on below.</p>
           <div class="row"><a class="btn" href="#/users">${icon("arrow")}Manage users</a><a class="btn" href="#/settings/sso" data-act="to-sso">${icon("shield")}Sign-in &amp; SSO</a></div></div>
@@ -252,24 +224,34 @@ export async function render(el, ctx) {
         <div data-min-role="admin"><button class="btn primary">${icon("check")}Save settings</button></div>
       </section>
     </form>
-    <div class="grid split" style="margin-top:16px">
-      <section class="card" id="guardrails-card"></section>
+    <div class="grid ai-panels" style="margin-top:16px">
       <section class="card" id="providers-card"></section>
+      <section class="card" id="defaults-card"></section>
     </div>
+    <section class="card" id="usage-card" style="margin-top:16px"></section>
+    <section class="card" id="guardrails-card" style="margin-top:16px"></section>
     <section class="card" id="network-card" style="margin-top:16px"></section>
     ${admin ? html`<section class="card" id="sso-card" style="margin-top:16px"><div class="empty faint">Loading the sign-in settings...</div></section>` : ""}`);
   const guardEl = el.querySelector("#guardrails-card");
   const provEl = el.querySelector("#providers-card");
+  const defaultsEl = el.querySelector("#defaults-card");
   const ssoEl = el.querySelector("#sso-card");
   const drawGuards = () => setHTML(guardEl, guardrailsView(s.guardrail_catalog || [], admin));
-  const drawProviders = () => setHTML(provEl, providersView(pv));
   const netEl = el.querySelector("#network-card");
   const drawNetwork = () => setHTML(netEl, net.error ? emptyState("alert", "Network settings unavailable", net.error)
     : networkView(s.guardrail_catalog || [], net.windows, net.settings, net.devices, admin));
   drawGuards();
-  drawProviders();
+  mountProviders(provEl, ctx).catch((err) => setHTML(provEl, emptyState("alert", "AI providers unavailable", err.message)));
+  mountDefaults(defaultsEl, ctx).catch((err) => setHTML(defaultsEl, emptyState("alert", "Model choice unavailable", err.message)));
+  const usageEl = el.querySelector("#usage-card");
+  mountUsage(usageEl, ctx).catch((err) => setHTML(usageEl, emptyState("alert", "AI usage unavailable", err.message)));
+  // R4-DASH "Add to Home" in the AI panels' header slots (the panels redraw themselves on live events)
+  const slots = [keepHomeButton(provEl, "ai_models"), keepHomeButton(defaultsEl, "ai_models"), keepHomeButton(usageEl, "llm_spend_today")];
+  ctx.onLeave(() => slots.forEach((off) => off()));
   drawNetwork();
+  if (ctx.params[0] === "ai") setTimeout(() => provEl.scrollIntoView({ behavior: "smooth", block: "start" }), 120);
   if (ctx.params[0] === "network") setTimeout(() => netEl.scrollIntoView({ behavior: "smooth", block: "start" }), 120);
+  if (ctx.params[0] === "guardrails") setTimeout(() => el.querySelector("#guardrails-card")?.scrollIntoView({ behavior: "smooth", block: "start" }), 120);
   if (ssoEl) {
     mountSso(ssoEl).catch((err) => setHTML(ssoEl, emptyState("alert", "Sign-in settings unavailable", err.message)));
     if (ctx.params[0] === "sso") setTimeout(() => ssoEl.scrollIntoView({ behavior: "smooth", block: "start" }), 120);
@@ -287,7 +269,7 @@ export async function render(el, ctx) {
       return;
     }
     try {
-      s = await patch("/settings", { autonomy: data.get("autonomy"), model: String(data.get("model") || "").trim() || null, vuln_sla_days: sla });
+      s = await patch("/settings", { autonomy: data.get("autonomy"), vuln_sla_days: sla }); // models: AI providers
       toast("Settings saved", "ok");
     } catch (err) {
       toast(err.message, "bad");
@@ -314,71 +296,8 @@ export async function render(el, ctx) {
     if (el.isConnected) drawNetwork();
   };
 
-  const loadProviders = async () => {
-    pv = await get("/llm/providers");
-    if (el.isConnected) drawProviders();
-  };
-
-  async function testProvider(id, btn) {
-    if (btn) { btn.disabled = true; btn.textContent = "Testing..."; }
-    try {
-      const r = await post(`/llm/providers/${encodeURIComponent(id)}/test`);
-      toast(`${r.provider?.name || id}: ${r.detail}`, r.ok ? "ok" : "bad");
-    } catch (err) {
-      toast(err.message, "bad");
-    }
-    await loadProviders();
-  }
-
-  function providerForm(p) {
-    modal({
-      title: p ? `Edit ${p.name}` : "Add a local model provider",
-      wide: true,
-      minRole: "admin",
-      submit: p ? "Save" : "Add and test",
-      body: html`<p class="muted" style="margin-bottom:12px">A model server with an OpenAI-compatible API. The hub calls <code>{base URL}/chat/completions</code>
-          with tool definitions and lists models from <code>{base URL}/models</code>.</p>
-        <div class="form-grid">
-          ${field("Name", html`<input name="name" required maxlength="80" value="${p?.name || ""}" placeholder="e.g. Ollama on gpu-01">`)}
-          ${field("Default model", html`<input name="default_model" list="prov-models" maxlength="200" value="${p?.default_model || ""}" placeholder="e.g. llama3.1:8b">
-            <datalist id="prov-models">${(p?.models || []).map((m) => html`<option value="${m}">`)}</datalist>`, "Test the provider to list its models.")}
-        </div>
-        ${field("Base URL", html`<input name="base_url" required maxlength="500" class="mono" value="${p?.base_url || pv.default_base_url}">`, SERVERS)}
-        ${field("API key (optional)", html`<input name="api_key" type="password" autocomplete="new-password" maxlength="4096"
-            placeholder="${p?.api_key_set ? "Stored - leave empty to keep it" : "Most local servers need none"}">`,
-          "Stored encrypted and only ever sent to this base URL's address; it is never shown again. Changing the address requires entering it again.")}
-        ${p?.api_key_set ? html`<label class="check" style="margin-bottom:12px"><input type="checkbox" name="clear_api_key"><span>Remove the stored API key</span></label>` : ""}
-        <div class="form-grid">
-          ${field("Timeout (seconds)", html`<input type="number" name="timeout" min="5" max="3600" step="1" value="${p?.timeout ?? 300}">`)}
-          <label class="check" style="align-self:center"><input type="checkbox" name="tools" ${p && !p.tools ? "" : "checked"}>
-            <span>Send tool definitions<span class="faint" style="display:block;font-size:12px">Turn off for models without tool calling.</span></span></label>
-        </div>`,
-      async onSubmit(data) {
-        const timeout = Number(data.get("timeout"));
-        if (!Number.isFinite(timeout) || timeout < 5 || timeout > 3600) {
-          toast("The timeout is 5 to 3600 seconds", "bad");
-          return true;
-        }
-        const body = {
-          name: String(data.get("name") || "").trim(), base_url: String(data.get("base_url") || "").trim(),
-          default_model: String(data.get("default_model") || "").trim(), tools: data.get("tools") === "on", timeout,
-        };
-        const key = String(data.get("api_key") || "");
-        if (key) body.api_key = key;
-        if (data.get("clear_api_key") === "on") body.clear_api_key = true;
-        if (!body.name || !body.base_url) {
-          toast("Give the provider a name and a base URL", "bad");
-          return true;
-        }
-        const saved = p ? await patch(`/llm/providers/${encodeURIComponent(p.id)}`, body) : await post("/llm/providers", body);
-        toast(`${saved.name} ${p ? "saved" : "added"}`, "ok");
-        if (p) await loadProviders();
-        else testProvider(saved.id);
-      },
-    });
-  }
-
   actions(el, {
+    "home-add"(_, btn) { onHomeAdd(btn); },
     guard(d) {
       const g = s.guardrail_catalog.find((x) => x.key === d.key);
       if (g && admin) setGuardrail(d.key, !g.value);
@@ -393,7 +312,6 @@ export async function render(el, ctx) {
       }
       setGuardrail(d.key, value);
     },
-    "prov-add"() { providerForm(null); },
     "mw-add"() { windowForm(null, net.devices, reloadNetwork); },
     "mw-edit"(d) {
       const w = net.windows.windows.find((x) => x.id === d.id);
@@ -432,25 +350,9 @@ export async function render(el, ctx) {
       }
       reloadNetwork();
     },
-    "prov-edit"(d) {
-      const p = pv.providers.find((x) => x.id === d.id);
-      if (p) providerForm(p);
-    },
-    "prov-test"(d, btn) { testProvider(d.id, btn); },
     "to-sso"() {
       history.replaceState(null, "", "#/settings/sso");
       ssoEl?.scrollIntoView({ behavior: "smooth", block: "start" });
-    },
-    async "prov-remove"(d) {
-      const p = pv.providers.find((x) => x.id === d.id);
-      if (!p || !(await confirmDialog(`Remove ${p.name}?`, "Agents can no longer run on it. Providers still used by agents cannot be removed.", "Remove"))) return;
-      try {
-        await del(`/llm/providers/${encodeURIComponent(p.id)}`);
-        toast(`${p.name} removed`, "ok");
-      } catch (err) {
-        toast(err.message, "bad");
-      }
-      await loadProviders();
     },
   });
   el.addEventListener("keydown", (e) => {
@@ -459,6 +361,5 @@ export async function render(el, ctx) {
       el.querySelector(`[data-act="guard-num"][data-key="${CSS.escape(e.target.dataset.guardNum)}"]`)?.click();
     }
   });
-  ctx.live(["llm_provider"], loadProviders, 400);
   ctx.live(["maintenance_window", "network_settings"], reloadNetwork, 400);
 }

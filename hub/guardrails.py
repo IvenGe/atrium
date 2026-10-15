@@ -117,13 +117,13 @@ for _g in (
     Guardrail("extensions_need_approval", "Generated extensions need approval",
               "Extension packs the Patch Agent generates after an import wait in the approval queue before they are "
               "enabled.", True,
-              "Packs an agent generated (from templates or with Claude) would be enabled without a person reviewing the "
+              "Packs an agent generated (from templates or by an AI model) would be enabled without a person reviewing the "
               "data types, connector mappings and compliance rules they add.", group="extensions", control="HB-CM-2",
               finding="extensions that agents generate are enabled without approval"),
     Guardrail("allow_self_patching", "Allow self-patching",
-              "When an extension cannot express what a new tool needs, the Patch Agent (with Claude) may propose a "
+              "When an extension cannot express what a new tool needs, the Patch Agent (with an AI model) may propose a "
               "change to Atrium's own code on a separate branch, tested before anyone decides. Off: it never does.",
-              True, "Claude-written changes to Atrium's own code would be proposed (and their tests run) again.",
+              True, "Changes to Atrium's own code that an AI model writes would be proposed (and their tests run) again.",
               group="self_patching", safe_value=False),
     Guardrail("self_patch_requires_tests", "Self-patches must pass the tests",
               "A change to Atrium's own code can only be approved when Atrium's test suite passed on its branch.", True,
@@ -131,7 +131,7 @@ for _g in (
               "insecure Atrium after the next restart.", group="self_patching", control="HB-CM-2", weakens="fail"),
     Guardrail("self_patch_requires_approval", "Self-patches need approval",
               "Changes to Atrium's own code wait in the approval queue (an administrator decides).", True,
-              "Claude-written changes to Atrium's own code would be merged into the running checkout without a person "
+              "Changes to Atrium's own code that an AI model writes would be merged into the running checkout without a person "
               "reading them first.", group="self_patching", control="HB-CM-2", weakens="fail"),
     Guardrail("self_patch_via_pull_request", "Self-patches go through a pull request",
               "An approved self-patch is pushed as a branch and opened as a pull request (GitHub CLI, origin remote) "
@@ -171,10 +171,80 @@ for _g in (
               "rollback fails.", group="network", control="HB-CM-3", weakens="fail"),
     Guardrail("approval_expiry_hours", "Approvals of device changes expire after (hours)",
               "A proposed device change must be approved and applied within this many hours of its proposal (an "
-              "approval of a self-patch must be decided within it); afterwards it expires and is proposed again "
-              "against the device's current rules.", 24,
+              "approval of a self-patch, of a subsidiary charter or of an in-tool action must be decided within it); "
+              "afterwards it expires and is proposed again against the device's current rules.", 24,
               "A change could be applied long after the review that judged it, on a network that changed since.",
               group="network", minimum=1, maximum=72),
+    # AI model providers (hub/llm/resolve.py): on by default - nothing reaches a cloud provider until an administrator
+    # enters a key or sets one in the environment - but off is the safe side. Off: every third-party provider is
+    # blocked and agents move on to a self-hosted model or rules at once. Compliance reflects cloud use through the
+    # supplier records of HB-SC-1 (hub/grc/checks.py), not through this switch.
+    Guardrail("allow_cloud_llm", "Agents may send data to cloud AI providers",
+              "Agents may run on AI providers that a third party hosts (Claude, OpenAI, Azure OpenAI and other cloud "
+              "services). Off: they run only on self-hosted models, or on rules.", True,
+              "Agents send prompts, the hub data their tools read and tool results to the cloud AI providers you "
+              "configured (Anthropic, OpenAI, others). Those providers process the data under their terms.",
+              group="models", safe_value=False),
+    # the suite's daily AI spending cap (hub/llm/usage.py): estimated from the price table, per UTC day; a reached cap
+    # stops new model calls until the day ends (each agent's own budgets come on top, on its settings page)
+    Guardrail("limit_llm_spend", "Cap the AI model spending per day",
+              "New model calls stop for the rest of the UTC day once the agents' estimated spending reaches the "
+              "maximum below (a call already running finishes). Agents fall back to rules or templates; chat answers "
+              "that the budget is reached.", True,
+              "Agents could spend without a limit: a runaway schedule, a loop or a prompt injection keeps calling paid "
+              "models until someone notices the bill.", group="models", requires="max_daily_llm_spend",
+              control="HB-AC-6", finding="agents' AI model spending has no daily limit"),
+    Guardrail("max_daily_llm_spend", "Maximum AI spending per day (USD)",
+              "The estimated cost (price table, Settings > AI models) of all model calls in one UTC day.", 20,
+              "A higher cap lets agents spend more before they are stopped.", group="models", minimum=1,
+              maximum=100_000),
+    # subsidiaries: agent teams that work inside a tool through a bridge or a sidecar (hub/subsidiary/). Off by
+    # default; switching it off is the global kill switch (every subsidiary is paused, its approvals withdrawn).
+    Guardrail("allow_subsidiaries", "Allow subsidiaries (agent teams inside tools)",
+              "Agent teams may work inside tools through an Atrium bridge or a sidecar, within a charter an "
+              "administrator approved. Off: the kill switch - every subsidiary is paused at once, its pending approvals "
+              "are withdrawn and its sidecar gets no answers, tickets or grants.", False,
+              "AI agent teams act inside business tools: they read the tools' data, send it to the model providers "
+              "their charter allows and ask for changes there (which wait for approval).", group="subsidiaries"),
+    Guardrail("subsidiary_tool_writes_need_approval", "In-tool changes of subsidiaries need a person",
+              "Every change a subsidiary team wants to make inside its tool waits for a person's approval. Off: a "
+              "charter may let reversible changes without an external effect run at once (never from the panel).",
+              True, "Reversible in-tool changes an AI team decides on would run without a person reviewing them.",
+              group="subsidiaries", control="HB-AC-2",
+              finding="reversible in-tool writes of subsidiary teams run without approval"),
+    Guardrail("subsidiary_panel_actions", "Questions inside a tool may lead to change requests",
+              "Questions tool users ask the team inside the tool ('Ask the team') may lead to requests for changes, "
+              "which always need approval and are marked user-steered. Off: panel questions only read, draft and "
+              "escalate.", False,
+              "A tool user could steer the AI team into asking for changes (prompt injection through the panel); a "
+              "person still decides each one.", group="subsidiaries", control="HB-AC-8",
+              finding="tool users can steer subsidiary write requests"),
+    Guardrail("subsidiary_bridge_requires_tests", "Bridge patches must pass their checks and tests",
+              "A bridge patch can be approved only when Atrium's static checks passed and the tool's own tests did not "
+              "fail (tests that could not run in a container are shown, not counted as a failure).", True,
+              "A bridge patch could be approved although Atrium's checks found unsafe code or the tool's tests fail.",
+              group="subsidiaries", control="HB-CM-2", weakens="fail"),
+    Guardrail("subsidiary_bridge_requires_conformance", "Bridges must pass conformance",
+              "A charter can be approved, and a subsidiary can be active, only after the bridge passed the conformance "
+              "vectors for the approved manifest.", True,
+              "A bridge that does not verify Atrium's signatures, grants or replays could be trusted with an AI team's "
+              "work inside the tool.", group="subsidiaries", control="HB-AC-8", weakens="fail"),
+    Guardrail("subsidiary_separate_credential", "API-only subsidiaries use their own credential",
+              "A subsidiary without a bridge reads the tool with a dedicated (read-only) credential, never with the "
+              "hub's own connection credential.", True,
+              "The sidecar could hold the same credential as the hub's connection, often with write access.",
+              group="subsidiaries", control="HB-AC-8",
+              finding="subsidiary teams use the hub's own tool credential"),
+    Guardrail("subsidiary_ticket_minutes", "Subsidiary ticket lifetime (minutes)",
+              "How long a ticket to call a tool's bridge stays valid: the longest a bridge keeps answering reads after "
+              "a pause, a stop or the kill switch.", 10,
+              "Bridge reads continue longer after a subsidiary is paused or stopped.", group="subsidiaries",
+              minimum=1, maximum=60, control="HB-AC-8",
+              finding="the subsidiary kill switch takes up to {subsidiary_ticket_minutes} minutes"),
+    Guardrail("subsidiary_max_tokens_per_day", "Subsidiary model tokens per day (thousands)",
+              "The ceiling on every subsidiary charter's daily model budget.", 300,
+              "Subsidiary teams can spend more on AI models each day.", group="subsidiaries", minimum=10,
+              maximum=20_000),
 ):
     register(_g)
 
@@ -205,7 +275,8 @@ def catalog(current: dict[str, Any]) -> list[dict[str, Any]]:
     for key, g in REGISTRY.items():
         now = current.get(key, g.default)
         out.append({"key": key, "kind": g.kind, "title": g.title, "description": g.description, "group": g.group,
-                    "default": g.default, "value": now, "risk": g.risk, "requires": g.requires, "control": g.control,
+                    "default": g.default, "safe": g.safe, "value": now, "risk": g.risk, "requires": g.requires,
+                    "control": g.control,
                     "min": g.minimum if g.kind == "int" else None, "max": g.maximum if g.kind == "int" else None,
                     "relaxed": g.relaxes(g.default, now) if now != g.default else False})
     return out
@@ -252,6 +323,13 @@ def update(hub: "Hub", actor: str, changes: dict[str, Any]) -> dict[str, Any]:
         from .integration import changes as device_changes
 
         device_changes.kill_switch(hub, actor)
+    if changes.get("allow_subsidiaries") is False:  # the subsidiaries' kill switch (round4-spec 7.7)
+        from .subsidiary import governance
+
+        governance.kill_switch(hub, actor)
+    llm = getattr(hub, "llm", None)
+    if llm is not None:  # which provider an agent runs on follows allow_cloud_llm at once
+        llm.invalidate()
     return new
 
 
@@ -267,7 +345,11 @@ def is_team_agent(sender: str) -> bool:
 
 def effective_autonomy(hub: "Hub", sender: str) -> str:
     """The autonomy level an action from `sender` follows: team agents act without approval only when the
-    team_actions_need_approval guardrail is off."""
+    team_actions_need_approval guardrail is off; a subsidiary's sidecar staff never do (always "manual")."""
+    from .subsidiary import governance
+
+    if governance.is_staff(hub, sender):
+        return "manual"
     autonomy = hub.prefs["autonomy"]
     if is_team_agent(sender) and not value(hub, "team_actions_need_approval"):
         return "autonomous"

@@ -47,6 +47,7 @@ STRATEGY_TITLES = {
     "event_adapter": "Add an event adapter",
     "api_adapter": "Add an API adapter skeleton",
     "reassign_port": "Move the tool to a free port",
+    "atrium_bridge": "Add an Atrium bridge so an agent team can work inside the tool",  # hub/subsidiary/bridgepatch.py
 }
 OIDC_CALLBACK = "/auth/oidc/callback"  # where code patches put the OIDC callback
 
@@ -432,6 +433,8 @@ async def apply_patch(hub: "Hub", patch: Patch) -> Patch:
 
     if patch.target == "adapter":
         patch.location = str(write_adapter(workspace, tool.id, patch, patch.changes))
+    elif patch.target == "repo" and patch.branch and patch.location:
+        pass  # committed on its branch when it was proposed (bridge patches): the approval is bound to that commit
     elif patch.target == "repo":
         _refuse_secrets(workspace, tool.id, patch)
         repo = Path(tool.path or "")
