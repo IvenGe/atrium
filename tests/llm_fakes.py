@@ -3,12 +3,16 @@
 - FakeClaude: an Anthropic SDK client (client.beta.messages.create, client.models.list) with scripted Messages API
   responses; `use_claude` plugs it into the real gateway as the Anthropic adapter's client and switches HUB_LLM back
   on for the test (there is no production flag that bypasses HUB_LLM=off).
+- ScriptedClaude: a FakeClaude answering each turn by a function of the call; `submits(result)` scripts a model that
+  submits `result` through a read-before-write conversation's submit tool (code patches, launch proposals);
+  `tool_turn(...)` builds a turn of tool calls.
 - chat_transport: an httpx.MockTransport for an OpenAI-compatible server's Chat Completions (hub.llm_transport).
 - FakeProvider: an Adapter for resolution and loop tests.
 """
 
 from __future__ import annotations
 
+import itertools
 import json
 from types import SimpleNamespace
 from typing import Any, Callable
@@ -44,7 +48,7 @@ class FakeClaude:
         self.beta = SimpleNamespace(messages=SimpleNamespace(create=self.create, stream=self.stream))
         self.models = SimpleNamespace(list=self._list_models)
 
-    async def create(self, **kwargs: Any) -> Any:
+    def _record(self, kwargs: dict[str, Any]) -> dict[str, Any]:
         messages = list(kwargs.get("messages") or [])
         call = {**kwargs, "messages": messages}
         first = messages[0]["content"] if messages else ""
@@ -53,7 +57,11 @@ class FakeClaude:
         if fmt:
             call["schema"] = fmt["schema"]
         self.calls.append(call)
-        if fmt:
+        return call
+
+    async def create(self, **kwargs: Any) -> Any:
+        call = self._record(kwargs)
+        if "schema" in call:
             return message(content=[block("text", text=json.dumps(self.json_result))])
         if not self.responses:
             raise AssertionError("FakeClaude has no scripted response left")
@@ -86,6 +94,73 @@ class FakeClaude:
                         yield item
                 return gen()
         return Page()
+
+
+_TOOL_IDS = itertools.count(1)
+
+
+def tool_turn(*calls: tuple, text: str = "") -> SimpleNamespace:
+    """An assistant turn calling tools: each call is (name, input) or (name, input, id) - a tool_use block each."""
+    blocks = [block("text", text=text)] if text else []
+    for name, args, *rest in calls:
+        blocks.append(block("tool_use", id=rest[0] if rest else f"tu_{next(_TOOL_IDS)}", name=name, input=args))
+    return message("tool_use", blocks)
+
+
+def tool_results(call: dict[str, Any]) -> list[dict[str, Any]]:
+    """The tool_result blocks a recorded call carried in its last user message (what the model got back)."""
+    for msg in reversed(call.get("messages") or []):
+        if msg.get("role") == "user":
+            content = msg.get("content")
+            return [b for b in content if isinstance(b, dict) and b.get("type") == "tool_result"] \
+                if isinstance(content, list) else []
+    return []
+
+
+def turns(call: dict[str, Any]) -> int:
+    """How many assistant turns came before this call in its conversation."""
+    return sum(1 for m in call.get("messages") or [] if m.get("role") == "assistant")
+
+
+class ScriptedClaude(FakeClaude):
+    """A FakeClaude that answers each conversation turn with `script(call)` (the recorded call: messages, tools,
+    system, prompt), so several conversations in one pass - two code patches of one propose - are scripted by their
+    content rather than by their order. A structured call gets `json_result` (when it is not None) or script(call);
+    a dict or list the script returns for it is sent as the JSON answer."""
+
+    def __init__(self, script: Callable[[dict[str, Any]], Any], json_result: Any = None):
+        super().__init__(json_result=json_result)
+        self.script = script
+
+    async def create(self, **kwargs: Any) -> Any:
+        call = self._record(kwargs)
+        if "schema" in call and self.json_result is not None:
+            return message(content=[block("text", text=json.dumps(self.json_result))])
+        answer = self.script(call)
+        if isinstance(answer, (dict, list)):
+            return message(content=[block("text", text=json.dumps(answer))])
+        return answer
+
+
+_SAME = object()
+
+
+def submits(result: dict[str, Any], *, json_result: Any = _SAME) -> ScriptedClaude:
+    """A model that answers a read-before-write conversation (hub/agents/reader.py) by calling its submit tool once
+    with `fake.submission` (= `result`, changeable later), then ends after any tool answer - accepted or refused. A
+    structured call (a text-only path, the enrichment...) gets `json_result`, by default the same `result`, as a
+    FakeClaude(json_result=result) answered every call before code patches read files."""
+
+    def script(call: dict[str, Any]) -> Any:
+        names = [t.get("name") for t in call.get("tools") or []]
+        submit = next((n for n in names if str(n).startswith("submit_")), None)
+        if submit is None or tool_results(call):
+            return message(content=[block("text", text="Done.")])
+        return tool_turn((submit, fake.submission))
+
+    fake = ScriptedClaude(script, json_result=result if json_result is _SAME else json_result)
+    fake.submission = result
+    return fake
 
 
 def use_claude(hub: Any, monkeypatch: Any, fake: FakeClaude | None = None, **kwargs: Any) -> FakeClaude:

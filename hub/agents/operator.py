@@ -11,7 +11,7 @@ from ..bus import Message
 from ..connectors.base import redact
 from ..execution import policy
 from ..execution.runner import CommandResult, run_local, run_ssh
-from ..integration.analyzer import parse_env_file, read_repo_file
+from ..integration.analyzer import parse_env_file, placeholder, read_repo_file
 from ..secrets import hub_secret_values
 from .base import BaseAgent
 
@@ -32,7 +32,9 @@ ENV_KEY = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
 
 def env_files(hub, tool_id: str, files: list[str]) -> dict[str, str]:
     """The KEY=value lines of a tool's launch.env_files (adapter-relative, e.g. subsidiary/bridge.env: public values
-    Atrium generated), merged in order; a file is never read through a symbolic link or outside the adapter folder."""
+    Atrium generated, and launch/secrets.env: the private launch secrets - an admin password a launch_command patch
+    generated or an administrator set, hub/integration/launch_secrets.py - which reach only the child's environment),
+    merged in order; a file is never read through a symbolic link or outside the adapter folder."""
     root = hub.settings.workspace / "adapters" / tool_id
     values: dict[str, str] = {}
     for rel in files:
@@ -61,6 +63,14 @@ ADMIN_ONLY = ("Needs an administrator's approval: commands on the hub machine ru
               "(its data, its key and every stored credential), so only administrators run them directly")
 ADMIN_ONLY_START = ("Needs an administrator's approval: a tool's launch command runs on the hub machine with Atrium's own "
                     "privileges, so only administrators start tools directly")
+NEEDS_LAUNCH = ("Launch needs a launch command: approve the launch_command patch or set it in Integration > Launch > "
+                "Edit.")
+
+
+def launch_command(tool) -> str | None:
+    """The tool's launch command, when it has a real one (a "TODO ..." placeholder is none)."""
+    command = (tool.manifest.launch.command or "").strip() if tool is not None and tool.manifest else ""
+    return command if command and not placeholder(command) else None
 
 
 class OperatorAgent(BaseAgent):
@@ -104,11 +114,14 @@ class OperatorAgent(BaseAgent):
         return {"status": "done", **result}
 
     async def on_launch(self, body: dict[str, Any], msg: Message) -> dict[str, Any]:
-        """Start a tool's long-running process."""
+        """Start a tool's long-running process. A tool without a launch command answers status "needs_input" with what
+        to do (no error: nothing is wrong with the request, a person must supply the command)."""
         tool = self.hub.get_tool(str(body.get("tool_id")))
-        if tool is None or tool.manifest is None or not tool.manifest.launch.command:
-            raise ValueError("This tool has no launch command in its manifest")
-        command = tool.manifest.launch.command
+        if tool is None:
+            raise ValueError("Unknown tool")
+        command = launch_command(tool)
+        if command is None:
+            return self._needs_launch(tool.id)
         decision = self._decide(command, msg.sender)
         if decision.action == "run" and self._below_admin(self._requester(body, msg)):  # the tool's code, on the hub
             decision = policy.Decision("approve", decision.risk, ADMIN_ONLY_START)
@@ -151,11 +164,15 @@ class OperatorAgent(BaseAgent):
                     result: dict[str, Any] = {"stopped": await self.hub.processes.stop(approval.payload["tool_id"])}
                 else:
                     tool = self.hub.get_tool(approval.payload["tool_id"])
-                    blocked = self._now_blocked((tool.manifest.launch.command or "") if tool and tool.manifest else "")
+                    blocked = self._now_blocked(launch_command(tool) or "")
                     if blocked:
                         self.hub.approvals.complete(approval.id, False, {"error": blocked})
                         return
                     result = await self._launch(approval.payload["tool_id"])
+                    if result.get("status") == "needs_input":  # its command was removed while the approval waited
+                        self.hub.approvals.complete(approval.id, False, {"error": result["reason"]})
+                        self.log("warn", f"Not started: {result['reason']}", tool_id=approval.payload["tool_id"])
+                        return
                 self.hub.approvals.complete(approval.id, True, result)
                 return
             # the guardrail may have been switched back on since the request: a command it blocks never runs
@@ -243,10 +260,18 @@ class OperatorAgent(BaseAgent):
         self.log(level, f"Ran on {target}: {command} (exit {result.exit_code}, {result.duration:.1f}s)")
         return record
 
+    def _needs_launch(self, tool_id: str) -> dict[str, Any]:
+        """The answer for a tool without a launch command, naming a launch_command patch that waits for approval."""
+        waiting = any(p.strategy == "launch_command" and p.status == "proposed" for p in self.hub.patches(tool_id))
+        return {"status": "needs_input",
+                "reason": NEEDS_LAUNCH + (" One is waiting on the Approvals page." if waiting else "")}
+
     async def _launch(self, tool_id: str) -> dict[str, Any]:
+        """Start the tool's process; status "needs_input" (nothing started) when it has no launch command."""
         tool = self.hub.get_tool(tool_id)
-        if tool is None or tool.manifest is None or not tool.manifest.launch.command:
-            raise ValueError("This tool has no launch command")
+        command = launch_command(tool)
+        if tool is None or tool.manifest is None or command is None:
+            return self._needs_launch(tool_id)
         launch = tool.manifest.launch
         cwd = tool.path
         if cwd and launch.cwd and launch.cwd != ".":
@@ -254,7 +279,7 @@ class OperatorAgent(BaseAgent):
         env = {**launch.env, **env_files(self.hub, tool.id, launch.env_files)}
         if launch.port:
             env.setdefault("PORT", str(launch.port))
-        return await self.hub.processes.start(tool.id, launch.command, cwd=cwd, env=env)
+        return await self.hub.processes.start(tool.id, command, cwd=cwd, env=env)
 
     def _host_label(self, host_id: str) -> str:
         host = self.hub.get_host(host_id)

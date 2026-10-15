@@ -93,9 +93,10 @@ def hub_secret_values(hub) -> list[str]:
     """Every secret value this hub holds, for masking text that leaves its control (command output that viewers and
     models read, audit packs): its settings and credential-looking environment variables, the Fernet key(s) - from
     HUB_SECRET_KEY or the key file - and the stored credentials it can decrypt (tool connections, AI model
-    providers, the SSO client secret, the subsidiaries' signing keys)."""
+    providers, the SSO client secret, the subsidiaries' signing keys) and the tools' launch secrets
+    (adapters/<id>/launch/secrets.env) distinctive enough to search for (launch_secrets.maskable)."""
     from .extensions.selfpatch import known_secrets
-    from .integration import connections
+    from .integration import connections, launch_secrets
     from . import llm_providers
 
     values = list(known_secrets(hub))
@@ -122,4 +123,5 @@ def hub_secret_values(hub) -> list[str]:
     from .subsidiary import keys as subsidiary_keys
     values += subsidiary_keys.secret_values(hub)  # the subsidiaries' signing keys
     values += subsidiaries.credential_values(hub)  # and the dedicated credentials of API-only subsidiaries
+    values += launch_secrets.mask_values(hub.settings.workspace)  # a tool's launch secrets (never plain words)
     return [v for v in values if isinstance(v, str) and len(v) >= 4]

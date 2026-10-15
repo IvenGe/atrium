@@ -862,12 +862,23 @@ class Connector:
 
     @staticmethod
     def name_score(tool: "Tool", names: tuple[str, ...], capabilities: tuple[str, ...] = (), score: int = 90) -> int:
-        """A detect() helper: `score` when the tool's id, name, source or manifest name contains one of `names`,
-        else 30 when its manifest provides one of `capabilities`, else 0."""
+        """A detect() helper: `score` when the tool's id, name, source or manifest name contains one of `names`, or
+        the id of the product the analyzer recognised (``manifest.known.profile``) holds one, else 30 when its manifest
+        provides one of `capabilities`, else 0. Of the source only its own name counts - a SaaS host, the last part of
+        a folder path or repository - never the folders it sits in (".../keycloak-lab/ledger" is no Keycloak)."""
         manifest = tool.manifest
-        haystack = " ".join([tool.id, tool.name, tool.source or "", manifest.name if manifest else ""]).lower()
+        source = (tool.source or "").strip()
+        if tool.source_type == "saas" or "://" in source:
+            parts = urlsplit(source)
+            source = (parts.hostname or "") if tool.source_type == "saas" else (parts.path or source)
+        if tool.source_type != "saas":
+            source = re.split(r"[\\/:]", source.rstrip("/\\"))[-1].removesuffix(".git")
+        haystack = " ".join([tool.id, tool.name, source, manifest.name if manifest else ""]).lower()
         squashed = re.sub(r"[^a-z0-9]", "", haystack)
         if any(n.lower() in haystack or re.sub(r"[^a-z0-9]", "", n.lower()) in squashed for n in names):
+            return score
+        known = re.sub(r"[^a-z0-9]", "", manifest.known.profile.lower()) if manifest and manifest.known else ""
+        if known and any((name := re.sub(r"[^a-z0-9]", "", n.lower())) and name in known for n in names):
             return score
         if manifest and any(c in manifest.provides for c in capabilities):
             return 30

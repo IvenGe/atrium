@@ -39,13 +39,14 @@ from typing import TYPE_CHECKING, Any, Iterable, NamedTuple
 from .. import connectors
 from ..connectors.base import Connector
 from ..models import BUILTIN_DOMAINS, Approval, Flow, Tool
-from . import connections, flows, identity
+from . import connections, flows, gapfix, identity, known_tools
 
 if TYPE_CHECKING:
     from ..core import Hub
 
 ADAPTER_STRATEGIES = {"api_adapter", "event_adapter", "health_probe", "health_endpoint", "add_manifest", "reassign_port",
-                      "custom"}
+                      "custom", "launch_command", "health_config"}
+EDITABLE_CHECKS = ("launch", "health", "api")  # the checks an administrator can close in the manifest editor
 BUILTIN_SCORE = 50  # a detected built-in connector at least this sure is offered instead of generating one
 GENERATED_EXCLUDED = ("network", "frameworks", "assessments")  # need a built-in connector's normalised records
 LOOP_STATES = ("enabled", "proposed")
@@ -513,13 +514,36 @@ def propose(hub: "Hub", requested_by: str = "supervisor") -> list[Flow]:
 
 
 def _item(id_: str, title: str, state: str, detail: str, action: str | None = None) -> dict[str, Any]:
-    """state: active | pending | failing | needs_decision | available | needs_model | unavailable | not_needed"""
+    """state: active | pending | failing | needs_decision | needs_input (a person must supply something: the reasons
+    are in the detail) | available | needs_model | unavailable | not_needed. action: what the card's button does
+    (approve | choose_provider | connect_sso | import_provider | configure_connection | test_connection |
+    generate_connector | propose_patches | edit_manifest, the administrators' manifest editor) or None."""
     return {"id": id_, "title": title, "state": state, "detail": detail, "action": action}
 
 
 def builtin_connector(tool: Tool) -> dict[str, Any] | None:
     best = next((d for d in connectors.detect(tool) if d["kind"] != "generic_rest"), None)
     return best if best and best["score"] >= BUILTIN_SCORE else None
+
+
+def connector_api(hub: "Hub", tool: Tool) -> str | None:
+    """The title of the connector that reaches the tool's API (the API check passes through it -
+    compatibility.EvalContext.builtin_api): its saved connection's, else the built-in connector of the product Atrium
+    recognised (manifest.known, the profile's connector). Any other built-in one found by a name alone - a
+    "keycloak-theme" project, an "iptables_exporter" named after a host firewall (hostfw, windows_firewall, scim,
+    fake_firewall have no product profile) - is still offered on the Data flows card, but is no proof that the tool
+    has that API."""
+    conn = connections.get(hub, tool.id)
+    if conn is not None:
+        try:
+            return connectors.connector_class(conn.kind).title
+        except connectors.ConnectorError:
+            pass
+    profile = known_tools.for_manifest(tool.manifest) if tool.manifest else None
+    if profile is None or not profile.connector:
+        return None
+    builtin = builtin_connector(tool)
+    return builtin["title"] if builtin is not None and builtin["kind"] == profile.connector else None
 
 
 def has_openapi(tool: Tool) -> bool:
@@ -548,15 +572,17 @@ def tool_strategies(hub: "Hub", tool: Tool, sso_rows: dict[str, dict[str, Any]] 
         items.append(_item("identity", "Identity / single sign-on", state,
                            (row or {}).get("detail") or (checks["sso"].detail if "sso" in checks else ""), action))
 
-    # events
+    # events (a generated poller is not active until a person runs it: the check says how)
     events = checks.get("events")
     event_patches = [p for p in patches if p.strategy == "event_adapter"]
-    if events and events.status == "pass" or any(p.status == "applied" for p in event_patches):
+    if events and events.status == "pass":
         state = "active"
     elif any(p.status == "proposed" for p in event_patches):
         state = "pending"
-    else:
-        state = "available" if m else "unavailable"
+    elif any(p.status == "applied" for p in event_patches):
+        state = "needs_input"
+    else:  # no fix: the check says why (e.g. a product whose events the hub's poller cannot read)
+        state = "available" if m and (events is None or events.fix) else "unavailable"
     items.append(_item("events", "Events", state, events.detail if events else ""))
 
     # data flows through a connector
@@ -608,20 +634,29 @@ def tool_strategies(hub: "Hub", tool: Tool, sso_rows: dict[str, dict[str, Any]] 
         items.append(_item("generated_connector", "Generated connector", "unavailable",
                            "No OpenAPI spec known for this tool."))
 
-    # adapters and patches (everything that is not single sign-on)
+    # adapters and patches (everything that is not single sign-on): what a propose pass would do (gapfix.outlook)
     own = [p for p in patches if p.strategy in ADAPTER_STRATEGIES]
     applied = [p for p in own if p.status == "applied"]
     proposed_patches = [p for p in own if p.status == "proposed"]
     gaps = [c for c in checks.values() if c.status != "pass" and c.fix and c.fix in ADAPTER_STRATEGIES]
-    if proposed_patches:
+    action = None
+    outcomes = gapfix.outlook(hub, tool, fixes=[c.fix for c in gaps if c.fix]) if gaps else []
+    stuck = [o for o in outcomes if o.state in ("skipped", "needs_input")]
+    editable = any(c in EDITABLE_CHECKS for o in stuck for c in o.check.split(","))
+    reasons = "; ".join(f"{o.title}: {o.reason}" for o in stuck)
+    if proposed_patches:  # what waits for approval, and what no patch can close meanwhile
         state, detail = "pending", f"{len(proposed_patches)} patch(es) waiting for approval."
-    elif applied and not gaps:
+        if stuck:
+            detail, action = f"{detail} Not proposed - {reasons}", "edit_manifest" if editable else None
+    elif any(o.state == "proposable" for o in outcomes) or (gaps and not outcomes):
+        state, detail, action = "available", "Open gaps: " + ", ".join(c.title for c in gaps), "propose_patches"
+    elif stuck:  # nothing a propose pass can do: each gap says why, and the editor is offered where it can close one
+        state, detail, action = "needs_input", reasons, "edit_manifest" if editable else None
+    elif applied:
         state, detail = "active", f"{len(applied)} patch(es) applied: " + ", ".join(p.title for p in applied[:3])
-    elif gaps:
-        state, detail = "available", "Open gaps: " + ", ".join(c.title for c in gaps)
     else:
         state, detail = "not_needed", "No gap needs an adapter or a patch."
-    items.append(_item("adapter", "Adapters and patches", state, detail, "propose_patches" if state == "available" else None))
+    items.append(_item("adapter", "Adapters and patches", state, detail, action))
     return items
 
 

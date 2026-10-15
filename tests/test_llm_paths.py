@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from llm_fakes import FakeClaude, block, message, use_claude
+from llm_fakes import FakeClaude, block, message, submits, use_claude
 
 
 def test_supervisor_chat_uses_tools_then_answers(client, monkeypatch):
@@ -39,10 +39,12 @@ def test_supervisor_chat_falls_back_to_rules_on_api_failure(client, monkeypatch)
 
 def test_patch_agent_code_patch_is_validated(client, wait_for, plain_repo: Path, monkeypatch):
     new_app = (plain_repo / "app.py").read_text() + "\n\n@app.get('/healthz')\ndef healthz():\n    return {'status': 'ok'}\n"
-    use_claude(client.app.state.hub, monkeypatch, json_result={
+    # the model submits through the read-before-write conversation (hub/agents/reader.py): app.py is an entry hint,
+    # shown in full up front, so it may be rewritten without another read
+    use_claude(client.app.state.hub, monkeypatch, submits({
         "title": "Add /healthz", "rationale": "Lets the hub monitor the app.", "health_path": "/healthz",
         "changes": [{"path": "app.py", "content": new_app}],
-    })
+    }))
     tool_id = client.post("/api/tools/import", json={"source_type": "local", "source": str(plain_repo)}).json()["id"]
     patches = wait_for(lambda: client.get(f"/api/tools/{tool_id}").json()["patches"])
     code = next(p for p in patches if p["strategy"] == "health_endpoint")
@@ -54,10 +56,14 @@ def test_patch_agent_code_patch_is_validated(client, wait_for, plain_repo: Path,
 
 def test_patch_agent_refuses_blind_rewrites(client, wait_for, plain_repo: Path, monkeypatch):
     (plain_repo / "secret_module.py").write_text("x = 1\n")
-    use_claude(client.app.state.hub, monkeypatch, json_result={"title": "x", "rationale": "y", "health_path": "",
-                                                               "changes": [{"path": "secret_module.py", "content": "hacked"}]})
+    fake = use_claude(client.app.state.hub, monkeypatch, submits({
+        "title": "x", "rationale": "y", "health_path": "", "changes": [{"path": "secret_module.py", "content": "hacked"}]}))
     tool_id = client.post("/api/tools/import", json={"source_type": "local", "source": str(plain_repo)}).json()["id"]
-    # the code patch is rejected (the model never saw that file); the agent falls back to a probe adapter
+    # the submission is refused (the model never read that file) and the model gives up; the agent falls back to a
+    # probe adapter
     patches = wait_for(lambda: [p for p in client.get(f"/api/tools/{tool_id}").json()["patches"] if p["strategy"].startswith("health")])
     assert {p["strategy"] for p in patches} == {"health_probe"}
     assert (plain_repo / "secret_module.py").read_text() == "x = 1\n"
+    refused = next(r for c in fake.calls for r in c["messages"][-1]["content"] if isinstance(c["messages"][-1]["content"], list)
+                   and r.get("type") == "tool_result" and r.get("is_error"))
+    assert "You have not read secret_module.py in full" in refused["content"]

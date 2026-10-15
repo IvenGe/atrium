@@ -10,7 +10,7 @@ from urllib.parse import urlsplit
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, ValidationError
 
 from . import agent_settings_api, bus_api, canvas_api, connectors, dashboards_api, guardrails, llm_providers, network_api
 from . import network_changes_api
@@ -42,11 +42,11 @@ from .grc.checks import framework_scores
 from .grc.frameworks import api as frameworks_api
 from .grc.frameworks import sync as framework_sync
 from .integration import changes as device_changes
-from .integration import connections, flows, identity, importer, strategies
+from .integration import connections, flows, gapfix, identity, importer, launch_secrets, overrides, strategies
 from .integration.compatibility import suite_matrix
 from .integration.identity import SSO_STRATEGIES
 from .models import (OPEN_STATES, SEVERITY_ORDER, AgentPermission, Asset, ControlState, Host, LlmChoice, PersonStatus,
-                     Policy, Risk, Supplier, TeamLlm, Vulnerability)
+                     Policy, Risk, Supplier, TeamLlm, Vulnerability, override_paths)
 from .secrets import SecretError
 from .store import new_id
 from .subsidiary import governance as subsidiary_governance
@@ -323,16 +323,61 @@ class SelfPatchRequest(BaseModel):
     tool_id: str | None = Field(None, max_length=64)
 
 
+class ProposeRequest(BaseModel):
+    again: bool = False  # an administrator asks again for what was rejected or failed (gapfix.outlook)
+
+
+# PATCH /api/tools/{id}/manifest: only the fields sent change, null puts a field back to what the analysis finds
+# (model_fields_set tells "left out" from null); the checks are overrides.check_edit, answered 400 in plain words.
+class LaunchEdit(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    command: str | None = None
+    port: StrictInt | None = None
+    cwd: str | None = None
+    env: dict[str, str | None] | None = None  # KEY: value | null (removed)
+    secret: list[str] | None = None  # the keys of `env` whose values are secrets (kept in the private launch secrets)
+
+
+class HealthEdit(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    url: str | None = None
+
+
+class ApiEdit(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    type: str | None = None
+    base_url: str | None = None
+    spec: str | None = None
+
+
+class UiEdit(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    url: str | None = None
+
+
+class ManifestEdit(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    launch: LaunchEdit | None = None
+    health: HealthEdit | None = None
+    api: ApiEdit | None = None
+    ui: UiEdit | None = None
+
+
 # changes to Atrium itself and new agent definitions: only administrators decide them (operators may still ask for them)
 ADMIN_APPROVALS = ("extension", "self_patch", "agent_team")
 
 
-def runs_on_hub(approval: Any) -> bool:
-    """A command on the hub machine, or starting a tool's process: it runs with Atrium's own privileges, so only an
+def runs_on_hub(approval: Any, hub: Hub | None = None) -> bool:
+    """A command on the hub machine, starting a tool's process, or a patch that changes what runs when a tool is
+    started (gapfix.touches_launch: its launch command, working folder, environment or launch secrets - read from the
+    stored patch, never from the approval's payload; needs `hub`): it runs with Atrium's own privileges, so only an
     administrator approves it (F1); operators may still reject it."""
     payload = approval.payload or {}
     if approval.kind == "command":
         return (payload.get("target") or "local") == "local"
+    if approval.kind == "patch":
+        patch = hub.get_patch(str(payload.get("patch_id") or "")) if hub is not None else None
+        return patch is not None and gapfix.touches_launch(patch)
     return approval.kind == "process" and payload.get("action") != "stop"
 
 
@@ -445,6 +490,11 @@ def build_router(hub: Hub) -> APIRouter:
         for patch in hub.patches(tool_id):
             hub.store.delete("patches", patch.id)
         hub.store.delete("tools", tool_id)
+        gapfix.forget(hub, tool_id)  # the reasons its gaps got no patch
+        try:
+            launch_secrets.forget(hub.settings.workspace, tool_id)  # the private values its launch needed
+        except ValueError:  # an id the secrets never accepted: there is no file to remove
+            pass
         identity.forget_tool(hub, tool_id)
         flows.forget_tool(hub, tool_id, p.actor)
         framework_sync.forget_tool(hub, tool_id)
@@ -468,8 +518,125 @@ def build_router(hub: Hub) -> APIRouter:
         return {"status": "analysing"}
 
     @router.post("/tools/{tool_id}/patches", status_code=202)
-    async def propose_patches(tool_id: str, p: CurrentPrincipal) -> dict[str, Any]:
-        return await ask(p, "patcher", "propose", {"tool_id": tool_id}, timeout=900)
+    async def propose_patches(tool_id: str, p: CurrentPrincipal, body: ProposeRequest | None = None) -> dict[str, Any]:
+        """A propose pass for the tool's open gaps: {patches, pending, skipped: [{check, title, fix, state, reason}]}.
+        `again` (administrators): also propose what was rejected, failed twice or failed with the AI model before."""
+        again = bool(body and body.again)
+        if again and p.role != "admin":
+            raise HTTPException(403, {"code": "admin_required",
+                                      "message": "Only administrators ask again for patches that were rejected or "
+                                                 "failed. You can still propose the others."})
+        return await ask(p, "patcher", "propose", {"tool_id": tool_id, **({"again": True} if again else {})},
+                         timeout=900)
+
+    def edit_values(tool, body: ManifestEdit) -> tuple[dict[str, Any], dict[str, str | None], set[str]]:
+        """The editor's body as dotted paths -> checked value (None: back to what the analysis finds), the launch
+        environment (KEY -> value | None) and the keys whose values are secrets: those `launch.secret` marks, and any
+        whose name or value looks like a credential (overrides.secret_like) - the rest are plain constants. Raises
+        ValueError with a plain message (naming variables, never values)."""
+        values: dict[str, Any] = {}
+        env: dict[str, str | None] = {}
+        marked: list[str] = []
+        for section in ("launch", "health", "api", "ui"):
+            if section not in body.model_fields_set:
+                continue
+            part = getattr(body, section)
+            if part is None:
+                raise ValueError(f"{section}: send the fields to change (null puts one field back)")
+            for name in sorted(part.model_fields_set):
+                if name == "env":
+                    if part.env is None:
+                        raise ValueError("launch.env: send KEY: value, or KEY: null to remove one")
+                    env = {overrides.check_env_key(k): v for k, v in part.env.items()}
+                elif name == "secret":
+                    marked = [overrides.check_env_key(k) for k in part.secret or []]
+                else:
+                    path = f"{section}.{name}"
+                    values[path] = overrides.check_edit(path, getattr(part, name))
+        if not values and not env:
+            raise ValueError("Nothing to change: send at least one field")
+        if tool.manifest.kind == "saas" and (env or any(p.startswith("launch.") for p in values)):
+            raise ValueError("A SaaS service is not started by the hub: it has no launch settings")
+        if len(env) > overrides.MAX_ENV:
+            raise ValueError(f"At most {overrides.MAX_ENV} launch environment variables")
+        stray = [k for k in marked if env.get(k) is None]
+        if stray:
+            raise ValueError(f"launch.secret names {', '.join(stray)} without a new value in launch.env: type the "
+                             "value again to keep it as a secret")
+        secret = {k for k, v in env.items() if v is not None and (k in marked or overrides.secret_like(k, v))}
+        for k, v in env.items():
+            if v is not None and k not in secret:
+                overrides.check_env_value(k, v)
+        return values, env, secret
+
+    @router.patch("/tools/{tool_id}/manifest")
+    async def edit_manifest(tool_id: str, body: ManifestEdit, p: CurrentPrincipal) -> dict[str, Any]:
+        """An administrator sets how the hub starts and reaches a tool (Integration > Launch / Health / API > Edit):
+        the values become hub-side overrides (hub/integration/overrides.py) that every later analysis applies again,
+        so they win over what the analysis infers and over the tool's own hub.manifest.*. Environment values marked
+        secret (`launch.secret`), or whose name or value looks like a credential, go to the tool's private launch
+        secrets (adapters/<id>/launch/secrets.env, launch_secrets.py) - only their names reach the manifest
+        (launch.secret_env); plain constants (LOG_LEVEL=info) are launch.env overrides, never masked hub-wide. Values
+        are never shown (the API lists env key names); the activity log names paths, never values or the command.
+        null puts a field back: the override is dropped and the tool is analysed again. Answers the tool as the API
+        shows it."""
+        tool = tool_or_404(tool_id)
+        if tool.manifest is None:
+            raise HTTPException(409, f"{tool.name} has not been analysed yet")
+        try:
+            values, env, secret = edit_values(tool, body)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        current = set(override_paths(tool.manifest_overrides))
+        stored: dict[str, str | None] = {}  # what changes in the private launch secrets file
+        if env:  # secrets: names in launch.secret_env, the private file in launch.env_files; plain constants:
+            launch = tool.manifest.launch  # launch.env.<KEY> overrides. A key is one or the other, never both.
+            names = [n for n in launch.secret_env if n not in env] + [k for k in env if k in secret]
+            if len(names) > overrides.MAX_ENV:
+                raise HTTPException(400, f"At most {overrides.MAX_ENV} launch environment variables")
+            secrets_file = [launch_secrets.ENV_FILE] if names else []
+            values["launch.secret_env"] = names
+            values["launch.env_files"] = [f for f in launch.env_files if f != launch_secrets.ENV_FILE] + secrets_file
+            for k, v in env.items():
+                if k in secret:
+                    stored[k] = v
+                    if f"launch.env.{k}" in current:
+                        values[f"launch.env.{k}"] = None
+                else:
+                    stored[k] = None  # a plain value (or a removal) leaves no secret behind
+                    if v is not None or f"launch.env.{k}" in current:
+                        values[f"launch.env.{k}"] = v
+        cleared = sorted(path for path, v in values.items() if v is None
+                         and any(c == path or c.startswith(f"{path}.") for c in current))
+        try:
+            edited = overrides.set_fields(tool.model_copy(deep=True), values)  # checked as a whole before any write
+            if stored:
+                launch_secrets.put(hub.settings.workspace, tool.id, stored)  # refuses a value that would not read back
+        except ValidationError as exc:  # what the manifest model refuses (e.g. more than 8 env_files)
+            first = exc.errors()[0] if exc.errors() else {"loc": (), "msg": str(exc)}
+            where = ".".join(str(x) for x in first["loc"]) or "manifest"
+            raise HTTPException(400, f"{where}: {first['msg']}") from exc
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        launch_overrides = edited.manifest_overrides.get("launch") or {}
+        for key in ("secret_env", "env_files"):  # an emptied list is no hub-side setting
+            if launch_overrides.get(key) == []:
+                launch_overrides.pop(key)
+        edited.manifest_overrides = overrides.merge({}, edited.manifest_overrides)
+        hub.save_tool(edited)
+        if any(v is not None for v in stored.values()):
+            mask = getattr(hub.llm, "mask", None)
+            if mask is not None:  # masked in prompts and logs from now on, not after the mask's next refresh
+                mask.invalidate()
+        changed = sorted({*(path for path in values if path in overrides.EDITABLE), *(f"launch.env.{k}" for k in env)})
+        reset = {path for path, v in values.items() if v is None and not path.startswith("launch.env.")} \
+            | {f"launch.env.{k}" for k, v in env.items() if v is None}  # a constant turned secret is no reset
+        what = ", ".join(f"{path} (reset)" if path in reset else path for path in changed)  # names, never values
+        hub.activity(p.actor, "info", f"{p.actor} changed {what} of {tool.name}", tool_id=tool.id)
+        await ask(p, "supervisor", "reevaluate")
+        if cleared:  # the analysis brings back what it finds for the fields put back
+            await hub.bus.tell(p.bus_id, "supervisor", "tool.imported", {"tool_id": tool.id})
+        return (hub.get_tool(tool.id) or edited).public()
 
     @router.post("/tools/{tool_id}/start")
     async def start_tool(tool_id: str, p: CurrentPrincipal) -> dict[str, Any]:
@@ -611,7 +778,8 @@ def build_router(hub: Hub) -> APIRouter:
             raise HTTPException(400, "A tool cannot sign in through itself")
         identity.set_choice(hub, tool_id, provider.tool_id)
         hub.activity(p.actor, "info", f"{tool.name} signs in through {provider.name}")
-        return await ask(p, "patcher", "sso.plan", {"tool_id": tool_id, "actor": p.actor}, timeout=900)
+        return await ask(p, "patcher", "sso.plan", {"tool_id": tool_id, "actor": p.actor, "explicit": True},
+                         timeout=900)
 
     @router.post("/tools/{tool_id}/sso/register")
     async def register_sso_client(tool_id: str, p: CurrentPrincipal) -> dict[str, Any]:
@@ -1033,10 +1201,12 @@ def build_router(hub: Hub) -> APIRouter:
             raise HTTPException(403, {"code": "admin_required",
                                       "message": "Only administrators approve a repair of a network device's "
                                                  "connection. You can still reject it."})
-        if pending is not None and body.approve and runs_on_hub(pending) and p.role != "admin":
+        if pending is not None and body.approve and runs_on_hub(pending, hub) and p.role != "admin":
+            what = ("a patch that changes how a tool is started on the hub machine: the tool then runs" if
+                    pending.kind == "patch" else "commands on the hub machine and starting tools: they run")
             raise HTTPException(403, {"code": "admin_required",
-                                      "message": "Only administrators approve commands on the hub machine and starting "
-                                                 "tools: they run with Atrium's own privileges. You can still reject it."})
+                                      "message": f"Only administrators approve {what} with Atrium's own privileges. "
+                                                 "You can still reject it."})
         try:
             approval = await hub.approvals.decide(approval_id, body.approve, body.note, p.actor, sender=p.bus_id)
         except KeyError as exc:

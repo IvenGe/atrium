@@ -22,12 +22,13 @@ from ..extensions import gaps as ext_gaps
 from ..extensions import generate as ext_generate
 from ..extensions import registry as ext_registry
 from ..extensions import selfpatch
-from ..integration import connections, flows, identity
-from ..integration.analyzer import list_files, read_repo_file
+from ..integration import connections, flows, gapfix, identity, known_tools, patches
+from ..integration.analyzer import read_repo_file
 from ..integration.identity import SSO_STRATEGIES
-from ..integration.patches import apply_patch, attach_sso, plan_patch, safe_relative, selected_provider, sso_code_goal
+from ..integration.patches import apply_patch, attach_sso, safe_relative, selected_provider, sso_code_goal
 from ..models import FileChange, Flow, Patch, Tool
 from ..store import new_id
+from . import reader
 from .base import BaseAgent
 
 MAX_SPEC = 5_000_000
@@ -98,7 +99,9 @@ ENTRY_HINTS = (
     "index.js", "server.js", "app.js", "src/index.js", "src/server.js", "src/app.js",
     "src/index.ts", "src/server.ts", "src/app.ts", "src/main.ts", "main.go", "cmd/server/main.go",
     "config/routes.rb", "routes/web.php", "src/main.rs", "package.json", "pyproject.toml",
-)
+    "pom.xml", "build.gradle", "build.gradle.kts",
+)  # code entry points and build files only: configuration (application.properties...) may hold credentials, so the
+#   model asks for it through the reader, which masks them (reader.masked_line)
 NO_MODEL = "configure one in Settings > AI providers (or set ANTHROPIC_API_KEY)"
 PATCH_SCHEMA = {
     "type": "object",
@@ -152,42 +155,125 @@ class PatchAgent(BaseAgent):
     # -- requests --------------------------------------------------------------------
 
     async def on_propose(self, body: dict[str, Any], msg: Message) -> dict[str, Any]:
+        """Propose a patch for each open gap of a tool (`fixes`: only these; `again`: an administrator asks again for
+        what was rejected or failed). gapfix.outlook decides per fix - pending, skipped (with the reason: rejected,
+        failed twice, applied but still open, an AI attempt that failed), needs input (the manifest editor) or
+        proposable - and only proposable fixes are planned, so a turned-down patch is never proposed again by itself
+        and a gap that cannot be planned says why. Each changed reason is logged once (an activity entry, never an
+        agent error); a failure planning one gap never stops the others. Returns the new patch ids, the ids still
+        waiting for approval and what was not proposed, with the reasons."""
         tool = self._tool(body.get("tool_id"))
+        again = bool(body.get("again"))
         async with self._lock(tool.id):
             tool = self._tool(tool.id)
-            fixes = body.get("fixes") or [c.fix for c in (tool.report.checks if tool.report else []) if c.fix and c.status != "pass"]
             others = [t for t in self.hub.tools() if t.id != tool.id]
-            existing = {p.strategy for p in self.hub.patches(tool.id) if p.status in ("proposed", "applied")}
+            outcomes = gapfix.outlook(self.hub, tool, others=others, fixes=body.get("fixes") or None, again=again)
             created: list[Patch] = []
-            for fix in dict.fromkeys(fixes):
-                if fix in SSO_STRATEGIES:
-                    patch = await self._sso_patch(tool, others, fix, origin=msg.sender)
-                elif fix in existing or (fix == "health_endpoint" and "health_probe" in existing):
+            ai_failed: set[str] = set()
+            cover: Patch | None = None  # a launch_command patch of this pass that also sets the health check
+            for outcome in outcomes:
+                if outcome.state != "proposable":
                     continue
-                else:
-                    patch = None
-                    if fix == "health_endpoint" and self.hub.llm.ready(self.id, "code"):
-                        try:
-                            patch = await self.code_patch(tool, HEALTH_GOAL, strategy="health_endpoint",
-                                                          origin=msg.sender)
-                        except Exception as exc:
-                            self.log("warn", f"Code patch for {tool.name} failed, falling back to a probe adapter: {exc}")
-                    if patch is None:
-                        patch = plan_patch(tool, others, fix, self.hub_url)
-                if patch is not None:
-                    created.append(await self._submit(tool, patch, msg.sender))
+                if cover is not None and outcome.fix in gapfix.HEALTH_FIXES:  # one approval closes both
+                    outcome.state, outcome.patch_id = "pending", cover.id
+                    outcome.reason = f"Waiting for approval: '{cover.title}' - it also sets the health check."
+                    continue
+                try:
+                    result = await self._plan(tool, others, outcome.fix, msg.sender, ai_failed)
+                except Exception as exc:  # one gap's failure never stops the others
+                    self.log("warn", f"Planning '{outcome.title}' for {tool.name} failed: {exc}")
+                    result = patches.Skip(f"Planning it failed: {self.hub.cleaned(str(exc))[:300]}")
+                if not isinstance(result, Patch):
+                    outcome.state = "needs_input" if getattr(result, "needs_input", False) else "skipped"
+                    outcome.reason = getattr(result, "reason", "") or "No patch fits this gap."
+                    continue
+                # the manifest inputs this plan used (single sign-on: the provider it is for)
+                result.fingerprint = gapfix.fingerprint(tool, outcome.fix, others,
+                                                        provider=result.sso.provider if result.sso else None)
+                try:
+                    patch = await self._submit(tool, result, msg.sender)
+                except Exception as exc:  # applied at once (autonomous) and failed: recorded on the patch
+                    outcome.state, outcome.reason = "skipped", f"'{result.title}' failed: {self.hub.cleaned(str(exc))[:300]}"
+                    created.append(result)
+                    continue
+                created.append(patch)
+                outcome.patch_id = patch.id
+                if patch.status == "proposed":
+                    outcome.state, outcome.reason = "pending", f"Waiting for approval: '{patch.title}'."
+                    if gapfix.sets_health(patch):
+                        cover = patch
+            changed = gapfix.record(self.hub, tool.id, outcomes, ai_failed)
+            for outcome in changed:
+                if outcome.state in ("skipped", "needs_input"):
+                    self.log("warn", f"{tool.name}: '{outcome.title}' was not proposed - {outcome.reason}",
+                             tool_id=tool.id, fix=outcome.fix)
+            self._settle(tool.id)
         if created:
             self.log("info", f"Proposed {len(created)} patch(es) for {tool.name}: " + "; ".join(p.title for p in created))
-        return {"patches": [p.id for p in created]}
+        if created or changed:  # the checks' details say what waits for approval and why a gap got no patch
+            await self.tell("supervisor", "reevaluate")
+        new = {p.id for p in created}
+        return {"patches": [p.id for p in created],
+                "pending": [o.patch_id for o in outcomes if o.state == "pending" and o.patch_id and o.patch_id not in new],
+                "skipped": [o.public() for o in outcomes if o.state in ("skipped", "needs_input")]}
+
+    def _settle(self, tool_id: str) -> None:
+        """The tool's status after a propose pass: needs_patch while a patch waits for approval, else ready again."""
+        tool = self.hub.get_tool(tool_id)
+        if tool is None:
+            return
+        waiting = any(p.status == "proposed" for p in self.hub.patches(tool_id))
+        status = "needs_patch" if waiting and tool.status == "ready" else (
+            "ready" if not waiting and tool.status == "needs_patch" else tool.status)
+        if status != tool.status:
+            tool.status = status
+            self.hub.save_tool(tool)
+
+    async def _plan(self, tool: Tool, others: list[Tool], fix: str, origin: str,
+                    ai_failed: set[str]) -> Patch | patches.Skip:
+        """The patch for one proposable fix: single sign-on for the selected provider; a health endpoint written by
+        the AI model (the probe when that fails); a launch command the AI model proposes from the tool's folder when
+        no known recipe fits (a failure, or a proposal no patch can use, is kept in `ai_failed` so it is not paid for
+        again until the tool changes or an administrator asks again); else the deterministic plan."""
+        if fix in SSO_STRATEGIES:
+            patch = await self._sso_patch(tool, others, fix, origin=origin, ai_failed=ai_failed)
+            return patch if patch is not None else patches.Skip("A single sign-on patch is waiting or applied already.")
+        if fix == "health_endpoint" and self.hub.llm.ready(self.id, "code"):
+            try:
+                return await self.code_patch(tool, HEALTH_GOAL, strategy="health_endpoint", origin=origin)
+            except Exception as exc:
+                self.log("warn", f"Code patch for {tool.name} failed, falling back to a probe adapter: {exc}")
+            return patches.plan(tool, others, fix, self.hub_url)
+        if fix == "launch_command" and tool.manifest and known_tools.launch_plan(tool.manifest, tool.id) is None:
+            try:
+                proposal = await reader.propose_launch(self.hub, tool, self.id)
+            except Exception as exc:
+                ai_failed.add(fix)
+                why = str(exc) if isinstance(exc, ValueError) else self.hub.llm.explain(exc)
+                return patches.Skip(f"The AI model could not work out how to start {tool.name}: "
+                                    f"{self.hub.cleaned(why)[:300].rstrip('.')}. Set it in Integration > Launch > Edit, "
+                                    "or ask again.", needs_input=True)
+            result = patches.plan(tool, others, fix, self.hub_url, proposal=proposal)
+            if not isinstance(result, Patch):
+                ai_failed.add(fix)
+            return result
+        return patches.plan(tool, others, fix, self.hub_url)
 
     async def on_sso_plan(self, body: dict[str, Any], msg: Message) -> dict[str, Any]:
         """(Re)plan single sign-on for one tool after its provider choice, the suite default or the providers changed.
         A pending SSO patch is superseded (its approval rejected with a note) when another provider is now selected or
-        its provider left the suite; while someone still has to choose between providers, it stays."""
+        its provider left the suite; while someone still has to choose between providers, it stays.
+
+        A sweep (an identity provider imported, re-analysed or removed, the suite default changed) follows the same
+        history rules as a propose pass (gapfix.outlook): an SSO patch for the selected provider that a person
+        rejected, that failed MAX_FAILED times, or whose AI attempt failed, is not proposed again - nothing about the
+        tool changed. Only an explicit request (`explicit`: a person chose the tool's provider) plans regardless.
+        `skipped` says why no patch was proposed (e.g. an SSO proxy needs the tool's port), in on_propose's shape."""
         if body.get("rescore", True):
             await self.ask("supervisor", "reevaluate", timeout=120)
         tool = self._tool(body.get("tool_id"))
         actor = str(body.get("actor") or self.id)
+        explicit = bool(body.get("explicit"))
         async with self._lock(tool.id):
             tool = self._tool(tool.id)
             others = [t for t in self.hub.tools() if t.id != tool.id]
@@ -206,14 +292,31 @@ class PatchAgent(BaseAgent):
                     superseded += self._supersede(patch, note, actor)
             check = next((c for c in (tool.report.checks if tool.report else []) if c.id == "sso"), None)
             created = None
+            skipped: list[gapfix.GapOutcome] = []
             if provider and check and check.status != "pass" and check.fix in SSO_STRATEGIES:
-                patch = await self._sso_patch(tool, others, check.fix)
-                created = await self._submit(tool, patch) if patch else None
+                outcome = next(iter(gapfix.outlook(self.hub, tool, others=others, fixes=[check.fix],
+                                                   again=explicit)), None)
+                if outcome is not None and outcome.state in ("skipped", "needs_input"):
+                    skipped.append(outcome)
+                elif outcome is not None and outcome.state == "proposable":
+                    ai_failed: set[str] = set()
+                    patch = await self._sso_patch(tool, others, check.fix, origin=actor, ai_failed=ai_failed)
+                    if isinstance(patch, Patch):
+                        patch.fingerprint = gapfix.fingerprint(tool, check.fix, others, provider=target)
+                        created = await self._submit(tool, patch)
+                    elif isinstance(patch, patches.Skip):  # kept, so the next sweep or propose pass says why
+                        outcome.state = "needs_input" if patch.needs_input else "skipped"
+                        outcome.reason = patch.reason
+                        skipped.append(outcome)
+                        for changed in gapfix.record(self.hub, tool.id, [outcome], ai_failed):
+                            self.log("warn", f"{tool.name}: '{changed.title}' was not proposed - {changed.reason}",
+                                     tool_id=tool.id, fix=changed.fix)
         if created:
             self.log("info", f"Proposed '{created.title}' for {tool.name}")
         pending = next((p for p in self.hub.patches(tool.id) if p.strategy in SSO_STRATEGIES and p.status == "proposed"), None)
         return {"provider": target, "strategy": check.fix if check else None, "superseded": superseded,
-                "patches": [created.id] if created else [], "pending": pending.id if pending else None}
+                "patches": [created.id] if created else [], "pending": pending.id if pending else None,
+                "skipped": [o.public() for o in skipped]}
 
     async def on_custom(self, body: dict[str, Any], msg: Message) -> dict[str, Any]:
         """Free-form patch request, e.g. from the Hub Supervisor chat. Needs an AI model."""
@@ -609,6 +712,17 @@ class PatchAgent(BaseAgent):
         if not body.get("approved"):
             patch.status = "rejected"
             self.hub.save_patch(patch)
+            self._settle(patch.tool_id)  # nothing else waiting: the tool is ready again
+            await self.tell("supervisor", "reevaluate")  # the check now says it was rejected
+            return
+        stale = gapfix.closed_since(self.hub.get_tool(patch.tool_id), patch) if patch.status == "proposed" else None
+        if stale:  # e.g. an administrator set the launch command by hand meanwhile: theirs stays
+            patch.status, patch.error = "rejected", stale
+            self.hub.save_patch(patch)
+            self.hub.approvals.complete(approval.id, False, {"error": stale})
+            self.log("info", f"Set aside '{patch.title}': {stale}", tool_id=patch.tool_id)
+            self._settle(patch.tool_id)
+            await self.tell("supervisor", "reevaluate")
             return
         await self._apply(patch, approval.id)
 
@@ -620,8 +734,13 @@ class PatchAgent(BaseAgent):
             raise ValueError(f"Unknown or unanalysed tool '{tool_id}'")
         return tool
 
-    async def _sso_patch(self, tool: Tool, others: list[Tool], fix: str, origin: str = "") -> Patch | None:
-        """The SSO patch for the provider selected for `tool`, unless one is already pending or applied for it."""
+    async def _sso_patch(self, tool: Tool, others: list[Tool], fix: str, origin: str = "",
+                         ai_failed: set[str] | None = None) -> Patch | patches.Skip | None:
+        """The SSO patch for the provider selected for `tool` (a Skip says why none can be planned), or None while one
+        is pending or applied for it. sso_code is written by the AI model; when that fails the SSO proxy is planned
+        instead, and when no proxy fits either, the Skip gives the model's error and the proxy's reason and `fix` goes
+        into `ai_failed` - gapfix.record keeps it, so the paid conversation is not held again (by a propose pass or
+        a provider's re-analysis) until the tool's provider changes or an administrator asks again."""
         prefs = identity.load_prefs(self.hub)
         provider = selected_provider(tool, others, prefs)
         target = provider.tool_id if provider else None
@@ -630,16 +749,29 @@ class PatchAgent(BaseAgent):
                 continue
             if patch.status == "proposed" or (patch.status == "applied" and (patch.sso.provider if patch.sso else None) == target):
                 return None
+        failure = None
         if fix == "sso_code" and provider and self.hub.llm.ready(self.id, "code"):
             try:
                 return attach_sso(tool, provider, await self.code_patch(tool, sso_code_goal(tool, provider),
                                                                         strategy="sso_code", origin=origin))
             except Exception as exc:
                 self.log("warn", f"OIDC code patch for {tool.name} failed, falling back to an SSO proxy: {exc}")
-        return plan_patch(tool, others, "sso_proxy" if fix == "sso_code" else fix, self.hub_url, prefs)
+                why = str(exc) if isinstance(exc, ValueError) else self.hub.llm.explain(exc)
+                failure = f"The AI model could not add OpenID Connect sign-in to {tool.name}: " \
+                          f"{self.hub.cleaned(why)[:300].rstrip('.')}."
+        result = patches.plan(tool, others, "sso_proxy" if fix == "sso_code" else fix, self.hub_url, prefs)
+        if failure is not None and not isinstance(result, Patch):
+            if ai_failed is not None:
+                ai_failed.add(fix)
+            reason = " ".join(x for x in (failure, getattr(result, "reason", ""), "An administrator can ask again.") if x)
+            return patches.Skip(reason, needs_input=getattr(result, "needs_input", False))
+        return result
 
     def _supersede(self, patch: Patch, note: str, actor: str) -> list[str]:
+        """Set a pending SSO patch aside for another provider (`note` starts with gapfix.SUPERSEDED): rejected by the
+        hub, not by a person, so the history rules never read it as a person's no."""
         patch.status = "rejected"
+        patch.error = note
         self.hub.save_patch(patch)
         withdrawn = []
         for approval in self.hub.approvals.list("pending"):
@@ -649,9 +781,11 @@ class PatchAgent(BaseAgent):
         return withdrawn
 
     async def _submit(self, tool: Tool, patch: Patch, origin: str = "") -> Patch:
-        """Save the patch and queue it for approval - or apply it in autonomous mode. Patches team agents asked for
-        ("agent:<slug>") skip approval only while the team_actions_need_approval guardrail is off; a subsidiary's
-        staff always wait for a person (D6), and a bridge patch is never applied without an administrator."""
+        """Save the patch and queue it for approval (``patch.approval_id``) - or apply it in autonomous mode. Patches
+        team agents asked for ("agent:<slug>") skip approval only while the team_actions_need_approval guardrail is
+        off; a subsidiary's staff always wait for a person (D6), and a bridge patch is never applied without an
+        administrator. A patch that changes what runs on the hub machine (gapfix.touches_launch: a launch command, its
+        environment or secrets) always waits for an administrator, whatever the autonomy level."""
         from ..subsidiary import bridgepatch
 
         staff = bridgepatch.staff_origin(self.hub, origin)
@@ -662,17 +796,25 @@ class PatchAgent(BaseAgent):
             return bridgepatch.submit(self.hub, tool, patch, origin, self.id)
         patch.diff = render_diff(tool, patch)
         self.hub.save_patch(patch)
-        if guardrails.effective_autonomy(self.hub, origin) == "autonomous":
+        launch = gapfix.touches_launch(patch)
+        payload = {"patch_id": patch.id, "tool_id": tool.id, "strategy": patch.strategy}
+        said = "only an administrator" in patch.rationale.lower()  # the plan's rationale may say it already
+        detail = patch.rationale + ("\n\nOnly an administrator approves this patch: it changes what the hub runs on its "
+                                    "own machine, with Atrium's privileges, when the tool is started."
+                                    if launch and not said else "")
+        if not launch and guardrails.effective_autonomy(self.hub, origin) == "autonomous":
             await self._apply(patch, None)
-        elif staff is not None:  # requested by a subsidiary's staff member: its goal was untrusted text (5.5)
-            self.hub.approvals.create("patch", f"Patch {tool.name}: {patch.title}",
-                                      f"Requested by the {tool.name} subsidiary (untrusted goal).\n\n{patch.rationale}",
-                                      {"patch_id": patch.id, "tool_id": tool.id, "subsidiary_id": staff.subsidiary_id,
-                                       "requested_by_staff": staff.agent_id, "taint": staff.taint}, self.id)
+            return patch
+        if staff is not None:  # requested by a subsidiary's staff member: its goal was untrusted text (5.5)
+            approval = self.hub.approvals.create(
+                "patch", f"Patch {tool.name}: {patch.title}",
+                f"Requested by the {tool.name} subsidiary (untrusted goal).\n\n{detail}",
+                {**payload, "subsidiary_id": staff.subsidiary_id, "requested_by_staff": staff.agent_id,
+                 "taint": staff.taint}, self.id)
         else:
-            self.hub.approvals.create("patch", f"Patch {tool.name}: {patch.title}", patch.rationale,
-                                      {"patch_id": patch.id, "tool_id": tool.id}, self.id)
-        return patch
+            approval = self.hub.approvals.create("patch", f"Patch {tool.name}: {patch.title}", detail, payload, self.id)
+        patch.approval_id = approval.id
+        return self.hub.save_patch(patch)
 
     async def _apply(self, patch: Patch, approval_id: str | None) -> None:
         try:
@@ -690,8 +832,12 @@ class PatchAgent(BaseAgent):
         await self.tell("supervisor", "tool.patched", {"tool_id": patch.tool_id, "patch_id": patch.id})
 
     async def code_patch(self, tool: Tool, goal: str, strategy: str, origin: str = "") -> Patch:
-        """Ask the AI model for a source patch. Existing files may only be changed if the model was shown them. A
-        subsidiary's staff member (`origin`) never changes its own bridge (I5), and its goal is untrusted text."""
+        """Ask the AI model for a source patch. The model reads the tool's folder first (reader.py: list, search and
+        read tools; the root listing and up to six ENTRY_HINTS files are shown up front) and submits the patch with
+        submit_patch, whose checks it can answer: an existing file may be changed only after the model read all of
+        it (decided on the folder itself, not on a capped listing), at most 10 files of 200,000 characters each. A
+        subsidiary's staff member (`origin`) never changes its own bridge (I5), and its goal is untrusted text. A
+        model without tool calling gets one structured call with the same checks (a violation raises ValueError)."""
         from ..subsidiary import bridgepatch
 
         if not tool.path or tool.manifest is None or tool.manifest.kind != "oss":
@@ -699,40 +845,63 @@ class PatchAgent(BaseAgent):
         staff = bridgepatch.staff_origin(self.hub, origin)
         if staff is not None and strategy == "atrium_bridge":
             raise ValueError("A subsidiary never patches its own bridge")
-        root = Path(tool.path)
-        files = list_files(root, 2000)
-        names = {f.as_posix() for f in files}
-        context = [n for n in ENTRY_HINTS if n in names][:6]
-        tree = "\n".join(sorted(names)[:400])
-        shown = "\n\n".join(
-            f'<file path="{n}">\n{(read_repo_file(root, n, 60_000) or "")[:15000]}\n</file>' for n in context
-        )
+        repo = reader.RepoReader(tool.path)
         m = tool.manifest
+        listing, seed = await asyncio.to_thread(repo.overview, list(ENTRY_HINTS))  # never on the event loop
         prompt = (
             (f"{staff.goal(goal)}\n\n" if staff is not None else f"<goal>{goal}</goal>\n\n")
             + f"<tool name=\"{m.name}\" stack=\"{', '.join(m.stack)}\" port=\"{m.launch.port}\" "
-            f"launch=\"{m.launch.command}\" />\n\n<file_tree>\n{tree}\n</file_tree>\n\n{shown}"
+            f"launch=\"{m.launch.command}\" />\n\n<root_listing>\n{listing}\n</root_listing>\n\n{seed}"
         )
-        system = self.instructions + (f"\n\n{bridgepatch.UNTRUSTED_GOAL_RULE}" if staff is not None else "")
-        result, meta = await self.hub.llm.json(self.id, "code", system=system, prompt=prompt,
-                                               schema=PATCH_SCHEMA, effort="high", max_output_tokens=16_000)
-        changes: list[FileChange] = []
-        for change in result.get("changes", [])[:10]:
-            rel = safe_relative(change["path"]).as_posix()
-            if rel in names and rel not in context:
-                raise ValueError(f"The AI model tried to rewrite {rel} without having seen it")
-            if staff is not None and staff.touches(rel):
-                raise ValueError(f"A subsidiary's request may not change its own Atrium bridge ({rel})")
-            if len(change["content"]) > 200_000:
-                raise ValueError(f"Patch for {rel} is too large")
-            changes.append(FileChange(path=rel, content=change["content"]))
-        if not changes:
-            raise ValueError("The AI model proposed no changes")
+        system = (f"{self.instructions}\n\n{reader.REPO_DATA_RULE}"
+                  + (f"\n\n{bridgepatch.UNTRUSTED_GOAL_RULE}" if staff is not None else ""))
+
+        def accept(args: dict[str, Any]) -> tuple[dict[str, Any], list[FileChange]]:
+            items = args.get("changes") or []
+            changes: list[FileChange] = []
+            for change in items:
+                rel = safe_relative(str(change.get("path") or "")).as_posix()
+                if ".git" in rel.split("/") or reader.private(rel):
+                    raise ValueError(f"A patch never changes {rel} (git's own files and .env files are off limits)")
+                if staff is not None and staff.touches(rel):
+                    raise ValueError(f"A subsidiary's request may not change its own Atrium bridge ({rel})")
+                if len(items) > 10:
+                    raise ValueError("A patch changes at most 10 files: submit a smaller one")
+                content = str(change.get("content") or "")
+                if len(content) > 200_000:
+                    raise ValueError(f"Patch for {rel} is too large (at most 200,000 characters per file)")
+                if any(c.path == rel for c in changes):
+                    raise ValueError(f"{rel} appears twice: give each file once, with its complete new content")
+                if repo.exists(rel) and not repo.read_in_full(rel):
+                    if repo.is_dir(rel):
+                        raise ValueError(f"{rel} is a folder, not a file")
+                    why = repo.rewritable(rel)  # shown masked, or not UTF-8: reading it again would not help
+                    raise ValueError(why or f"You have not read {rel} in full: read it with read_file (all lines), "
+                                            "then submit again.")
+                secrets = self.hub.llm.mask.values()
+                if repo.exists(rel) and any(s in repo.content(rel) for s in secrets):
+                    # the model saw *** in its place: a rewrite would replace the real value
+                    raise ValueError(f"{rel} holds a secret the hub keeps (shown to you as ***): a patch cannot "
+                                     "rewrite it")
+                if any(s in content for s in secrets):  # a patch is shown to every viewer: never a hub secret
+                    raise ValueError(f"The new content of {rel} holds a secret the hub keeps: leave it out")
+                changes.append(FileChange(path=rel, content=content))
+            if not changes:
+                raise ValueError("The AI model proposed no changes")
+            return args, changes
+
+        submit = reader.SubmitTool("submit_patch", "Submit the patch: the complete new content of each file you "
+                                   "change or create. Change an existing file only after reading all of it.",
+                                   PATCH_SCHEMA["properties"], accept)
+        (result, changes), meta = await reader.solve(self.hub, self.id, "code", repo, system=system, prompt=prompt,
+                                                     submit=submit)
         update: dict[str, Any] = {}
         health_path = (result.get("health_path") or "").strip()
         if health_path.startswith("/") and m.launch.port:
             update["health"] = {"url": f"http://localhost:{m.launch.port}{health_path}"}
-        return Patch(id=new_id("p_"), tool_id=tool.id, title=result["title"][:120], rationale=result["rationale"],
+        title = str(self.hub.cleaned(str(result.get("title") or "").strip())) or f"Change {len(changes)} file(s) of {m.name}"
+        rationale = str(self.hub.cleaned(str(result.get("rationale") or "")))  # the model's words, shown to every viewer
+        return Patch(id=new_id("p_"), tool_id=tool.id, title=title[:120], rationale=rationale,
                      strategy=strategy, target="repo", changes=changes, manifest_update=update,
                      generated_by={"provider": meta.provider, "model": meta.model})
 

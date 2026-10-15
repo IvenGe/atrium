@@ -49,6 +49,20 @@ def strip_url_credentials(url: str | None) -> str | None:
 
 ToolKind = Literal["oss", "closed", "saas"]
 SsoMode = Literal["oidc", "saml", "ldap", "oauth2", "none", "unknown"]
+# Set by the hub only: a tool's own hub.manifest.* cannot claim them (the analyzer drops them from the file).
+MANIFEST_HUB_KEYS = ("id", "native", "known", "adopted")
+
+
+class KnownMatch(BaseModel):
+    """A well-known product the analyzer recognised (hub/integration/known_tools.py): its profile id, the shape of the
+    imported folder (a release folder, a source checkout, a compose folder, a SaaS service), how it was recognised
+    (a marker file, the tool's id or name, the SaaS host name, the image of its compose file's main service) and the
+    product version when one was found. Hub-only."""
+
+    profile: str = Field(max_length=40)
+    shape: Literal["release", "source", "compose", "saas", "other"] = "other"
+    by: Literal["marker", "name", "host", "image"] = "name"  # image: the main service of its root compose file
+    version: str | None = Field(None, max_length=40)
 
 
 class Launch(BaseModel):
@@ -60,6 +74,8 @@ class Launch(BaseModel):
     # adapter-relative files of public KEY=value lines merged into the child environment (e.g. subsidiary/bridge.env)
     env_files: list[str] = Field([], max_length=8)
     test: str | None = Field(None, max_length=500)  # the tool's own test command (bridge patches run it sandboxed)
+    # Names of environment variables whose values the hub keeps in adapters/<id>/launch/secrets.env (never here)
+    secret_env: list[str] = Field([], max_length=16)
 
     @field_validator("env_files")
     @classmethod
@@ -70,6 +86,15 @@ class Launch(BaseModel):
                     or any(p in ("", ".", "..") for p in parts):
                 raise ValueError("env_files are adapter-relative paths")
         return value
+
+    @field_validator("secret_env")
+    @classmethod
+    def _secret_env(cls, value: list[str]) -> list[str]:
+        """Names only (the Operator's ENV_KEY rule), each once: the values live in the hub's private secrets file."""
+        for name in value:
+            if not re.match(r"^[A-Za-z_][A-Za-z0-9_]{0,127}$", str(name)):
+                raise ValueError("secret_env holds environment variable names (letters, digits and _)")
+        return list(dict.fromkeys(value))
 
 
 class Health(BaseModel):
@@ -188,16 +213,19 @@ class Manifest(BaseModel):
     consumes: list[str] = []
     events: Events = Field(default_factory=Events)
     ui: PortalUi = Field(default_factory=PortalUi)
-    native: bool = False  # True when the tool ships (or adopted) its own hub manifest
+    native: bool = False  # True when the tool's folder ships its own hub manifest (recomputed by every analysis)
     bridge: BridgeSpec | None = None  # set when an approved bridge patch is applied
+    known: KnownMatch | None = None  # the well-known product the analyzer recognised (hub-only)
+    adopted: str | None = None  # where an adopted hub manifest waits: a branch ("hub/add-manifest-...") or a folder
 
     def public(self) -> dict[str, Any]:
         """The manifest as the API, the bus log and SSE show it (every viewer sees it): whether a webhook URL is set
         (``events.has_webhook``), never the URL - it may carry a token - and the launch environment's key names
-        (``launch.env_keys``), not their values. The stored manifest keeps both."""
+        (``launch.env_keys``: its constants and the names of its launch secrets), not their values. The stored
+        manifest keeps the constants; launch secret values are never in it."""
         data = self.model_dump(mode="json")
         data["events"]["has_webhook"] = bool(data["events"].pop("webhook_url", None))
-        data["launch"]["env_keys"] = sorted(data["launch"].pop("env", None) or {})
+        data["launch"]["env_keys"] = sorted(set(data["launch"].pop("env", None) or {}) | set(self.launch.secret_env))
         return data
 
 
@@ -231,14 +259,32 @@ class Tool(BaseModel):
     report: CompatibilityReport | None = None
     running: bool = False
     health: dict[str, Any] | None = None
+    # Hub-side decisions about the manifest (applied patches and administrators' edits), re-applied after every
+    # analysis (hub/integration/overrides.py). Never shown as such: public() lists the paths it sets.
+    manifest_overrides: dict[str, Any] = {}
     created_at: float = Field(default_factory=now)
 
     def public(self) -> dict[str, Any]:
-        """The tool for API reads and the ``tool`` SSE event, with ``Manifest.public`` (no webhook URL or env values)
-        and no credentials in its source or OpenAPI URL (review F3: refused at import, stripped for older tools)."""
-        return {**self.model_dump(mode="json", exclude={"manifest"}),
+        """The tool for API reads and the ``tool`` SSE event, with ``Manifest.public`` (no webhook URL or env values),
+        no credentials in its source or OpenAPI URL (review F3: refused at import, stripped for older tools) and,
+        instead of its hub-side overrides, ``overridden``: the dotted paths they set (``launch.env.<KEY>`` names the
+        key, never its value)."""
+        return {**self.model_dump(mode="json", exclude={"manifest", "manifest_overrides"}),
                 "source": strip_url_credentials(self.source), "openapi_url": strip_url_credentials(self.openapi_url),
-                "manifest": self.manifest.public() if self.manifest else None}
+                "manifest": self.manifest.public() if self.manifest else None,
+                "overridden": override_paths(self.manifest_overrides)}
+
+
+def override_paths(overrides: dict[str, Any], prefix: str = "") -> list[str]:
+    """Sorted dotted leaf paths of a nested dict of overrides (an empty dict sets nothing; values are never named)."""
+    paths: list[str] = []
+    for key, value in overrides.items():
+        path = f"{prefix}{key}"
+        if isinstance(value, dict):
+            paths += override_paths(value, f"{path}.")
+        else:
+            paths.append(path)
+    return sorted(paths)
 
 
 # --------------------------------------------------------------------------------------
@@ -337,6 +383,12 @@ class Patch(BaseModel):
     bridge: BridgePlan | None = None  # strategy "atrium_bridge"
     tests: dict[str, Any] | None = None  # the tool's own tests at proposal: {ok: true|false|None, status, reason?, ...}
     commit: str | None = None  # the commit an approval binds (patches proposed on a branch)
+    fingerprint: str | None = None  # the manifest inputs its plan used (gapfix.fingerprint); None = legacy
+    approval_id: str | None = None  # the approval it waits for (PatchAgent._submit)
+    # A code patch (target "repo", not a bridge): False once applied while its change waits on its branch (or folder)
+    # for a person to merge it into the tool's folder - what it sets in the manifest (a health URL, single sign-on)
+    # applies only from the analysis that finds it there (True). None: other patches, and code patches applied before.
+    merged: bool | None = None
     created_at: float = Field(default_factory=now)
 
 

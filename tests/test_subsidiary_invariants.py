@@ -8,7 +8,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from llm_fakes import use_claude
+from llm_fakes import submits, use_claude
 from subsidiary_support import TOOL, activate, local_model, relayed_run, staff_ids
 
 from hub import guardrails
@@ -101,9 +101,8 @@ def test_a_staff_code_patch_request_still_waits_for_approval(permissive, tmp_pat
     tool = hub.get_tool(TOOL)
     hub.store.put("tools", {**tool.model_dump(mode="json"), "path": str(plain_repo)})
     new_app = (plain_repo / "app.py").read_text() + "\n\n@app.get('/healthz')\ndef healthz():\n    return 'ok'\n"
-    use_claude(hub, monkeypatch, json_result={"title": "Add /healthz", "rationale": "Health checks.",
-                                              "health_path": "/healthz",
-                                              "changes": [{"path": "app.py", "content": new_app}]})
+    use_claude(hub, monkeypatch, submits({"title": "Add /healthz", "rationale": "Health checks.",  # read-before-write
+                                          "health_path": "/healthz", "changes": [{"path": "app.py", "content": new_app}]}))
     sidecar.heartbeat()
     run_id = relayed_run(client, sidecar, dev.id, "Add a health route")
     answer = hub_request(sidecar, run_id, dev.id, "request_code_patch", {"goal": "Add a health route"}).json()

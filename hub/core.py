@@ -114,6 +114,10 @@ class Hub:
         for tool in self.tools():
             self.agents.ensure_tool_supervisor(tool)
         self.agents.start_custom()
+        from .integration import overrides
+
+        if overrides.migrate(self):  # tools stored before the hub-side overrides existed (once; root files only)
+            await self.bus.tell("hub", "supervisor", "reevaluate")
         flows.reset_running(self)
         teams.reset_running(self)
         from . import dashboards

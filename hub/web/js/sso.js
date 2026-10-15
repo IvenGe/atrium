@@ -43,6 +43,7 @@ export function openProviderPicker({ toolId, toolName, data, current, done }) {
       const name = providerName(data, provider);
       if (r.patches.length) toast(`${toolName} -> ${name}: patch proposed${r.superseded.length ? ", the previous one was superseded" : ""}. See Approvals.`, "ok");
       else if (r.pending) toast(`A patch for ${name} is already waiting for approval`, "info");
+      else if (r.skipped?.length) toast(`${toolName} -> ${name}: not proposed - ${r.skipped.map((s) => s.reason).join(" ")}`, "warn");
       else toast(`${toolName} signs in through ${name}`, "ok");
       done?.(r);
     },

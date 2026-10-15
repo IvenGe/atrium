@@ -32,7 +32,8 @@ ADMIN_TREES = ("/api/users", "/api/tokens")
 # schedule paused after failed runs; the playground, which spends tokens), the AI model providers (they may hold API
 # keys; testing and probing them spends tokens), the suite's model selection and the AI price table, the
 # identity providers (credentials for sign-in), tool connections
-# (they hold the tools' API credentials), the Sign-in & SSO settings, disabling a person's Atrium account, extensions,
+# (they hold the tools' API credentials), a tool's hub-side manifest settings (its launch command and launch secrets),
+# the Sign-in & SSO settings, disabling a person's Atrium account, extensions,
 # self-patches, and the shared Home dashboards with the default dashboard.
 # Everything else in the People app follows the default: viewers read, operators change people and links.
 ADMIN_ROUTES = (
@@ -59,6 +60,9 @@ ADMIN_ROUTES = (
     ("POST", re.compile(r"/api/identity-providers/[^/]+/atrium")),
     ("PUT", re.compile(r"/api/tools/[^/]+/connection")),
     ("DELETE", re.compile(r"/api/tools/[^/]+/connection")),
+    # the manifest editor: how the hub starts a tool (a command on the hub machine, its environment and launch secrets)
+    # and where it reaches it (health, API and portal addresses)
+    ("PATCH", re.compile(r"/api/tools/[^/]+/manifest")),
     # Sign-in & SSO settings (the client secret of Atrium's own sign-in)
     ("GET", re.compile(r"/api/auth/sso")),
     ("PUT", re.compile(r"/api/auth/sso")),

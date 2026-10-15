@@ -22,6 +22,72 @@ that bound them, and how Atrium extends and patches itself when a new tool needs
 On the **Agents** page admins pause and resume core agents and give them another model or extra instructions
 (collection `agents`). Core agents cannot be removed. Operators chat with the Hub Supervisor (`POST /api/chat`).
 
+### The Patch Agent and a tool's gaps
+
+The Patch Agent proposes a patch for an open gap of a tool only when that patch can close it, and says why for every
+other gap ([INTEGRATIONS.md](INTEGRATIONS.md#proposals)): a rejected patch is not proposed again until the tool changes
+or an administrator asks again, a patch that failed twice is not proposed a third time, and a gap no patch can close
+gets a plain reason naming the next step - often the administrators' manifest editor
+([INTEGRATIONS.md](INTEGRATIONS.md#setting-it-by-hand)). Each reason is logged once in the activity log
+(`<tool>: '<title>' was not proposed - <reason>`), as a warning and never as an agent error; one gap that cannot be
+planned never stops the others. `patch <tool>` in the Hub Supervisor's chat answers with the counts and each reason.
+A launch_command patch that also switches the health check on is the one patch for both gaps (no second health patch
+while it waits), and an approved patch whose gap was closed another way while it waited - an administrator set the
+value by hand - is set aside ("Not applied: ...") rather than applied over it.
+
+**Reading before writing.** For a code patch (a health endpoint, OIDC sign-in, a custom change) and for a launch
+proposal the model explores the tool's folder with read tools before it answers (`hub/agents/reader.py`):
+
+| Tool | What it answers |
+| --- | --- |
+| `list_files` | one folder level, or a recursive pattern; at most 300 names |
+| `search` | a literal, case-insensitive text: `path:line: text`, at most 50 hits from at most 5,000 files and 20 MB (files over 1 MB and binary files are skipped) |
+| `read_file` | a line range of one file, at most 60,000 characters per answer |
+
+The root listing and up to six entry files are shown up front: for a code patch the app's main file and build files
+(`app.py`, `src/index.js`, `main.go`, `package.json`, `pom.xml`, `build.gradle`, ...; never a configuration file such
+as `application.properties`, which may hold credentials), for a launch proposal the README and build files. Budgets
+per conversation: 400,000 characters, 60 read calls and 100 MB searched; past them every read answers "Reading budget
+used up: submit now with what you have read in full." The reads run in a worker thread, never on the hub's event loop,
+so a model searching a large tree does not hold up the API or the other agents. Every path goes through the same
+checks as a patch (inside the folder, no symbolic link, never `.git`), and a tool's own secret files are never shown:
+environment files (`.env`, `.env.local`, `.env-production`, `secrets.env`, ...), package-registry and git credentials
+(`.npmrc`, `.pypirc`, `.netrc`, `.git-credentials`), private keys and key stores (`id_rsa`, `*.pem`, `*.key`,
+`*.p12`, `*.jks`, ...). In a configuration file (`.properties`, `.yml`, `.toml`, `.json`, `.xml`, ...) a line that sets
+a credential (`password=...`, `token: ...`, `<password>`) is shown with its value masked - a reference such as
+`${DB_PASSWORD}` stays. What the model reads also passes the secret mask and is data written by the tool's authors,
+never instructions. The model answers through one submit tool whose checks it can answer: an existing file may be
+changed only after it read all of it (decided on the folder itself, not on a capped listing; a file over 200,000
+bytes, a file shown with a masked credential and a file that is not UTF-8 text - shown with replacement characters -
+are never rewritten), at most 10 files, never holding a secret the hub keeps. A refusal goes back to the model as a
+tool error ("You have not read <path> in full: read it with read_file (all lines), then submit again."), so a large
+repository no longer ends in an agent error. The patch's title and rationale - the model's words, shown to every
+viewer - pass the secret mask too. A model without tool calling gets one structured call with the entry files instead,
+under the same checks.
+
+**AI launch proposals.** When Atrium does not know how to start a program (no launch rule, no known-product recipe)
+and the Patch Agent has a model for code changes, it reads the README and build files and submits a launch command,
+setup, working folder, port and health path with the files it read as evidence. The checks refuse an empty or `TODO`
+command, one over 500 characters or on several lines, one the command policy blocks, one below the floor for a
+model's commands (`hub/execution/policy.py` `proposed_command_problem`: no chaining, pipe, redirection or command
+substitution; no network fetcher or inline interpreter code; no `sudo`; no privileged container, host network or host
+folder mount; it starts a file of the tool's folder or a known build tool or runtime), a port outside 1 to 65535, a
+health path not starting with `/`, and evidence naming a file the model did not read. The result is always a patch for
+review - "Launch command proposed by <provider> - check it before approving" - that only an administrator approves and
+that is never applied automatically: the command runs on the hub machine, with Atrium's privileges, when someone starts
+the tool. When the model fails, the gap says so ("The AI model could not work out how to start <tool>: ... Set it in
+Integration > Launch > Edit, or ask again.") and the attempt is not paid for again until the tool changes or an
+administrator asks again. Without a model, the gap names the editor.
+
+**Starting a tool without a launch command.** The Operator answers `{"status": "needs_input", "reason": "Launch needs
+a launch command: approve the launch_command patch or set it in Integration > Launch > Edit."}` (with " One is waiting
+on the Approvals page." when a launch_command patch waits), not an error; `start <tool>` in the chat says the same. An
+approved start whose command was removed while it waited fails cleanly with that reason. When the Operator starts a
+tool, the tool's private launch secrets (`adapters/<id>/launch/secrets.env`) reach only the child process's
+environment. The tool's process log (`GET /api/tools/{id}/logs`, readable by viewers) is shown with every hub
+secret (its launch secrets included) and every credential-looking pair masked, so a launcher that echoes its
+environment shows `***`.
+
 ## Team agents
 
 People and agents can add **team agents** (custom agents): a role, instructions, a model provider, permissions, a team
