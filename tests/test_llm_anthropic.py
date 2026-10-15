@@ -76,7 +76,8 @@ def test_the_request_it_builds(client, monkeypatch):
     assert call["output_config"] == {"effort": "medium"} and "temperature" not in call
     assert call["cache_control"] == {"type": "ephemeral"} and call["max_tokens"] == 16000
     assert call["betas"] and call["fallbacks"] == "default"  # the server-side refusal fallback, as before
-    assert call["tools"][0]["name"] == "t" and call["system"] == "You help."
+    assert call["tools"][0]["name"] == "t" and call["tools"][0].get("strict") is not False
+    assert call["system"] == "You help."
     user_id = call["metadata"]["user_id"]
     assert len(user_id) == 32 and "u_1" not in user_id  # a salted hash, never the person's id or name
     result, meta = client.portal.call(lambda: hub.llm.json("patcher", "code", system="s", prompt="p",
@@ -84,6 +85,13 @@ def test_the_request_it_builds(client, monkeypatch):
     assert fake.calls[1]["output_config"] == {"effort": "high", "format": {"type": "json_schema", "schema": {
         "type": "object", "properties": {}}}}
     assert meta.provider == "anthropic" and meta.model == "claude-opus-5-5"
+    many = [{"name": f"t{i}", "description": "d", "strict": True, "input_schema": {"type": "object"}}
+            for i in range(claude_adapter.STRICT_TOOL_LIMIT + 1)]
+    wider = use_claude(hub, monkeypatch, responses=[message("end_turn", [block("text", text="Hi.")])])
+    ask(client, hub, tools=many)
+    sent = wider.calls[0]["tools"]
+    assert len(sent) == len(many) and all(tool["strict"] is False for tool in sent)
+    assert many[0]["strict"] is True  # the caller's definitions stay strict
 
 
 def test_stop_reasons_usage_and_thinking_blocks(client, monkeypatch):
