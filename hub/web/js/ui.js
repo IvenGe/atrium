@@ -103,6 +103,7 @@ export const ICONS = {
   resize: '<path d="M20 11v9h-9M20 20 11 11M15 20l5-5"/>',
   table: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 10h18M3 15h18M9 10v10"/>',
   building: '<path d="M4 21V4.5a1 1 0 0 1 1-1h9a1 1 0 0 1 1 1V21"/><path d="M15 9h4a1 1 0 0 1 1 1v11M2.5 21h19M8 8h3M8 12h3M8 16h3"/>',
+  messages: '<path d="M4 4h11a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1H8l-4 3z"/><path d="M16 8h4a1 1 0 0 1 1 1v11l-3-3h-7a1 1 0 0 1-1-1v-3"/>',
 };
 
 export function icon(name, extra = "") {
@@ -401,10 +402,11 @@ export function dialogKeys(e, backdrop, box) {
 /**
  * Opens a modal. `body` is html``; returns {el, close}. onSubmit receives FormData when the form is submitted.
  * `minRole`: below that role the body is read-only and the submit button hidden. `sticky`: only the buttons close it.
+ * `drawer`: a panel along the right edge instead of a centred box (same keyboard and focus handling).
  * `onClose` runs exactly once however the modal closes (buttons, Esc, backdrop, submit); focus then returns to the
  * element that opened it.
  */
-export function modal({ title, body, submit = "Save", cancel = "Cancel", wide = false, onSubmit, footer, minRole, sticky = false, onClose }) {
+export function modal({ title, body, submit = "Save", cancel = "Cancel", wide = false, drawer = false, onSubmit, footer, minRole, sticky = false, onClose }) {
   const readOnly = !can(minRole);
   // HTML or SVG (a map item): anything focusable that is not the page itself
   const active = document.activeElement;
@@ -414,10 +416,10 @@ export function modal({ title, body, submit = "Save", cancel = "Cancel", wide = 
   const backdrop = document.createElement("div");
   const mine = [opener, locator(opener)];
   if (opener) OPENERS.set(backdrop, mine);
-  backdrop.className = "backdrop";
+  backdrop.className = drawer ? "backdrop side" : "backdrop";
   const foot = footer ?? html`${cancel ? html`<button type="button" class="btn" data-close>${readOnly && cancel === "Cancel" ? "Close" : cancel}</button>` : ""}
       ${submit ? html`<button type="submit" class="btn primary" ${minRole ? html`data-min-role="${minRole}"` : ""}>${submit}</button>` : ""}`;
-  setHTML(backdrop, html`<form class="modal ${wide ? "wide" : ""}" role="dialog" aria-modal="true" novalidate>
+  setHTML(backdrop, html`<form class="modal ${wide ? "wide" : ""} ${drawer ? "drawer" : ""}" role="dialog" aria-modal="true" novalidate>
     <header><h2>${title}</h2><button type="button" class="icon-btn" data-close aria-label="Close">${icon("x")}</button></header>
     <div class="body">${readOnly ? html`<fieldset class="plain" disabled>${body}</fieldset>` : body}</div>
     <footer>${foot}</footer></form>`);

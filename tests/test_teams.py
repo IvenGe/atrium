@@ -481,6 +481,7 @@ def test_supervisor_chat_offers_every_tool(client, monkeypatch):
     fake = use_claude(client.app.state.hub, monkeypatch, responses=[message("end_turn", [block("text", text="Hi.")])])
     reply = client.post("/api/agents/supervisor/chat", json={"text": "hello"}).json()
     assert reply.pop("meta")["provider"] == "anthropic"  # which model answered
+    assert reply.pop("thread").startswith("m_")  # the conversation on the agent bus
     assert reply == {"reply": "Hi.", "mode": "llm", "agent_id": "supervisor"}
     assert {t["name"] for t in fake.calls[0]["tools"]} == set(toolkit.TOOLS)
     assert client.post("/api/agents/operator/chat", json={"text": "hi"}).status_code == 400
@@ -504,6 +505,7 @@ def test_team_agent_on_claude_uses_its_tools_through_the_operator(client, wait_f
     assert record["provider_label"] == "Claude" and record["llm_active"] and record["model"] == "claude-opus-5-5"
     reply = client.post(f"/api/agents/{record['id']}/chat", json={"text": "check the box"}).json()
     assert reply.pop("meta")["source"] == "agent"  # its own choice answered
+    assert reply.pop("thread").startswith("m_")  # the conversation on the agent bus
     assert reply == {"reply": "Asked for approval.", "mode": "llm", "agent_id": record["id"]}
     offered = {t["name"] for t in fake.calls[0]["tools"]}
     assert "run_command" in offered and "request_code_patch" not in offered and "Be careful." in fake.calls[0]["system"]
@@ -593,6 +595,7 @@ def test_local_provider_and_the_openai_compatible_tool_loop(client, sign_in):
     assert record["provider_label"] == "Ollama" and record["provider_kind"] == "local" and record["model"] == "qwen3:8b"
     reply = client.post(f"/api/agents/{record['id']}/chat", json={"text": "What tools are there?"}).json()
     assert reply.pop("meta")["provider"] == "ollama"  # which model answered
+    assert reply.pop("thread").startswith("m_")  # the conversation on the agent bus
     assert reply == {"reply": "The suite has: Wazuh.", "mode": "local", "agent_id": record["id"]}
     calls = [r for r in server.requests if r[1] == "/v1/chat/completions"]
     first, second = calls[0][3], calls[1][3]

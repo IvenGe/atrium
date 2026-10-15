@@ -11,9 +11,10 @@ hub's own REST API only: accounts for every role, the imported tools and their c
 pull assets, people and accounts from the fakes, a vulnerability scan, a CyFun 2025 self-assessment, policies and
 risks, the fake firewall with its network flow, the two model servers as AI providers with agents on different models
 and the Hub Supervisor's own settings, a shared dashboard of tool widgets and a personal one, an API-only subsidiary
-of CISO Assistant whose scripted sidecar (FakeSidecar) enrolls and asks for a change in the tool, and pending
-proposals (a firewall change, a data flow, agent teams, that in-tool change) in Approvals. Ctrl+C stops everything and
-removes the data directory.
+of CISO Assistant whose scripted sidecar (FakeSidecar) enrolls and asks for a change in the tool, pending proposals (a
+firewall change, a data flow, agent teams, that in-tool change) in Approvals, and chats that make the agents ask each
+other on the Agent bus - one of them with an agent error (seed_conversations). Ctrl+C stops everything and removes the
+data directory.
 
 Every name, address, e-mail address and credential here is invented (example.com, 10.0.0.0/8, 203.0.113.0/24);
 the "secrets" only unlock the fakes in this file. `scripts/screenshots.py` uses this module.
@@ -185,14 +186,65 @@ TEAM_CHANGE = {"external_id": "atrium:control:mfa-remote-access", "ref_id": "PR.
                               "September 2026 (CHG-2026-097).", "status": "pass"}
 TEAM_REASON = ("Jonas reports that MFA for remote access has been enforced since September (CHG-2026-097); CISO "
                "Assistant has no control for it yet, so I ask to create one with status pass.")
-# canned answers of the fake models: (words in the question, answer)
-REPLIES = [
+# the chats seeded for the Agent bus: ava asks the Hub Supervisor (it asks three other agents; the Operator Agent
+# fails), jonas asks it about leavers, ava asks the OpenVAS team's triage agent
+AUDIT_QUESTION = ("Get me ready for Friday's audit: how many assets have no owner, which controls fail, and please "
+                  "start Grafana so I can show the dashboards.")
+LEAVER_QUESTION = "Which leavers still have access?"
+DEADLINE_QUESTION = "Which findings are past their deadline?"
+
+
+def _parsed(text: str | None) -> Any:
+    try:
+        return json.loads(text or "")
+    except ValueError:
+        return None
+
+
+def tool_id_in(results: dict[str, str], name: str) -> str | None:
+    """A tool's id from the list_tools result the fake model got earlier (None: not there)."""
+    tools = _parsed(results.get("list_tools"))
+    return next((t.get("id") for t in tools if isinstance(t, dict) and t.get("name") == name), None) \
+        if isinstance(tools, list) else None
+
+
+def audit_answer(results: dict[str, str]) -> str:
+    """The Hub Supervisor's answer to AUDIT_QUESTION, from what the other agents answered it."""
+    assets, grc = _parsed(results.get("asset_summary")), _parsed(results.get("compliance_summary"))
+    lines = ["Here is where the suite stands for the audit:", ""]
+    if isinstance(assets, dict):
+        lines.append(f"- **Assets** (Asset Supervisor): {assets.get('total', 0)} active, "
+                     f"{assets.get('without_owner', 0)} without an owner, {assets.get('critical', 0)} critical.")
+    if isinstance(grc, dict):
+        failing = grc.get("failing_controls") or []
+        scores = ", ".join(f"{f.get('name')} {f.get('score')}%" for f in (grc.get("frameworks") or [])[1:4]
+                           if isinstance(f, dict) and f.get("score") is not None)
+        lines.append(f"- **Compliance** (GRC Supervisor): {scores or 'no scores yet'}; {len(failing)} control(s) fail "
+                     "or are partial" + (f", the first is {str(failing[0]).split(':')[0]}." if failing else "."))
+    started = results.get("start_tool") or ""
+    if started.startswith("Error:"):
+        lines.append(f"- **Grafana** is not started: the Operator Agent answered \"{started[6:].strip()}\". It runs "
+                     "as a SaaS service - open it from Portals.")
+    elif started:
+        lines.append("- **Grafana**: the Operator Agent is starting it.")
+    return "\n".join(lines)
+
+
+# canned answers of the fake models: (words in the question, answer - text, or made from the tool results {tool name:
+# result text} - and what it looks up first: rounds of tool calls, each an agent asking another one on the bus, whose
+# arguments may come from the results of the rounds before)
+REPLIES: list[tuple[tuple[str, ...], Any, list[list[tuple[str, Any]]]]] = [
     (("leaver",), "One leaver still has access: **Pieter De Smet** (Finance) is disabled in Keycloak but still holds "
                   "laptop LT-1046 and an active Snipe-IT login. Revoking the login and collecting the laptop closes "
-                  "it - both are listed under People > Leavers."),
+                  "it - both are listed under People > Leavers.",
+     [[("people_summary", {})]]),
     (("deadline", "overdue", "finding"), "Two findings are past their deadline: the Tomcat remote code execution on "
                                          "app-01 (critical, CVE-2025-24813) and the OpenSLP heap overflow on esx-01 "
-                                         "(high). Both have a vendor fix; app-01 is the urgent one."),
+                                         "(high). Both have a vendor fix; app-01 is the urgent one.",
+     [[("list_tools", {})], [("tool_health", lambda r: {"tool_id": tool_id_in(r, "OpenVAS")})]]),
+    (("audit",), audit_answer,
+     [[("list_tools", {}), ("asset_summary", {}), ("compliance_summary", {})],
+      [("start_tool", lambda r: {"tool_id": tool_id_in(r, "Grafana")})]]),
 ]
 DEFAULT_REPLY = "Nothing needs your attention right now: every data flow ran, and the approvals queue is up to date."
 
@@ -474,9 +526,10 @@ def skeleton(schema: dict[str, Any]) -> Any:
 class ModelServer:
     """An AI model server with an OpenAI-compatible API (GET /v1/models, POST /v1/chat/completions), as Atrium's
     "openai_compatible" providers call it - with canned answers instead of a model: REPLIES by the words of the
-    question, the subsidiary clerk's control (TEAM_CHANGE) as a tool call when it is offered the tool and asked about
-    MFA, a tool it is told to call by name (Atrium's capability check), and the smallest valid JSON for structured
-    output. Usage is counted from the characters, about 4 a token."""
+    question (after the tool calls the reply looks up first, as far as the agent is offered those tools), the
+    subsidiary clerk's control (TEAM_CHANGE) as a tool call when it is offered the tool and asked about MFA, a tool it
+    is told to call by name (Atrium's capability check), and the smallest valid JSON for structured output. Usage is
+    counted from the characters, about 4 a token."""
 
     def __init__(self, models: list[str], key: str | None = None):
         self.models, self.key = models, key
@@ -511,7 +564,7 @@ class ModelServer:
             message["content"] = json.dumps(skeleton((fmt.get("json_schema") or {}).get("schema") or {}))
         elif fmt.get("type") == "json_object":
             message["content"] = "{}"
-        elif last.get("role") == "tool":
+        elif "MFA" in asked and last.get("role") == "tool":
             message["content"] = ("I asked Atrium to record the control MFA for remote access in CISO Assistant; the "
                                   "change waits for a person's approval.")
         elif upsert and "MFA" in asked:
@@ -519,15 +572,48 @@ class ModelServer:
             message["tool_calls"] = [{"id": f"call_{self.calls}", "type": "function",
                                       "function": {"name": upsert, "arguments": json.dumps(TEAM_CHANGE)}}]
         else:
-            question = str(last.get("content") or "").lower()
-            message["content"] = next((text for words, text in REPLIES if any(w in question for w in words)),
-                                      DEFAULT_REPLY)
+            turn = self.turn(messages)
+            question = str(turn[0].get("content") or "").lower() if turn else ""
+            _, answer, rounds = next((r for r in REPLIES if any(w in question for w in r[0])),
+                                     ((), DEFAULT_REPLY, []))
+            done = sum(1 for m in turn if m.get("role") == "assistant" and m.get("tool_calls"))
+            results = self.results(turn)
+            calls = self.lookups(rounds[done], offered, results) if done < len(rounds) else []
+            if calls:
+                message["tool_calls"] = calls
+            else:
+                message["content"] = answer(results) if callable(answer) else answer
         sent = len(json.dumps(messages)) + len(json.dumps(req.get("tools") or []))
         usage = {"prompt_tokens": sent // 4 + 1, "completion_tokens": len(json.dumps(message)) // 4 + 1}
         return {"id": f"chatcmpl-demo-{self.calls}", "object": "chat.completion", "created": int(time.time()),
                 "model": req.get("model"), "usage": {**usage, "total_tokens": sum(usage.values())},
                 "choices": [{"index": 0, "message": message,
                              "finish_reason": "tool_calls" if message.get("tool_calls") else "stop"}]}
+
+    @staticmethod
+    def turn(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """This turn: the person's (or task's) last message and the tool rounds after it."""
+        last_user = max((i for i, m in enumerate(messages) if m.get("role") == "user"), default=None)
+        return messages[last_user:] if last_user is not None else []
+
+    @staticmethod
+    def results(turn: list[dict[str, Any]]) -> dict[str, str]:
+        """{tool name: result text} of this turn's tool calls (the latest per tool)."""
+        names = {str(c.get("id")): str((c.get("function") or {}).get("name")) for m in turn
+                 for c in m.get("tool_calls") or []}
+        return {names.get(str(m.get("tool_call_id")), "?"): str(m.get("content") or "") for m in turn
+                if m.get("role") == "tool"}
+
+    def lookups(self, calls: list[tuple[str, Any]], offered: dict[str, Any],
+                results: dict[str, str]) -> list[dict[str, Any]]:
+        """One round of tool calls - those the agent is offered, with their arguments made from `results`."""
+        out = []
+        for name, args in calls:
+            args = args(results) if callable(args) else args
+            if name in offered and isinstance(args, dict) and all(v is not None for v in args.values()):
+                out.append({"id": f"call_{self.calls}_{len(out)}", "type": "function",
+                            "function": {"name": name, "arguments": json.dumps(args)}})
+        return out
 
 
 class Greenbone:
@@ -1157,17 +1243,14 @@ def seed(base: str, password: str, tools: DemoTools, log: Callable[[str], None] 
 
     # -- round 4: AI providers and agents on them, dashboards, a subsidiary inside CISO Assistant -------------------
     models = seed_models(admin, tools, ids, log)
-    operator.post("/api/chat", {"text": "Which leavers still have access?"}, ok=(400, 409, 429, 503))
-    if models.get("triage"):
-        admin.post(f"/api/agents/{models['triage']}/chat", {"text": "Which findings are past their deadline?"},
-                   ok=(400, 409, 429, 503))
     boards = seed_dashboards(admin, ids, log)
     team = seed_subsidiary(admin, second_admin, operator, tools, ids, base, log)
     admin.post("/api/integration/evaluate")
+    chats = seed_conversations(admin, operator, models, log)
     leaver = people.get(LEAVER)
     return {"tools": ids, "firewall": fw_id, "change_id": change["change"]["id"], "framework": fw,
             "assessment_id": assessment["id"], "person_id": (people.get("emma.janssens") or {}).get("id"),
-            "leaver_id": leaver["id"] if leaver else None, **models, **boards, **team}
+            "leaver_id": leaver["id"] if leaver else None, **models, **boards, **team, **chats}
 
 
 def seed_models(admin: Api, tools: DemoTools, ids: dict[str, str], log: Callable[[str], None]) -> dict[str, Any]:
@@ -1288,6 +1371,25 @@ def seed_subsidiary(admin: Api, second_admin: Api, operator: Api, tools: DemoToo
     change = wait("the team's change request", lambda: next(iter(pending(admin, "subsidiary_action")), None), 90)
     log(f"subsidiary of CISO Assistant active, its sidecar enrolled; waiting for approval: {change['title']}")
     return {"subsidiary_tool": tool, "subsidiary_approval": change["id"], "subsidiary_clerk": clerk}
+
+
+def seed_conversations(admin: Api, operator: Api, models: dict[str, Any],
+                       log: Callable[[str], None]) -> dict[str, Any]:
+    """Chats that make agents ask each other on the bus (the fake models look things up first, see REPLIES): jonas asks
+    the Hub Supervisor about leavers (it asks the People Supervisor), ava asks the OpenVAS team's triage agent (it has
+    the tool's supervisor check OpenVAS) and then the Hub Supervisor to get her ready for an audit - it asks the Asset
+    and GRC Supervisors, and the Operator Agent fails to start Grafana (a SaaS tool has no launch command): an agent
+    error in that conversation, for the Agent bus page and the Agents page's errors drawer."""
+    operator.post("/api/chat", {"text": LEAVER_QUESTION}, ok=(400, 409, 429, 503))
+    if models.get("triage"):
+        admin.post(f"/api/agents/{models['triage']}/chat", {"text": DEADLINE_QUESTION}, ok=(400, 409, 429, 503))
+    audit = admin.post("/api/chat", {"text": AUDIT_QUESTION}, ok=(400, 409, 429, 503)) or {}
+    thread = audit.get("thread")
+    detail = admin.get(f"/api/bus/threads/{thread}") if thread else {}
+    errors = admin.get("/api/agents/operator/errors")["total"]
+    log(f"chats on the agent bus: the audit conversation has {len(detail.get('messages') or [])} messages; the "
+        f"Operator Agent has {errors} error(s)")
+    return {"conversation": thread}
 
 
 def _requirement_refs(detail: dict[str, Any], level: str) -> list[str]:

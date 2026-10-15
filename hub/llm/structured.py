@@ -185,10 +185,42 @@ def strip_nulls(schema: dict[str, Any], value: Any) -> Any:
     return value
 
 
+def schema_load(schema: dict[str, Any]) -> tuple[int, int]:
+    """What a schema costs against a provider's structured-output limits: (optional properties - those not in their
+    object's `required` -, properties with a union type - anyOf or a list of types), counted through nested schemas."""
+    optional = unions = 0
+
+    def walk(node: Any) -> None:
+        nonlocal optional, unions
+        if isinstance(node, list):
+            for item in node:
+                walk(item)
+            return
+        if not isinstance(node, dict):
+            return
+        properties = node.get("properties")
+        if isinstance(properties, dict):
+            required = set(node.get("required") or [])
+            for name, prop in properties.items():
+                optional += name not in required
+                if isinstance(prop, dict) and ("anyOf" in prop or isinstance(prop.get("type"), list)):
+                    unions += 1
+        for key, value in node.items():
+            if key in ("properties", "$defs", "definitions") and isinstance(value, dict):
+                walk(list(value.values()))
+            elif key in ("items", "anyOf", "prefixItems", "additionalProperties"):
+                walk(value)
+
+    walk(schema)
+    return optional, unions
+
+
 def mode_order(kind: str, caps_json_schema: bool | None, caps_json_object: bool | None, setting: str = "auto") -> list[str]:
-    """The modes to try, best first, for a provider kind and what is known about the model."""
+    """The modes to try, best first, for a provider kind and what is known about the model. A model whose native mode
+    is refused (HTTP 400 naming it) goes on with the next mode, so every list ends with "prompt" unless an
+    administrator chose a mode."""
     if kind == "anthropic":
-        return ["native"] if caps_json_schema is not False else ["prompt"]
+        return ["native", "prompt"] if caps_json_schema is not False else ["prompt"]
     if kind == "openai":
         return ["native", "prompt"] if caps_json_schema is not False else ["prompt"]
     if setting == "json_schema":
@@ -202,11 +234,31 @@ def mode_order(kind: str, caps_json_schema: bool | None, caps_json_object: bool 
     return [*order, "prompt"]
 
 
+NATIVE_FIELDS = re.compile(r"output_config\.format|text\.format|response_format|json_schema|output_format"
+                           r"|structured output|schema is too complex")
+
+
 def names_mode(message: str, mode: str) -> bool:
-    """Whether a provider's refusal (HTTP 400) is about the structured-output mode it was sent."""
+    """Whether a provider's refusal (HTTP 400) is about the structured-output mode it was sent - not about another
+    part of the same request (Anthropic's output_config also carries the reasoning effort)."""
     low = message.lower()
     if mode == "native":
-        return any(w in low for w in ("response_format", "json_schema", "text.format", "output_config", "format"))
+        if NATIVE_FIELDS.search(low):
+            return True
+        if "effort" in low or "reasoning" in low:
+            return False
+        return bool(re.search(r"\boutput_config\b|\bformat\b", low))
     if mode == "json_object":
         return "response_format" in low or "json_object" in low
     return False
+
+
+SCHEMA_ITSELF = re.compile(r"too complex|output_config\.format\.schema|text\.format\.schema|json_schema\.schema"
+                           r"|input_schema")
+
+
+def schema_refused(message: str) -> bool:
+    """A refusal of the schema sent (its size or a JSON Schema feature: "Schema is too complex for compilation",
+    "output_config.format.schema: ..."), not of the model's structured-output mode: another schema may pass. (OpenAI's
+    "Invalid schema for response_format" is the strict mode refusing the hub's schemas: that one is learned.)"""
+    return bool(SCHEMA_ITSELF.search(message.lower()))

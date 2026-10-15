@@ -7,7 +7,7 @@ live in the workspace directory under the data directory (`HUB_DATA_DIR`, defaul
 ```mermaid
 flowchart TB
   subgraph Browser
-    ui[Web UI - Home dashboards, Portals, Apps, Integration with its maps, Agents, Approvals, Operator, Network, Assets, People, Vulnerabilities, Compliance, Extensions]
+    ui[Web UI - Home dashboards, Portals, Apps, Integration with its maps, Agents, Agent bus, Approvals, Operator, Network, Assets, People, Vulnerabilities, Compliance, Extensions]
   end
   subgraph Hub process
     guard[Host check, X-Hub-Request, sign-in, role policy]
@@ -185,13 +185,59 @@ Agents never call each other directly. They exchange `Message`s on the bus
 - `reply` - answer to a request; `{"error": ...}` raises `AgentError` at the caller,
 - `event` - fire-and-forget notification.
 
-Every message is appended to the `messages` log and pushed to the UI over Server-Sent Events, so
-the Agents page shows the conversation as it happens. Each agent handles messages concurrently
+Every message is appended to the `messages` log (every hub secret in its body masked) and pushed to the UI over
+Server-Sent Events, so the Agents page shows the conversation as it happens. The log's bodies are for operators and
+administrators: `GET /api/messages`, `GET /api/agents/{id}/messages` and the `message` event give viewers routing,
+subject, time and a failed reply's error text only (`{"redacted": "role"}`). Each agent handles messages concurrently
 (bounded by `max_concurrency`) so two agents asking each other questions cannot deadlock. Subjects in an agent's
 `unthrottled_subjects` skip that bound. The GRC Supervisor's `evaluate` and `summary` are such subjects, so a data
 flow waiting minutes for a slow GRC tool never delays a compliance evaluation; evaluations are serialised by their
 own lock instead. A handler for subject `tool.imported` is the method `on_tool_imported`. Bodies over 32 KB (pulled records) reach their
 recipient in full but are logged as a summary.
+
+**Conversations.** Every message carries `thread` (the id of the message that started the conversation, its root),
+`parent` (the message whose handling sent it) and `origin` (who started it). The bus keeps the conversation of the
+code that runs now in a context variable (`bus.TRACE`): `BaseAgent._handle` sets it for each message it handles, and
+the API middleware sets one per request, so whatever a handler or a person's request asks, tells or answers joins
+that conversation; a reply always keeps its request's. Scheduled and background work (the flow and agent scheduler,
+health sweeps, start-up) runs outside any, so each of its messages starts a conversation of its own. Rows logged
+before conversations existed group a reply with its request (`bus.thread_key`). `hub/conversations.py` indexes the
+log by conversation (routing only, caught up on every read) for the **Agent bus** page (`GET /api/bus/threads`); a
+response that sent bus messages names its conversation in the `X-Atrium-Thread` header, and a chat reply in `thread`.
+
+**Agent errors.** Every failure of an agent is recorded (`hub/agent_errors.py`, collection `agent_errors`): an
+exception in a handler, an error reply, a request nobody answered in time or no agent could receive, a failed AI model
+call (`hub.llm`, after its fallbacks; not the playground). One failure is one record: the error reply an exception or a
+failed model call causes is not recorded again, nor the exception a failed model call ends its handler with;
+different failures of one message (a timeout, then the late handler's own exception; a failed model call, then the
+rules it fell back to failing too) are each recorded.
+A record names the agent, the subject, who asked, the message and its conversation, the error text (hub secrets and
+credential-looking pairs masked, at most 2,000 characters), the error class, a code (`timeout`, `unreachable`,
+`llm_<kind>`, a reply's code) and who acknowledged it. At most 200 per agent are kept, none older than 30 days. An
+agent's record shows `errors` (since start) and `errors_unacknowledged` (stored).
+
+**Privacy of a person's chat (review D7).** A person's chat request makes its conversation private to them: the
+chat text never reaches the log, and every other message of that conversation - an agent passing the person's words to
+another agent, its answer, an error text - is logged with each string that quotes the person's text replaced by
+`[private: quotes a person's chat]` (`bus.Quotes`, case and spacing ignored, erring on the side of a quote: the string
+is inside the text, the whole text is inside the string, it shares 10 characters in a row with it, or it contains a
+distinctive word of it - letters with digits or symbols, inner capitals, a capitalised name, also one that opens a
+sentence unless it is a usual opener such as "Please", "The" or "Run"; also numbers of 4+ digits the text has, in any
+thousands format and inside strings too ("85,000" and "85000"), and dictionary keys carrying such a word; a plain
+short word such as a tool's id stays readable, and a paraphrase is not recognised). "The person's text" is every turn
+of theirs the agent's model reads: with the agent's memory on, their earlier turns too (`hub/llm/memory.py` tells the
+conversation) - distinctive words, names and numbers of all of them, the 10-character runs of the newest 100,000
+characters. A chat text is at most 20,000 characters. The originals are kept for the person alone, Fernet-encrypted in
+the collection `bus_private` under their user id, deleted with their account and (a message's) pruned with the log;
+for anyone else a chat's own failure has no error text.
+The logs every signed-in account reads follow the same rule: an activity entry or a command record (and its live
+`activity` / `command` event) written while an agent works in a person's private conversation is stored with the
+strings that quote the chat replaced and marked `private`; its person reads the original in `GET /api/activity` and
+`GET /api/commands` (`mine`). Every activity entry also has the hub's secrets and credential-looking pairs masked
+(`Hub.activity`). An approval asked for in a private conversation keeps it (`hub/approvals.py`): its decision and
+everything the agents do about it once it is decided - run the command, tell who asked, log it - happen in that
+conversation, so the rule holds after the chat ended. The approval itself (title, payload, result) is read by everyone
+who reads the approval queue, so its deciders see what they decide.
 
 ## Agents
 
@@ -544,6 +590,7 @@ any control worse, never better, and add their evidence ([AGENTS.md](AGENTS.md#w
 | `users`, `sessions`, `tokens` | accounts and credentials (hashes only) |
 | `subsidiaries`, `subsidiary_keys`, `subsidiary_grants`, `subsidiary_runs`, `subsidiary_usage`, `subsidiary_reports`, `subsidiary_inbox`, `subsidiary_charters`, `subsidiary_chain_heads`, `subsidiary_transcripts` | agent teams inside tools: the subsidiaries with their charters and sidecars (never the enrollment code; the dedicated credential encrypted), their signing keys (private parts encrypted), grants, runs, daily usage, reports, the sidecar's inbox, charter versions, audit chain heads, and transcripts (off by default; encrypted) |
 | `messages`, `activity`, `toolbus`, `subsidiary_audit:<id>` | logs: agent messages, the activity log, tool events, each subsidiary's hash-chained audit trail (never pruned) |
+| `agent_errors`, `bus_private` | agents' recorded failures (200 per agent, 30 days); what of a person's private chat conversation only they read - messages, errors, activity entries, commands, and what a pending approval asked for in it needs to resume there (encrypted, per user id; a message's pruned with the message log, an approval's dropped once it is decided) |
 
 | Path under the data directory | Holds |
 | --- | --- |
@@ -563,8 +610,10 @@ token. Every `hub.save` publishes its record under its kind:
 
 - `tool`, `patch`, `asset`, `host`, `risk`, `policy`, `vulnerability`, `flow`, `connection`, `person`, ... and the
   matching `*_removed`;
-- also `message` (agent messages), `activity`, `approval`, `agent`, `grc`, `toolbus`, `command`, `extension`,
-  `self_patch`, `llm_provider` and `restart_required`.
+- also `message` (agent messages, with `thread`, `parent`, `origin` and `private`), `activity`, `approval`, `agent`,
+  `grc`, `toolbus`, `command`, `extension`, `self_patch`, `llm_provider` and `restart_required`;
+- `agent_error` (a recorded failure as anyone may read it, or the same record once acknowledged),
+  `agent_errors_acknowledged` `{agent, count, by}` and `agent_errors_cleared` `{agent, count}`.
 
 Round 3 added these events. None carries secrets, backup content, webhook URLs or toolbus payloads.
 
@@ -617,6 +666,7 @@ tests check every route.
 | Network app, segmentation map, device changes, maintenance windows | `/api/network/*`, `/api/segmentation*` | [NETWORK.md](NETWORK.md#endpoints) |
 | Compliance: controls, risks, policies, frameworks, audit packs | `/api/grc*`, `/api/frameworks*` | [COMPLIANCE.md](COMPLIANCE.md#endpoints) |
 | Agents, teams, chat, local models, settings, guardrails | `/api/agents*`, `/api/llm/providers*`, `/api/settings*` | [AGENTS.md](AGENTS.md) |
+| The Agent bus: conversations between agents, agents' errors | `/api/bus/threads*`, `/api/agents/{id}/errors*` | [AGENTS.md](AGENTS.md#conversations-and-errors) |
 | Extensions, extension records, self-patches | `/api/extensions*`, `/api/x*`, `/api/self-patches*` | [AGENTS.md](AGENTS.md#extensions) |
 | Home dashboards and widgets | `/api/dashboards*`, `/api/widgets/*` | [DASHBOARD.md](DASHBOARD.md#endpoints) |
 | Subsidiaries (agent teams inside tools) and their sidecars | `/api/subsidiaries*`, `POST /api/tools/{id}/subsidiary`, `/api/subsidiary/v1/*` (subsidiary tokens) | [SUBSIDIARIES.md](SUBSIDIARIES.md#peoples-routes) |

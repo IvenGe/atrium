@@ -12,15 +12,16 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
-from . import agent_settings_api, canvas_api, connectors, dashboards_api, guardrails, llm_providers, network_api
+from . import agent_settings_api, bus_api, canvas_api, connectors, dashboards_api, guardrails, llm_providers, network_api
 from . import network_changes_api
 from . import people as people_app
 from .agents import teams
 from .agents import vulns as vuln_app
 from .agents.grc import control_catalog
 from .approvals import DecisionRefused
+from .auth.policy import role_allows
 from .auth.service import CurrentPrincipal, Principal
-from .bus import AgentError, redacted
+from .bus import TRACE, AgentError
 from .agents import settings as agent_settings
 from .llm import LLMUnavailable
 from .llm import resolve as llm_resolve
@@ -67,7 +68,7 @@ class CommandBody(BaseModel):
 
 
 class ChatBody(BaseModel):
-    text: str
+    text: str = Field(max_length=20_000)  # the quote check of a private chat reads it (hub/bus.py Quotes)
 
 
 class AgentPatch(BaseModel):
@@ -371,6 +372,11 @@ def build_router(hub: Hub) -> APIRouter:
 
     def not_found(what: str) -> HTTPException:
         return HTTPException(404, f"{what} not found")
+
+    def this_thread() -> str | None:
+        """The conversation this request's messages belong to (set by the first one, see hub/app.py)."""
+        trace = TRACE.get()
+        return trace.thread if trace is not None else None
 
     async def ask_chat(p: Principal, recipient: str, subject: str, body: dict[str, Any]) -> Any:
         """ask() for a chat turn: a reached AI budget or rate limit answers HTTP 429 {detail, code, retry_after}
@@ -900,7 +906,7 @@ def build_router(hub: Hub) -> APIRouter:
         if not body.text.strip():
             raise HTTPException(400, "Say something")
         reply = await ask_chat(p, agent_id, "chat", {"text": body.text})
-        return reply if isinstance(reply, JSONResponse) else {**reply, "agent_id": agent_id}
+        return reply if isinstance(reply, JSONResponse) else {**reply, "agent_id": agent_id, "thread": this_thread()}
 
     @router.post("/agents/{agent_id}/chat/reset")
     async def reset_agent_chat(agent_id: str, p: CurrentPrincipal) -> dict[str, Any]:
@@ -946,23 +952,31 @@ def build_router(hub: Hub) -> APIRouter:
             await hub.bus.tell(p.bus_id, "module:grc", "evaluate")  # HB-SC-1: which cloud providers are in use
         return view
 
+    # Each row names its conversation (`thread`, GET /api/bus/threads/{thread}), also rows from before they existed.
+    # Bodies as on the Agent bus page: secrets masked, for operators and administrators only (Conversations.log_row).
     @router.get("/agents/{agent_id}/messages")
-    async def agent_messages(agent_id: str, limit: int = 100) -> list[dict[str, Any]]:
+    async def agent_messages(agent_id: str, p: CurrentPrincipal, limit: int = 100) -> list[dict[str, Any]]:
         recent = hub.store.tail("messages", 2000)
-        return [redacted(m) for m in recent if agent_id in (m["sender"], m["recipient"])][-limit:]
+        mine = [m for m in recent if agent_id in (m["sender"], m["recipient"])][-limit:]
+        bodies = role_allows(p.role, "operator")
+        return [hub.conversations.log_row(m, bodies) for m in mine]
 
     @router.get("/messages")
-    async def messages(limit: int = 200) -> list[dict[str, Any]]:
-        return [redacted(m) for m in hub.store.tail("messages", min(limit, 2000))]
+    async def messages(p: CurrentPrincipal, limit: int = 200) -> list[dict[str, Any]]:
+        bodies = role_allows(p.role, "operator")
+        return [hub.conversations.log_row(m, bodies) for m in hub.store.tail("messages", min(limit, 2000))]
 
     @router.get("/activity")
-    async def activity(limit: int = 100, before: int | None = None) -> list[dict[str, Any]]:
-        """The latest entries; `before` (an entry's seq) pages back to older ones, so nothing is out of reach."""
-        return hub.store.tail("activity", min(limit, 2000), before=before)
+    async def activity(p: CurrentPrincipal, limit: int = 100, before: int | None = None) -> list[dict[str, Any]]:
+        """The latest entries; `before` (an entry's seq) pages back to older ones, so nothing is out of reach. Entries
+        written in a person's private chat thread show its quotes to that person only (Hub.shared_append)."""
+        entries = hub.store.tail("activity", min(limit, 2000), before=before)
+        return hub.conversations.own_entries(entries, hub.llm.memory.person_of(p.bus_id), "a")
 
     @router.post("/chat")
     async def chat(body: ChatBody, p: CurrentPrincipal) -> Any:
-        return await ask_chat(p, "supervisor", "chat", {"text": body.text})
+        reply = await ask_chat(p, "supervisor", "chat", {"text": body.text})
+        return reply if isinstance(reply, JSONResponse) else {**reply, "thread": this_thread()}
 
     @router.post("/chat/reset")
     async def chat_reset(p: CurrentPrincipal) -> dict[str, Any]:
@@ -1075,8 +1089,9 @@ def build_router(hub: Hub) -> APIRouter:
         return await ask(p, "operator", "run", body.model_dump(), timeout=body.timeout + 30)
 
     @router.get("/commands")
-    async def command_history(limit: int = 50) -> list[dict[str, Any]]:
-        return hub.store.tail("commands", min(limit, 500))
+    async def command_history(p: CurrentPrincipal, limit: int = 50) -> list[dict[str, Any]]:
+        entries = hub.store.tail("commands", min(limit, 500))  # a private chat's quotes: its person only, as above
+        return hub.conversations.own_entries(entries, hub.llm.memory.person_of(p.bus_id), "c")
 
     # -- assets --------------------------------------------------------------------------
 
@@ -1893,6 +1908,7 @@ def build_router(hub: Hub) -> APIRouter:
     canvas_api.add_routes(router, hub, ask)  # integration map, Connect options, POST /flows, layouts (R3-CANVAS-BE)
     dashboards_api.add_routes(router, hub)  # Home dashboards, widgets and their data (R4-DASH)
     agent_settings_api.add_routes(router, hub)  # agent settings history, playground, budgets, usage (R4-LLM 4)
+    bus_api.add_routes(router, hub)  # the Agent bus page: conversations and agents' errors
     subsidiary_routes.add_routes(router, hub, ask)  # subsidiaries and their sidecars' API (R4-SUB)
 
     # -- live events (SSE) ---------------------------------------------------------------
@@ -1900,6 +1916,7 @@ def build_router(hub: Hub) -> APIRouter:
     @router.get("/events")
     async def events(request: Request, p: CurrentPrincipal) -> StreamingResponse:
         queue = hub.bus.subscribe()
+        bodies = role_allows(p.role, "operator")  # a "message" event's body: as GET /api/messages shows it
 
         async def stream():
             checked = time.monotonic()
@@ -1915,7 +1932,7 @@ def build_router(hub: Hub) -> APIRouter:
                     except asyncio.TimeoutError:
                         yield ": keep-alive\n\n"
                         continue
-                    yield f"data: {json.dumps(event, default=str)}\n\n"
+                    yield f"data: {json.dumps(hub.conversations.event(event, bodies), default=str)}\n\n"
             finally:
                 hub.bus.unsubscribe(queue)
 

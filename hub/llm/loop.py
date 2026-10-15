@@ -28,6 +28,11 @@ CLOUD_STOPPED = "(Stopped: an administrator switched cloud AI providers off whil
 Run = Callable[[str, dict[str, Any]], Awaitable[Any]]
 
 
+def plain_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Tool definitions without `strict` (the toolkit validates every call's arguments itself)."""
+    return [{k: v for k, v in t.items() if k != "strict"} for t in tools]
+
+
 def add_usage(a: Usage, b: Usage) -> Usage:
     return Usage(input_tokens=a.input_tokens + b.input_tokens,
                  cached_input_tokens=a.cached_input_tokens + b.cached_input_tokens,

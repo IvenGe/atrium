@@ -134,6 +134,42 @@ def test_the_model_servers_speak_the_openai_compatible_api_with_canned_answers(t
                                                                             "items": []}
 
 
+def test_the_model_servers_look_things_up_with_the_agents_tools_before_they_answer(tools):
+    """The seeded audit chat (scripts/demo_hub.py seed_conversations): rounds of tool calls - each a request to another
+    agent on the bus - with arguments from the earlier results, then an answer made from what the agents answered."""
+    offered = [{"type": "function", "function": {"name": n, "parameters": {}}}
+               for n in ("list_tools", "asset_summary", "compliance_summary", "start_tool")]
+    results = {"list_tools": json.dumps([{"id": "grafana", "name": "Grafana"}]),
+               "asset_summary": json.dumps({"total": 26, "without_owner": 3, "critical": 2}),
+               "compliance_summary": json.dumps({"frameworks": [{"name": "Baseline", "score": 70},
+                                                                {"name": "ISO/IEC 27001:2022", "score": 72}],
+                                                 "failing_controls": ["HB-AC-1 MFA for administrators: off"]}),
+               "start_tool": "Error: This tool has no launch command in its manifest"}
+    messages = [{"role": "system", "content": "You are the Hub Supervisor."},
+                {"role": "user", "content": demo_hub.AUDIT_QUESTION}]
+    rounds = []
+    for _ in range(4):
+        choice = chat(tools, "model_cloud", {"model": "chat-large-v3", "tools": offered, "messages": messages},
+                      demo_hub.MODEL_CLOUD_KEY).json()["choices"][0]
+        calls = choice["message"].get("tool_calls") or []
+        if not calls:
+            break
+        assert choice["finish_reason"] == "tool_calls"
+        rounds.append([(c["function"]["name"], json.loads(c["function"]["arguments"])) for c in calls])
+        messages += [choice["message"], *({"role": "tool", "tool_call_id": c["id"],
+                                           "content": results[c["function"]["name"]]} for c in calls)]
+    assert rounds == [[("list_tools", {}), ("asset_summary", {}), ("compliance_summary", {})],
+                      [("start_tool", {"tool_id": "grafana"})]]
+    answer = choice["message"]["content"]
+    assert "3 without an owner" in answer and "ISO/IEC 27001:2022 72%" in answer and "HB-AC-1" in answer
+    assert "no launch command" in answer
+
+    # a tool the agent is not offered is not called: the answer comes without it
+    alone = chat(tools, "model_local", {"model": "qwen3:32b", "messages": [
+        {"role": "user", "content": demo_hub.LEAVER_QUESTION}], "tools": offered}).json()["choices"][0]
+    assert alone["finish_reason"] == "stop" and alone["message"]["content"] == demo_hub.REPLIES[0][1]
+
+
 def test_the_tools_answer_health_checks_and_serve_their_openapi_documents(tools):
     import httpx
 

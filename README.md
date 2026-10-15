@@ -22,15 +22,16 @@ suite. A team of agents does the integration work:
   or through its API - from a sidecar next to it, governed by Atrium like a parent company governs a daughter company
   (off until an administrator allows it).
 
-Everything the agents say to each other is visible live, and anything that changes state waits
-in an approval queue until a person approves it. People sign in to the hub and get a role -
+Everything the agents say to each other is visible live - on the **Agent bus**, one conversation at a time, with
+every error an agent ran into - and anything that changes state waits in an approval queue until a person approves it. People sign in to the hub and get a role -
 viewer, operator or admin - that decides what they may do.
 
 ## Screenshots
 
 A made-up company with Snipe-IT, Keycloak, OpenVAS, CISO Assistant, Grafana, Wazuh and an edge firewall imported, two
-AI model servers (a cloud service and an Ollama on its own GPU server) and an agent team inside CISO Assistant (all demo
-data, and no real model: `scripts/screenshots.py` retakes these from the current UI, see [Development](#development)).
+AI model servers (a cloud service and an Ollama on its own GPU server), an agent team inside CISO Assistant and a few
+chats that set the agents asking each other (all demo data, and no real model: `scripts/screenshots.py` retakes these
+from the current UI, see [Development](#development)).
 Click a picture to see it full size.
 
 | | |
@@ -43,6 +44,7 @@ Click a picture to see it full size.
 | **CyFun self-assessment** - maturity and conformity per level ([COMPLIANCE.md](docs/COMPLIANCE.md#self-assessments))<br>![CyFun self-assessment](docs/screenshots/compliance-frameworks.png) | **Controls** - checked against live hub state, mapped to ISO 27001, SOC 2, NIS2 and CyFun ([COMPLIANCE.md](docs/COMPLIANCE.md#hub-security-baseline))<br>![Compliance controls](docs/screenshots/compliance-controls.png) |
 | **People** - the directory merged from Keycloak and Snipe-IT<br>![People](docs/screenshots/people.png) | **A leaver** - still holding a laptop and a login<br>![Person](docs/screenshots/person.png) |
 | **Vulnerabilities** - findings of an OpenVAS scan with deadlines<br>![Vulnerabilities](docs/screenshots/vulnerabilities.png) | **Agents** - supervisors, teams, the model each agent runs on and the chat<br>![Agents](docs/screenshots/agents.png) |
+| **Agent bus** - one conversation: a person's question, what the Hub Supervisor asked the other agents, their answers and the Operator Agent's failure ([AGENTS.md](docs/AGENTS.md#conversations-and-errors))<br>![Agent bus](docs/screenshots/agent-bus.png) | **An agent's errors** - opened from its error count on the Agents page, each with who asked and the conversation it happened in<br>![An agent's errors](docs/screenshots/agent-errors.png) |
 | **AI models** - a cloud provider and a self-hosted Ollama next to the suite's model choice ([AGENTS.md](docs/AGENTS.md#models-and-providers))<br>![AI models](docs/screenshots/ai-models.png) | **Agent settings** - one agent's model, parameters, instructions, tools, limits and escalation ([AGENTS.md](docs/AGENTS.md#agent-settings))<br>![Agent settings](docs/screenshots/agent-settings.png) |
 | **A subsidiary** - an agent team working inside CISO Assistant from its sidecar, governed by Atrium ([SUBSIDIARIES.md](docs/SUBSIDIARIES.md#working-with-a-team))<br>![A subsidiary](docs/screenshots/subsidiaries.png) | **A change inside a tool** - the team's request, waiting for a person who did not ask for it ([SUBSIDIARIES.md](docs/SUBSIDIARIES.md#in-tool-actions-and-grants))<br>![A change inside a tool waiting for approval](docs/screenshots/subsidiary-approval.png) |
 | **Agent guardrails** - in Settings<br>![Agent guardrails](docs/screenshots/settings-guardrails.png) | **Users & access** - accounts, roles and API tokens<br>![Users and access](docs/screenshots/users.png) |
@@ -57,6 +59,7 @@ Click a picture to see it full size.
 | **Apps** | Import from GitHub / local folder / SaaS URL (+ OpenAPI spec). Each tool gets a manifest, an integration score, health checks, start/stop, logs, its own supervisor agent and a **Connection** to its API. |
 | **Integration hub** | Three tabs. **Overview**: how tools connect - shared capabilities, single sign-on, event routes, data flows - plus port conflicts and missing dependencies. **Map**: the visual management panel - every tool and hub app in lanes, linked by data flows, single sign-on and event routes; drag from a tool to an app or another tool to propose a data flow (the Connect panel shows what is possible, recommends what the planner would propose and refuses loops). **Segmentation**: a firewall's zones, the assets inside them and the traffic its rules may allow, with compliance and vulnerability overlays and guarded change proposals. The **Identity** card lists the suite's identity providers (Keycloak, authentik, Zitadel, Authelia, ...) and each tool's single sign-on: the Patch Agent connects tools to the chosen provider natively (Grafana, Gitea, Forgejo, MinIO, BookStack, Outline, Nextcloud, Wazuh, CISO Assistant, Snipe-IT, Zammad, ...) and registers them there. **Data flows** move assets, vulnerabilities, controls and evidence, risks, people and accounts, compliance frameworks and self-assessments, and network device snapshots between tools and the hub's apps through built-in connectors (Snipe-IT, CISO Assistant, OpenVAS / Greenbone, Okta, Keycloak, SCIM 2.0, and the network device connectors) or a generic REST mapping, on a schedule, with a repair proposal after three failures. |
 | **Agents** | Manage the agents, chat with the Hub Supervisor or any team agent, and watch agent-to-agent messages live. Each tool's supervisor can lead an **agent team** - proposed from templates for what the tool is (SIEM, GRC, asset inventory, vulnerability scanner, plus a maintainer) or designed by Claude - and admins create, edit and remove team agents running on Claude, on a **local model** (Ollama, LM Studio, vLLM, llama.cpp - any OpenAI-compatible server) or on rules, with permissions, a schedule and a standing task. |
+| **Agent bus** | Every conversation on the agent bus, live: what one chat message, one person's action or one scheduled run made the agents ask each other - who asked whom, what they answered, how long it took and what failed - as a chat-style transcript, with filters (agent, status, errors only, my chats) and search. Each agent's errors are kept with the conversation they happened in, for operators to acknowledge. Viewers read routing, status and error texts, operators and administrators the messages (secrets masked), and a person's chat stays theirs ([docs/AGENTS.md](docs/AGENTS.md#conversations-and-errors)). |
 | **Approvals** | Review and approve or reject agent commands, patches, data flows, scans, repairs, agent teams, extension packs, changes to Atrium itself, network device changes, and a subsidiary's bridge patch, charter and in-tool changes, with diffs, test results, policy violations and expiry countdowns. Device changes need a second administrator. Full audit history. |
 | **Subsidiaries** | Agent teams inside tools ([docs/SUBSIDIARIES.md](docs/SUBSIDIARIES.md)). **Give it a team inside** on a tool's page: the Patch Agent adds an Atrium bridge to its code (typed actions, an "Ask the team" panel for the tool's users, events) through an approved patch, or the team works through the tool's API. The team runs in a **sidecar** next to the tool and thinks through Atrium's model gateway; Atrium approves its **charter** (actions, staff, budgets, model routing), every change it wants to make in the tool, and can pause, stop or kill-switch it. A group dashboard, an org chart per team, the charter with its versions, a hash-chained audit trail, reports and the setup steps. |
 | **Operator** | Run commands locally or over SSH, manage hosts, discover host facts. |
@@ -329,10 +332,10 @@ More detail in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 | Page | Covers |
 | --- | --- |
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | components, request pipeline, agents, approvals, network, compliance, state and files, events, endpoints, extending |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | components, request pipeline, the agent bus and its conversations, agents, approvals, network, compliance, state and files, events, endpoints, extending |
 | [docs/AUTH.md](docs/AUTH.md) | sign-in, roles, sessions, API tokens, single sign-on for Atrium and the Sign-in & SSO settings |
 | [docs/INTEGRATIONS.md](docs/INTEGRATIONS.md) | connections and connectors, credentials and the secret key, data flows, the Integration map, repairs, vulnerabilities and scans, single sign-on for tools |
-| [docs/AGENTS.md](docs/AGENTS.md) | agents, team agents and teams, local models, guardrails, extensions, self-patching |
+| [docs/AGENTS.md](docs/AGENTS.md) | agents, team agents and teams, models and providers, agent settings, chat privacy, the Agent bus (conversations and agents' errors), local models, guardrails, extensions, self-patching |
 | [docs/PEOPLE.md](docs/PEOPLE.md) | the People app, directories, accounts, person-asset links, leavers |
 | [docs/NETWORK.md](docs/NETWORK.md) | the Network app, device connectors per vendor (what is verified, least-privilege setup), drift, backups, the segmentation map, guarded device changes and maintenance windows |
 | [docs/COMPLIANCE.md](docs/COMPLIANCE.md) | the control baseline with its references, CyFun 2025 / 2023 self-assessments and conformity, the audit pack, CISO Assistant framework sync, the CRA |
@@ -369,7 +372,8 @@ hub/
   api.py           REST + Server-Sent Events API (docs at /api/docs)
   network_api.py, network_changes_api.py, canvas_api.py   routes of the Network app, device changes and the maps
   dashboards_api.py  routes of the Home dashboards and widgets
-  bus.py           agent message bus
+  bus.py           agent message bus: messages, conversations (threads), the privacy of a person's chat
+  conversations.py, agent_errors.py, bus_api.py   the Agent bus page: conversations, agents' errors, routes
   core.py          the Hub runtime (and the scheduler for data flows, agents and device changes)
   people.py        the People app: merging, accounts, links, leavers
   secrets.py       encryption of stored credentials and device backups

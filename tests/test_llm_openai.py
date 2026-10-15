@@ -102,6 +102,7 @@ def test_the_tool_loop_replays_reasoning_and_returns_results_by_call_id(client, 
     seen = use_openai(client, monkeypatch, lambda body: next(calls))
     reply = client.post("/api/chat", json={"text": "how is the suite doing?"}).json()
     meta = reply.pop("meta")  # which model answered (shown under the reply)
+    assert reply.pop("thread").startswith("m_")  # the conversation on the agent bus
     assert reply == {"reply": "The suite is empty.", "mode": "llm"} and meta["provider"] == "openai"
     first, second = posts(seen)
     assert {t["name"] for t in first["tools"]} >= {"list_tools", "list_approvals"}

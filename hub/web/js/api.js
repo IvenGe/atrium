@@ -24,6 +24,7 @@ export async function api(path, { method = "GET", body } = {}) {
     err.status = res.status;
     err.code = code;
     err.retryAfter = data?.retry_after ?? detail?.retry_after ?? null; // a 429: seconds until a call may start again
+    err.thread = res.headers.get("X-Atrium-Thread"); // the conversation on the agent bus the request started, if any
     throw err;
   }
   return data;

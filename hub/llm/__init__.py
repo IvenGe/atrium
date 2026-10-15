@@ -16,7 +16,9 @@ import os
 import time
 from typing import TYPE_CHECKING, Any, AsyncIterator, Awaitable, Callable, Collection
 
-from .. import llm_providers
+from .. import agent_errors, llm_providers
+from ..bus import TRACE
+from ..connectors.base import redact
 from ..models import AgentConfig, LlmProvider, ModelCaps
 from . import loop, prompting, registry, resolve as resolution, structured, usage
 from .adapters import cloud_off
@@ -44,6 +46,7 @@ PROBE_TOKENS = 256
 PROBE_SCHEMA = {"type": "object", "properties": {"ok": {"type": "boolean"}}, "required": ["ok"],
                 "additionalProperties": False}
 PROBE_TOOL = {"name": "report_ok", "description": "Report that this check worked.", "input_schema": PROBE_SCHEMA}
+EXPLAIN_LIMIT = 260  # characters of a failure people read (a provider's message is capped at about 200 by its adapter)
 
 
 class LLM:
@@ -57,6 +60,7 @@ class LLM:
         self.memory = Memory(hub)
         self._slots: dict[str, tuple[int, asyncio.Semaphore]] = {}  # per provider: max_concurrency calls at a time
         self._cache: dict[tuple[str, str], tuple[tuple[Any, ...], Resolution]] = {}
+        self._reported: dict[tuple[str, str], str] = {}  # (provider, model) -> the failure logged last (failed)
         hub.bus.listen(self.mask.on_event)
 
     # -- providers ------------------------------------------------------------------------
@@ -303,6 +307,7 @@ class LLM:
                     except ProviderError as exc:
                         lighter = self._without_refused(provider_id, req, exc, learn)
                         if lighter is None:
+                            exc.provider, exc.model = exc.provider or provider_id, exc.model or req.model
                             raise
                         req = lighter
         finally:
@@ -321,18 +326,30 @@ class LLM:
 
     def _without_refused(self, provider_id: str, req: Request, exc: ProviderError,
                          learn: Collection[str]) -> Request | None:
+        """The request again without the optional feature a provider's HTTP 400 refused (None: not such a refusal,
+        or nothing left to drop - the error stands). The model's record learns it, so the next call starts right."""
         if exc.status != 400:
             return None
-        feature = registry.refused_feature(str(exc))
+        message = str(exc)
+        strict = [t for t in req.tools if t.get("strict")]
+        if strict and req.json_mode != "native" and structured.schema_refused(message):
+            return req.model_copy(update={"tools": loop.plain_tools(req.tools)})  # this schema set, not the model
+        feature = registry.refused_feature(message)
         if feature not in learn:
             return None
         if feature == "temperature" and req.temperature is not None:
             self.learn(provider_id, req.model, "a temperature setting", temperature=False)
             return req.model_copy(update={"temperature": None})
         if feature == "effort" and req.effort:
+            known = self.caps(provider_id, req.model).effort_levels
             self.learn(provider_id, req.model, f"the reasoning effort '{req.effort}'",
-                       effort_levels=registry.supported_efforts(str(exc)))
-            return req.model_copy(update={"effort": None})
+                       effort_levels=registry.efforts_after_refusal(message, req.effort, known))
+            return req.model_copy(update={"effort": None})  # the model's own default
+        if feature == "strict" and strict:
+            if self.kind_of(provider_id) == "anthropic":  # strict tools are part of Claude's structured outputs
+                self.learn(provider_id, req.model, "strict tool schemas", "its tools are sent without them",
+                           json_schema=False)
+            return req.model_copy(update={"tools": loop.plain_tools(req.tools)})
         if feature == "tools" and req.tools:
             self.learn(provider_id, req.model, "tool calling", "it answers without tools", tools=False)
             return req.model_copy(update={"tools": [], "system": f"{req.system}\n\n{loop.TEXT_ONLY}"})
@@ -358,11 +375,59 @@ class LLM:
             raise error from exc
         latency = int((time.monotonic() - started) * 1000)
         self.breaker.success(provider_id)
+        self._reported.pop((provider_id, req.model), None)  # working again: its next failure is logged
         cost = self.meter.call_cost(provider_id, req.model, result.usage, self.location(provider_id) == "self_hosted")
         self.meter.record(req, provider=provider_id, model=req.model, result=result, latency_ms=latency,
                           outcome="refused" if result.stop == "refusal" else "fallback" if fallback_from else "ok",
                           cost_usd=cost, fallback_from=fallback_from)
         return result, cost, latency
+
+    def failed(self, agent_id: str, exc: ProviderError, trigger: str) -> None:
+        """A model call of an agent failed (after its fallbacks): an agent error in the conversation it worked on
+        (hub/agent_errors.py), and the provider's own message in the activity log once per provider, model and
+        message (again after a call there worked) - not for the playground, where an administrator watches the call."""
+        if not agent_id or trigger == "playground":
+            return
+        trace = TRACE.get()
+        msg = trace.message if trace is not None else None
+        self._report(agent_id, exc, trace.private if trace is not None else None)
+        self.hub.agent_errors.record(agent_id, subject=msg.subject if msg else trigger, sender=msg.sender if msg else None,
+                                     message=msg.id if msg else None, thread=trace.thread if trace else None,
+                                     text=str(exc), error_class=exc.__class__.__name__, code=f"llm_{exc.kind or 'error'}",
+                                     kind="llm", private=trace.private if trace else None)
+        agent_errors.mark(exc)  # the handler that this failure ends is not recorded again (hub/agent_errors.py)
+
+    def _report(self, agent_id: str, exc: ProviderError, private: Any) -> None:
+        provider = exc.provider or ""
+        key, text = (provider, exc.model or ""), self.explain(exc)
+        if self._reported.get(key) == text:
+            return
+        self._reported[key] = text
+        while len(self._reported) > 200:
+            self._reported.pop(next(iter(self._reported)))
+        if private is not None:  # the activity log is shared: no quote of a person's private chat
+            text = private.quotes.scrub(text)
+        where = f" ({exc.model})" if exc.model else ""
+        self.hub.activity("hub", "warn", f"{self.meter.name(agent_id)}'s model call failed{where}: {text}",
+                          provider_id=provider or None, model=exc.model, error_kind=exc.kind, agent_id=agent_id)
+
+    def explain(self, exc: BaseException, limit: int = EXPLAIN_LIMIT) -> str:
+        """Why a model call failed, as people may read it: the provider's own message (e.g. "Claude answered HTTP
+        400: output_config.effort: Extra inputs are not permitted") with every hub secret and credential-looking pair
+        masked, at most `limit` characters - for a failure of the model layer (ProviderError, LLMUnavailable, also
+        as the cause of another error); any other error by its class name only."""
+        found: BaseException | None = exc
+        while found is not None and not isinstance(found, (ProviderError, LLMUnavailable)):
+            found = found.__cause__
+        if found is None:
+            return exc.__class__.__name__
+        text = str(found)
+        try:
+            text = self.mask.text(text)
+        except Exception:  # the mask cannot load the secrets: the provider texts are masked already, pairs below
+            pass
+        text = " ".join(redact(text).split()) or found.__class__.__name__
+        return text if len(text) <= limit else text[:limit - 1] + "…"
 
     async def converse(self, agent_id: str, purpose: str, *, system: str, history: list[Msg],
                        tools: list[dict[str, Any]], run: loop.Run, trigger: str = "chat", person: str | None = None,
@@ -388,6 +453,7 @@ class LLM:
                                        max_output_tokens=min(max_output_tokens, params.max_output_tokens or max_output_tokens),
                                        max_rounds=params.max_tool_rounds, context=context)
         except ProviderError as exc:
+            self.failed(agent_id, exc, trigger)
             raise LLMUnavailable(str(exc)) from exc
 
     async def converse_on(self, provider_id: str, model: str, *, agent_id: str, purpose: str = "chat",
@@ -448,9 +514,12 @@ class LLM:
             except ProviderError as exc:
                 if exc.status == 400 and structured.names_mode(str(exc), mode) and n + 1 < len(modes):
                     native = mode == "native"
-                    self.learn(turn.provider, turn.model, "JSON schema output" if native else "JSON output",
-                               "using the next structured-output mode", **{"json_schema" if native else "json_object": False})
+                    if not structured.schema_refused(str(exc)):  # the mode itself, not this one schema
+                        self.learn(turn.provider, turn.model, "JSON schema output" if native else "JSON output",
+                                   "using the next structured-output mode",
+                                   **{"json_schema" if native else "json_object": False})
                     continue
+                self.failed(agent_id, exc, trigger)
                 raise LLMUnavailable(str(exc)) from exc
             meta = ReplyMeta(provider=turn.provider, provider_label=self.label(turn.provider), model=turn.model,
                              mode=self.mode(turn.provider), source=res.source, fallback_from=turn.fallback_from,  # type: ignore[arg-type]

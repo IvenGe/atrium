@@ -23,6 +23,18 @@ def test_no_response_may_be_framed(client):
         assert response.headers["content-security-policy"] == "frame-ancestors 'none'"
 
 
+def test_ui_files_are_revalidated_after_an_update(client):
+    """No-build ES modules: a browser must not keep an old cached module next to newer ones (a blank page after an
+    update), so every UI file is revalidated; the ETag keeps that a cheap 304."""
+    for path in ("/", "/index.html", "/js/app.js", "/css/app.css"):
+        response = client.get(path)
+        assert response.status_code == 200, path
+        assert response.headers["cache-control"] == "no-cache", path
+        again = client.get(path, headers={"If-None-Match": response.headers["etag"]})
+        assert again.status_code == 304, path
+    assert "no-cache" not in client.get("/api/health").headers.get("cache-control", "")
+
+
 def test_core_agents_are_running(client):
     agents = {a["id"]: a for a in client.get("/api/agents").json()}
     assert {"supervisor", "patcher", "operator", "module:assets", "module:grc"} <= set(agents)

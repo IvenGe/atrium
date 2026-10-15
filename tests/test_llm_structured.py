@@ -74,7 +74,7 @@ def test_reading_json_out_of_an_answer():
 
 
 def test_the_mode_order_per_provider():
-    assert structured.mode_order("anthropic", None, None) == ["native"]
+    assert structured.mode_order("anthropic", None, None) == ["native", "prompt"]  # a refused native mode degrades
     assert structured.mode_order("anthropic", False, None) == ["prompt"]
     assert structured.mode_order("openai_compatible", None, None) == ["native", "json_object", "prompt"]
     assert structured.mode_order("openai_compatible", False, None) == ["json_object", "prompt"]

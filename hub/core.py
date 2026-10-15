@@ -12,11 +12,14 @@ import httpx
 from pydantic import BaseModel
 
 from . import guardrails
+from .agent_errors import ErrorLog
 from .agents import teams
 from .approvals import Approvals
 from .auth.service import AuthService
-from .bus import Bus
+from .bus import TRACE, Bus, conversation
 from .config import AUTONOMY_LEVELS, Settings
+from .connectors.base import redact
+from .conversations import Conversations
 from .execution.processes import ProcessManager
 from .extensions import selfpatch
 from .integration import changes as device_changes
@@ -29,6 +32,17 @@ from .secrets import SecretBox
 from .store import Store
 
 M = TypeVar("M", bound=BaseModel)
+
+
+def _redacted(value: Any) -> Any:
+    """`value` with credential-looking pairs masked in every string of it (connectors.base.redact)."""
+    if isinstance(value, str):
+        return redact(value)
+    if isinstance(value, dict):
+        return {k: _redacted(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_redacted(v) for v in value]
+    return value
 
 
 def private_dir(path: Path) -> None:
@@ -60,6 +74,12 @@ class Hub:
         self.secrets = SecretBox.for_settings(settings)
         self.auth = AuthService(self)
         self.llm = LLM(self)
+        self.conversations = Conversations(self)  # the Agent bus page: threads, private copies (hub/conversations.py)
+        self.agent_errors = ErrorLog(self)  # every agent failure, acknowledged by people (hub/agent_errors.py)
+        self.bus.person_of = self.llm.memory.person_of
+        self.bus.keep_private = self.conversations.keep_message
+        self.bus.on_failure = self.agent_errors.record
+        self.bus.mask = self.llm.mask.value  # no hub secret in the message log, its event or any reader of it
         self.approvals = Approvals(self)
         self.processes = ProcessManager(self)
         self.toolbus = ToolBus(self)
@@ -125,7 +145,8 @@ class Hub:
         await asyncio.sleep(5)
         while True:
             if not self._paused("supervisor"):
-                await self.bus.tell("hub", "supervisor", "health.sweep")
+                with conversation(None):  # scheduled work starts a conversation of its own
+                    await self.bus.tell("hub", "supervisor", "health.sweep")
             await asyncio.sleep(self.settings.health_interval)
 
     async def _flow_loop(self) -> None:
@@ -145,6 +166,10 @@ class Hub:
         """One scheduler pass for team agents: each enabled agent with a schedule and a standing task runs it when due
         (a message to the agent, so a slow model never blocks the loop)."""
         now = now or time.time()
+        with conversation(None):  # scheduled work: every run starts a conversation of its own
+            return await self._tick_agents(now)
+
+    async def _tick_agents(self, now: float) -> list[str]:
         started = []
         for defn in teams.defs(self):
             if (teams.is_due(defn, now) and self.agents.get(defn.id) is not None
@@ -159,6 +184,10 @@ class Hub:
         """One scheduler pass: start enabled flows that are due, poll running scans, and check the vulnerability
         SLA every hour. Runs are messages to the owning module agents, so a slow tool never blocks the loop."""
         now = now or time.time()
+        with conversation(None):  # scheduled work: every message starts a conversation of its own
+            return await self._tick_flows(now)
+
+    async def _tick_flows(self, now: float) -> dict[str, list[str]]:
         started, polled = [], []
         for flow in flows.all_flows(self):
             if flow.job and flow.job.get("status") == "running":
@@ -190,10 +219,12 @@ class Hub:
 
     def prune_logs(self) -> dict[str, int]:
         """Keep the agent message and tool event logs to their LOG_RETENTION size (the activity log and the command
-        history are never pruned)."""
+        history are never pruned), and the agent errors to their bounds (hub/agent_errors.py)."""
         pruned = {stream: self.store.prune(stream, keep) for stream, keep in LOG_RETENTION.items()}
         pruned["llm_usage_daily"] = llm_usage.prune_daily(self)
         pruned["agent_conversations"] = self.llm.memory.prune()  # stored chats past their agent's retention
+        pruned["bus_private"] = self.conversations.prune()  # the private copies of messages no longer logged
+        pruned["agent_errors"] = self.agent_errors.prune()
         return pruned
 
     # -- preferences -----------------------------------------------------------------
@@ -228,8 +259,41 @@ class Hub:
     # -- activity log ----------------------------------------------------------------
 
     def activity(self, actor: str, level: str, text: str, **data: Any) -> dict[str, Any]:
-        entry = self.store.append("activity", {"actor": actor, "level": level, "text": text, "data": data})
+        """Add an entry to the activity log, which every signed-in account reads (GET /api/activity, the "activity"
+        event): its text and data with the hub's secrets and credential-looking pairs masked, and - written in a
+        person's private chat thread - without quotes of their chat (``shared_append``)."""
+        record = {"actor": actor, "level": level, "text": self.cleaned(text), "data": self.cleaned(data)}
+        entry = self.shared_append("activity", record, ("text", "data"), "a")
         self.bus.publish("activity", entry)
+        return entry
+
+    def cleaned(self, value: Any) -> Any:
+        """`value` (a text, or data of strings) with every hub secret (hub.llm.mask) and credential-looking pair
+        (connectors.base.redact) masked."""
+        mask = getattr(getattr(self, "llm", None), "mask", None)
+        if mask is not None:
+            try:
+                value = mask.value(value)
+            except Exception:  # the secrets cannot be read: the credential-looking pairs are still masked below
+                pass
+        return _redacted(value)
+
+    def shared_append(self, stream: str, record: dict[str, Any], fields: tuple[str, ...],
+                      prefix: str) -> dict[str, Any]:
+        """Append `record` to a log everyone reads (the activity log, the command history). Written in a person's
+        private chat thread (hub/bus.py TRACE: an agent handling a message of it, or work resumed in it after an
+        approval), its `fields` are kept without the strings that quote the person's chat (bus.Quotes) and it is marked
+        "private"; the original fields are kept for that person alone, encrypted, under "<prefix>:<seq>"
+        (hub/conversations.py, ``Conversations.own_entries``)."""
+        trace = TRACE.get()
+        private = trace.private if trace is not None else None
+        if private is None:
+            return self.store.append(stream, record)
+        original = {f: record[f] for f in fields if f in record}
+        shown = {f: private.quotes.scrub(v) for f, v in original.items()}
+        entry = self.store.append(stream, {**record, **shown, "private": True})
+        if shown != original:
+            self.conversations.copies.keep(f"{prefix}:{entry['seq']}", private.owner, trace.thread, original)
         return entry
 
     # -- typed collections -----------------------------------------------------------

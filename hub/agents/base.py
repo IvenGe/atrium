@@ -7,7 +7,8 @@ import contextlib
 import time
 from typing import TYPE_CHECKING, Any
 
-from ..bus import AgentError, Message
+from ..agent_errors import recorded
+from ..bus import AgentError, Message, conversation, handling
 from ..llm.types import Limited
 
 if TYPE_CHECKING:
@@ -41,7 +42,8 @@ class BaseAgent:
         self.model_override: str | None = None
         self.instructions_override: str | None = None
         self.handled = 0
-        self.errors = 0
+        self.errors = 0  # failures since start (hub/agent_errors.py counts them; clearing an agent's errors resets it)
+        self.last_error_at: float | None = None
         self.active = 0
         self.last_active: float | None = None
         self._resume = asyncio.Event()
@@ -116,6 +118,8 @@ class BaseAgent:
             "enabled": not self.paused,
             "handled": self.handled,
             "errors": self.errors,
+            "errors_unacknowledged": self.hub.agent_errors.unacknowledged(self.id),  # stored, not yet acknowledged
+            "last_error_at": self.last_error_at,
             "active": self.active,
             "queued": self.inbox.qsize(),
             "last_active": self.last_active,
@@ -125,7 +129,8 @@ class BaseAgent:
 
     def start(self) -> None:
         self.hub.bus.attach(self.id, self.inbox)
-        self._loop_task = asyncio.create_task(self._loop(), name=f"agent:{self.id}")
+        with conversation(None):  # the loop belongs to no conversation: each message it handles sets its own
+            self._loop_task = asyncio.create_task(self._loop(), name=f"agent:{self.id}")
         self.setup()
 
     def setup(self) -> None:
@@ -158,12 +163,14 @@ class BaseAgent:
     async def _handle(self, msg: Message) -> None:
         self.active += 1
         self.last_active = time.time()
+        self.hub.bus.enter(msg.thread)
         self._publish()
         try:
-            handler = getattr(self, "on_" + msg.subject.replace(".", "_").replace("-", "_"), None)
-            if handler is None:
-                raise AgentError(f"{self.name} does not handle '{msg.subject}'")
-            result = await handler(msg.body, msg)
+            with conversation(handling(msg)):  # what the handler asks, tells and answers joins msg's conversation
+                handler = getattr(self, "on_" + msg.subject.replace(".", "_").replace("-", "_"), None)
+                if handler is None:
+                    raise AgentError(f"{self.name} does not handle '{msg.subject}'")
+                result = await handler(msg.body, msg)
             if msg.kind == "request":
                 await self.hub.bus.reply(msg, self.id, result or {})
         except Limited as exc:  # a reached AI budget or rate limit (logged once by the meter): the asker says why
@@ -171,11 +178,21 @@ class BaseAgent:
                 await self.hub.bus.reply(msg, self.id, {"error": str(exc), "code": exc.code,
                                                         "retry_after": exc.retry_after})
         except Exception as exc:  # an agent must survive any single failure
-            self.errors += 1
-            self.log("error", f"'{msg.subject}' failed: {exc}")
+            text, code = str(exc) or exc.__class__.__name__, getattr(exc, "code", None)
+            # the activity log is shared: secrets and credential-looking pairs masked (capped like the error record),
+            # quotes of a person's private chat removed
+            shown = self.hub.agent_errors.clean(text)
+            shown = msg.private.quotes.scrub(shown) if msg.private is not None else shown
+            self.log("error", f"'{msg.subject}' failed: {shown}", thread=msg.thread, message_id=msg.id)
+            if not recorded(exc):  # a failed model call it ends is recorded already
+                self.hub.agent_errors.record(self.id, subject=msg.subject, sender=msg.sender, message=msg.id,
+                                             thread=msg.thread, text=text, error_class=exc.__class__.__name__,
+                                             code=code if isinstance(code, str) else None, kind="exception",
+                                             private=msg.private)
             if msg.kind == "request":
-                await self.hub.bus.reply(msg, self.id, {"error": str(exc) or exc.__class__.__name__})
+                await self.hub.bus.reply(msg, self.id, {"error": text})
         finally:
+            self.hub.bus.leave(msg.thread)
             self.active -= 1
             self.handled += 1
             self._publish()
